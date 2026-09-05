@@ -79,6 +79,11 @@ The installer creates `.agent-factory/config.json` and thin workflows under
 `.github/workflows/`. It preserves existing files unless `--force` is
 explicit.
 
+The [`skills/`](skills/) directory includes two optional starting points for
+adopters: project stewardship that prevents issue-sprawl, and human-facing
+writing. They are intentionally small. Domain judgment and project-specific
+verification still belong in each adopting repository.
+
 The runtime is model-agnostic: a role chooses a provider and model through
 versioned configuration, while its workflow receives a generic model
 credential. Provider choice does not change the review or gate contract. The

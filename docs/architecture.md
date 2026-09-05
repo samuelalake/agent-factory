@@ -63,3 +63,16 @@ presentation; it is never parsed as gate state.
 A feature is generic only when multiple repositories can express it through
 the configuration, capability, or adapter protocol without adding project
 names or domain paths to factory code.
+
+## Project stewardship
+
+Conversation is input, not automatically a queue mutation. A stewardship layer
+first updates a human-readable narrative ledger, deduplicates concerns, and
+decides whether a concern is ready for durable execution tracking. The ledger
+may be backed by a document table, a project view, issues, or a repository file;
+the adapter is optional, but a project should name one source of truth.
+
+Triage promotes a ledger concern into an execution item only when it has a
+distinct outcome, current evidence, enough context to act, and a useful next
+decision or verification step. This keeps the Factory compatible with GitHub
+Issues without making issue creation the default response to every message.
