@@ -1,0 +1,43 @@
+name: reusable-agent-review
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        required: true
+        type: number
+      factory_ref:
+        required: true
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout consumer
+        uses: actions/checkout@v4
+        with:
+          path: consumer
+      - name: Checkout factory
+        uses: actions/checkout@v4
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+      - name: Review current pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_review
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --root consumer
+          --config consumer/.agent-factory/config.json

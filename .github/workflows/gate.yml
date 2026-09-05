@@ -1,0 +1,40 @@
+name: reusable-agent-gate
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        required: true
+        type: number
+      factory_ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout consumer
+        uses: actions/checkout@v4
+        with:
+          path: consumer
+      - name: Checkout factory
+        uses: actions/checkout@v4
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+      - name: Compute current pull request gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_gate
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --config consumer/.agent-factory/config.json
