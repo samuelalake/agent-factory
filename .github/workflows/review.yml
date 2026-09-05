@@ -12,6 +12,10 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: true
+      AGENT_FACTORY_APP_ID:
+        required: true
+      AGENT_FACTORY_APP_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -33,9 +37,11 @@ jobs:
           path: factory
       - name: Review current pull request
         env:
-          GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_APP_ID }}
+          AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-
+          python3 -m pip install --disable-pip-version-check 'PyJWT[crypto]>=2.8,<3' &&
           PYTHONPATH=factory/src python3 -m agent_factory.github_review
           --repo "${{ github.repository }}"
           --pr "${{ inputs.pr }}"

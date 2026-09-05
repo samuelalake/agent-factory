@@ -47,9 +47,9 @@ The installer creates `.agent-factory/config.json` and thin workflows under
 `.github/workflows/`. It refuses to overwrite existing files unless `--force`
 is explicit.
 
-The review workflow requires `ANTHROPIC_API_KEY`. Its GitHub identity is the
-caller's workflow token in this alpha; repositories must enable review creation
-for Actions, or replace it with an installation token from their review App.
+The review workflow requires `ANTHROPIC_API_KEY`, `AGENT_FACTORY_APP_ID`, and
+`AGENT_FACTORY_APP_PRIVATE_KEY`. It mints a short-lived installation token so
+formal reviews have a distinct App identity and never rely on a long-lived PAT.
 The gate fails closed unless it finds a current-head approval carrying the
 factory's machine-readable review contract.
 

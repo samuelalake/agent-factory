@@ -7,7 +7,7 @@ name = "agent-factory"
 version = "0.1.0"
 description = "Reusable GitHub-native control plane for software agents"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["PyJWT[crypto]>=2.8,<3"]
 
 [project.scripts]
 agent-factory = "agent_factory.cli:main"

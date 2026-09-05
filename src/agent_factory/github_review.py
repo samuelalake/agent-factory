@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .app_auth import get_installation_token
 from .config import load_config
 from .protocol import encode_data, extract_json_reply
 
@@ -108,6 +109,9 @@ def format_body(marker: str, head_sha: str, review: dict[str, Any]) -> str:
 
 
 def run(repo: str, pr: str, root: Path, config_path: Path, model: str) -> None:
+    # A distinct App identity is required for a formal approval that can gate a
+    # consumer pull request. Keep its short-lived token out of files and logs.
+    os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
     meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
     diff = _gh(["pr", "diff", pr, "--repo", repo])
