@@ -79,6 +79,11 @@ The installer creates `.agent-factory/config.json` and thin workflows under
 `.github/workflows/`. It preserves existing files unless `--force` is
 explicit.
 
+`project.context_files` names the repository's durable guidance.
+`project.skill_dirs` names local skill catalogs; each role selects a bounded
+set whose name and description match the current task. The adopting repository
+therefore controls both the knowledge and the procedures a role receives.
+
 The [`skills/`](skills/) directory includes two optional starting points for
 adopters: project stewardship that prevents issue-sprawl, and human-facing
 writing. They are intentionally small. Domain judgment and project-specific

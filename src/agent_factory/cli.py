@@ -52,7 +52,12 @@ jobs:
 def default_config(project_name: str) -> dict:
     return {
         "version": 1,
-        "project": {"name": project_name, "context_files": ["AGENTS.md"]},
+        "project": {
+            "name": project_name,
+            "context_files": ["AGENTS.md"],
+            "skill_dirs": ["skills", "skill"],
+            "max_skills": 3,
+        },
         "review": {
             "marker": "<!-- reviewer:agent-factory -->",
             "failure_marker": "<!-- reviewer:agent-factory-failure -->",

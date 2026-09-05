@@ -10,6 +10,7 @@ from typing import Any
 
 from .app_auth import get_installation_token
 from .config import load_config
+from .context import discover_context
 from .model import complete
 from .protocol import encode_data, extract_json_reply
 
@@ -95,11 +96,12 @@ def run(
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
     diff = encoded[: config.review.max_diff_bytes].decode(errors="ignore")
-    context: list[str] = []
-    for relative in config.project.context_files:
-        path = root / relative
-        if path.is_file():
-            context.append(f"## {relative}\n\n{path.read_text(encoding='utf-8', errors='replace')}")
+    task = f"{meta.get('title', '')}\n{meta.get('body', '')}\n{diff}"
+    discovered = discover_context(root, config.project, task, role="review")
+    context = [
+        f"## {document.kind}: {document.path}\n\n{document.content}"
+        for document in discovered
+    ]
     system = (
         f"You are the required code reviewer for {config.project.name}. "
         "Return only JSON with summary:string, approve:boolean, and findings:array. "

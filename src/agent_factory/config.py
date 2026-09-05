@@ -15,6 +15,8 @@ class ConfigError(ValueError):
 class ProjectConfig:
     name: str
     context_files: tuple[str, ...]
+    skill_dirs: tuple[str, ...]
+    max_skills: int
 
 
 @dataclass(frozen=True)
@@ -78,12 +80,17 @@ def parse_config(raw: dict[str, Any]) -> Config:
     provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
     if provider not in {"anthropic", "gemini", "openrouter"}:
         raise ConfigError(f"unsupported review.provider: {provider}")
+    max_skills = project.get("max_skills", 3)
+    if not isinstance(max_skills, int) or max_skills < 0:
+        raise ConfigError("project.max_skills must be a non-negative integer")
 
     return Config(
         version=1,
         project=ProjectConfig(
             name=_string(project.get("name"), "project.name"),
             context_files=_strings(project.get("context_files", []), "project.context_files"),
+            skill_dirs=_strings(project.get("skill_dirs", ["skills", "skill"]), "project.skill_dirs"),
+            max_skills=max_skills,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),
