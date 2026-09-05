@@ -102,6 +102,14 @@ agent-authored work has a distinct App identity and never relies on a
 long-lived personal token. The gate fails closed unless it finds a current-head
 approval carrying the factory's machine-readable review contract.
 
+The alpha is self-hosted. Repositories controlled by one operator may share
+that operator's role Apps through centrally managed secrets. Independent
+adopters should create their own role Apps and keep their private keys; a
+public installation of somebody else's App is not sufficient because caller
+workflows must never receive that App owner's private key. A future hosted
+service can offer shared managed identities by minting tokens on the server
+side. Until then, consumer-owned Apps are the secure public-adoption path.
+
 ## Design rule
 
 The factory may define what a current, approved, evidence-backed change means.

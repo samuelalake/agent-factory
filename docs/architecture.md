@@ -50,6 +50,19 @@ The public workflow source supports cross-owner callers. Production adopters
 should pin a release tag or commit rather than `main`. Package distribution and
 an automated update path remain future options.
 
+### App credential modes
+
+The current distribution is self-hosted. One operator may reuse its Builder
+and Reviewer Apps across repositories it controls and place their credentials
+in organization or repository secrets. An independent adopter creates its own
+role Apps (for example, `Acme Builder` and `Acme Reviewer`) from the Factory's
+permission contract and owns the corresponding private keys.
+
+Making an App publicly installable does not make its private key distributable.
+A globally shared Builder or Reviewer therefore requires a hosted Factory
+service that retains the key and mints installation tokens on behalf of each
+installation. The Actions-only alpha does not claim that capability.
+
 ## Trust boundary
 
 The model produces untrusted JSON. The publisher normalizes its schema and

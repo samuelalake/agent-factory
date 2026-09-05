@@ -45,8 +45,9 @@ performing judgment or authoring work benefits from a distinct identity.
 
 Agent Factory separates those identities by role:
 
-- **Triage** interprets new work, finds related history, and makes the queue
-  actionable.
+- **Steward** maintains the readable project narrative, interprets new work,
+  finds related history, and promotes sufficiently clear concerns through the
+  Triage stage.
 - **Builder** inspects the repository, selects relevant skills, changes code,
   runs verification, and opens a pull request with evidence.
 - **Reviewer** evaluates the current head against repository decisions and
@@ -54,13 +55,13 @@ Agent Factory separates those identities by role:
 
 Separate GitHub Apps make the activity legible to people and constrain each
 role to least privilege. A reviewer does not need branch-write access. A
-builder does not need permission to approve its own change. Triage should not
+builder does not need permission to approve its own change. Steward should not
 be able to alter source code.
 
 The visual distinction is not decoration. It communicates who is acting, what
 authority the action carries, and where responsibility changes hands.
 
-These roles form a staged loop: intent enters Triage; Builder inspects and
+These roles form a staged loop: Steward carries intent through Triage; Builder inspects and
 implements; deterministic Verify jobs produce evidence; Reviewer judges the
 current head; Gate computes policy; landing and learning write durable context
 back to the repository. Build, Verify, and Review can repeat until the evidence
@@ -87,8 +88,8 @@ ready work. This is where AI should behave like a good PM: maintain structure,
 surface ambiguity, and make priority proposals that a person can cheaply
 correct.
 
-The distinction also clarifies agent authority. Triage may maintain the ledger
-and propose promotion. Builder pulls only ready items. Neither role gets to
+The distinction also clarifies agent authority. Steward may maintain the ledger
+and propose promotion through Triage. Builder pulls only ready items. Neither role gets to
 manufacture product consensus from the number of comments, labels, or agents
 that agree.
 
