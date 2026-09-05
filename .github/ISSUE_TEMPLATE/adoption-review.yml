@@ -1,0 +1,99 @@
+name: Adoption review
+description: Report a reusable Agent Factory gap found while trying it in a real repository.
+title: "adoption: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search open issues first. Update an existing issue when it describes the same continuing concern. Open a new issue only for one distinct, reusable Agent Factory gap—not for every symptom or consumer-specific bug.
+
+  - type: input
+    id: repository
+    attributes:
+      label: Repository and environment
+      description: Name the consumer repository, OS/runner, and relevant toolchain. Omit private details.
+      placeholder: public web repo; ubuntu-latest; Node 24
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted_task
+    attributes:
+      label: Task attempted
+      description: What outcome did you ask the agent to deliver?
+      placeholder: Describe the task in the same terms the agent received.
+    validations:
+      required: true
+
+  - type: textarea
+    id: adoption_path
+    attributes:
+      label: Adoption path followed
+      description: List the exact setup, configuration, commands, or workflow path used.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context_discovery
+    attributes:
+      label: Context and skills discovered
+      description: What repository guidance and skills did the role load correctly, and what relevant context did it miss?
+    validations:
+      required: true
+
+  - type: textarea
+    id: failure_boundary
+    attributes:
+      label: First failure boundary
+      description: Give the earliest incorrect state, command, log excerpt, or handoff. Prefer the first cause over later symptoms.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ownership
+    attributes:
+      label: Likely ownership
+      description: Choose the narrowest boundary supported by the evidence.
+      options:
+        - Reusable Agent Factory gap
+        - Consumer repository context or skill gap
+        - Runner, credential, or external-service gap
+        - Unclear; needs reproduction
+    validations:
+      required: true
+
+  - type: textarea
+    id: reusable_contract
+    attributes:
+      label: Missing reusable contract
+      description: What is the smallest provider- and repository-neutral capability or contract that appears to be missing?
+      placeholder: Leave explicit when the evidence points to a consumer-only fix.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Evidence and acceptance test
+      description: What fixture, command, workflow run, or observable outcome would prove the concern is fixed?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: adoption_verdict
+    attributes:
+      label: Adoption verdict
+      options:
+        - Would adopt now
+        - Would adopt after this gap is fixed
+        - Would not adopt yet
+    validations:
+      required: true
+
+  - type: textarea
+    id: verdict_reason
+    attributes:
+      label: Why
+      description: Explain the verdict, including any Mac or self-hosted runner constraint separately from the Factory itself.
+    validations:
+      required: true

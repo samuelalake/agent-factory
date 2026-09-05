@@ -111,3 +111,9 @@ deployed. Those capabilities are discovered from the adopting repository.
 Read [Architecture](docs/architecture.md) for the system boundary and
 [The repository should brief the agent](docs/the-repository-should-brief-the-agent.md)
 for the project thesis.
+
+Trying Agent Factory in another repository? Use the
+[adoption review](.github/ISSUE_TEMPLATE/adoption-review.yml) issue form. It
+asks for the first failure boundary, separates reusable Factory gaps from
+consumer context gaps, and treats an existing issue as the default place for a
+continuing concern.
