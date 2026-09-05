@@ -1,60 +1,76 @@
 # Agent Factory
 
-Agent Factory is a reusable, GitHub-native control plane for software agents.
-It separates the orchestration loop that every repository needs from the
-project adapter that only one repository understands.
+Agent Factory is a repository-native control plane for software agents. It
+gives specialized GitHub Apps a shared way to discover project context, use
+skills, exchange evidence, and move work from issue to reviewed change without
+hardcoding how any one codebase works.
 
-The control plane owns:
+The project grew out of the agent loop developed in
+[Swami](https://github.com/swamikit/swami). The reusable orchestration belongs
+here; project-specific judgment stays with the project that owns it.
+
+## The model
+
+Agent Factory separates three concerns:
+
+- **Knowledge:** repository guidance, decisions, skills, commands, and evidence
+  standards that agents discover for the task at hand.
+- **Agency:** role-specific agents for triage, implementation, and review, each
+  operating with the tools and least privilege its role requires.
+- **Policy:** deterministic state transitions and merge gates that validate
+  agent output without trusting model-authored prose.
+
+The factory owns:
 
 - event and state contracts for review, triage, build, and merge gating;
-- deterministic gate evaluation with one required `agent-factory` status;
-- safe review publishing and fail-closed degradation;
+- discovery and loading of relevant repository context and skills;
+- safe review publication and fail-closed degradation;
+- role-specific GitHub App authentication;
 - installation and versioned updates of thin caller workflows;
 - fixture-driven contract tests.
 
-Consumer repositories own:
+Each adopting repository owns:
 
 - build, test, and evidence commands;
 - protected paths and domain-specific verification;
-- prompts, context files, and project skills;
+- its instructions, decisions, context, and skills;
 - deployment and product policy.
-
-Swami is the first consumer and compatibility fixture. Its Origami parser,
-SwiftUI code generator, pixel oracle, and pattern-translation skills remain in
-Swami; they are not factory code.
 
 ## Status
 
-The repository is private while the extraction boundary and licensing are
-settled. The current private alpha implements the configuration and review
-artifact contracts, pure gate engine, GitHub review/gate adapters, reusable
-caller workflows, and an idempotent installer.
+Agent Factory is a public alpha. The current implementation includes a
+versioned configuration contract, pure priority-ordered gate, GitHub
+review/gate adapters, machine-readable review artifacts, short-lived GitHub
+App authentication, reusable caller workflows, and an idempotent installer.
 
-Private cross-owner reusable workflows are not a supported distribution path:
-a consumer outside the factory repository owner cannot use these callers while
-the factory remains private. Choose public visibility and a license, or package
-the runtime through a private registry, before migrating Swami.
+Triage and general implementation agents are the next runtime boundary. The
+alpha should be evaluated in trusted repositories before it is treated as a
+hands-off production system.
 
 ## Quick start
 
 ```bash
 python3 -m pip install -e .
-agent-factory init /path/to/consumer --factory-ref main
+agent-factory init /path/to/repository --factory-ref main
 python3 -m unittest discover -s tests -v
 ```
 
 The installer creates `.agent-factory/config.json` and thin workflows under
-`.github/workflows/`. It refuses to overwrite existing files unless `--force`
-is explicit.
+`.github/workflows/`. It preserves existing files unless `--force` is
+explicit.
 
 The review workflow requires `ANTHROPIC_API_KEY`, `AGENT_FACTORY_APP_ID`, and
 `AGENT_FACTORY_APP_PRIVATE_KEY`. It mints a short-lived installation token so
-formal reviews have a distinct App identity and never rely on a long-lived PAT.
-The gate fails closed unless it finds a current-head approval carrying the
-factory's machine-readable review contract.
+formal reviews have a distinct App identity and never rely on a long-lived
+personal token. The gate fails closed unless it finds a current-head approval
+carrying the factory's machine-readable review contract.
 
 ## Design rule
 
-The factory may know that a reviewer produced a P1. It must not know how to
-pixel-compare an Origami patch, compile an iOS target, or deploy a particular
-service. Those belong to consumer adapters.
+The factory may define what a current, approved, evidence-backed change means.
+It must not encode how a particular product is built, tested, rendered, or
+deployed. Those capabilities are discovered from the adopting repository.
+
+Read [Architecture](docs/architecture.md) for the system boundary and
+[The repository should brief the agent](docs/the-repository-should-brief-the-agent.md)
+for the project thesis.

@@ -46,12 +46,9 @@ or commit and pass repository secrets explicitly. Updating a consumer changes
 the pin; it does not copy a new generation of orchestration scripts into every
 repository.
 
-GitHub does not make a private personal repository's reusable workflows
-available to repositories owned by another account. The alpha therefore keeps
-distribution as an explicit launch decision: either publish and license the
-workflow source, or move the executable runtime to an authenticated package
-channel. Swami must not be pointed at a private cross-owner workflow that can
-never resolve.
+The public workflow source supports cross-owner callers. Production adopters
+should pin a release tag or commit rather than `main`. Package distribution and
+an automated update path remain future options.
 
 ## Trust boundary
 
@@ -63,7 +60,6 @@ presentation; it is never parsed as gate state.
 
 ## Compatibility strategy
 
-Swami remains the reference fixture until a second consumer proves the
-abstractions. A feature is generic only after it can be expressed through the
-consumer configuration or adapter protocol without mentioning Swami paths,
-Origami, SwiftUI, or the pixel oracle.
+A feature is generic only when multiple repositories can express it through
+the configuration, capability, or adapter protocol without adding project
+names or domain paths to factory code.
