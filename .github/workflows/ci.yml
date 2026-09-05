@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install package and runtime dependencies
+        run: python3 -m pip install --disable-pip-version-check -e .
       - name: Unit and syntax tests
         run: |
           PYTHONPATH=src python3 -m unittest discover -s tests -v
