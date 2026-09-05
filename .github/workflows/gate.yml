@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout consumer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: consumer
       - name: Checkout factory
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: samuelalake/agent-factory
           ref: ${{ inputs.factory_ref }}
