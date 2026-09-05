@@ -81,11 +81,10 @@ explicit.
 
 The runtime is model-agnostic: a role chooses a provider and model through
 versioned configuration, while its workflow receives a generic model
-credential. Provider choice does not change the review or gate contract. This
-The included adapters support Anthropic, Gemini, and OpenRouter. This allows
-hosted frontier models and inexpensive/free API tiers to participate without
-redesigning the loop; local and other compatible runtimes can implement the
-same boundary.
+credential. Provider choice does not change the review or gate contract. The
+included adapters for Anthropic, Gemini, and OpenRouter let hosted frontier
+models and inexpensive/free API tiers participate without redesigning the
+loop; local and other compatible runtimes can implement the same boundary.
 
 Role workflows also receive `AGENT_FACTORY_APP_ID` and
 `AGENT_FACTORY_APP_PRIVATE_KEY`. They mint short-lived installation tokens so
