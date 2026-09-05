@@ -23,6 +23,8 @@ class ReviewConfig:
     failure_marker: str
     required: bool
     max_diff_bytes: int
+    provider: str
+    model: str
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,9 @@ def parse_config(raw: dict[str, Any]) -> Config:
     max_diff = review.get("max_diff_bytes", 200_000)
     if not isinstance(max_diff, int) or max_diff < 1:
         raise ConfigError("review.max_diff_bytes must be a positive integer")
+    provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
+    if provider not in {"anthropic", "gemini", "openrouter"}:
+        raise ConfigError(f"unsupported review.provider: {provider}")
 
     return Config(
         version=1,
@@ -85,6 +90,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
             failure_marker=_string(review.get("failure_marker"), "review.failure_marker"),
             required=bool(review.get("required", True)),
             max_diff_bytes=max_diff,
+            provider=provider,
+            model=_string(review.get("model", "claude-opus-5"), "review.model"),
         ),
         gate=GateConfig(
             context=_string(gate.get("context", "agent-factory"), "gate.context"),

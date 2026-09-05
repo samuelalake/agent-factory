@@ -20,12 +20,32 @@ Agent Factory separates three concerns:
 - **Policy:** deterministic state transitions and merge gates that validate
   agent output without trusting model-authored prose.
 
+## How work moves
+
+The factory coordinates a staged loop rather than one all-powerful bot:
+
+```text
+Intent
+  → Triage: understand, de-duplicate, and route
+  → Build: inspect, plan, implement, and self-check
+  → Verify: run deterministic tests and collect evidence
+  → Review: evaluate the current head against context and evidence
+  → Gate: compute merge readiness from trusted state
+  → Land and learn: publish, record decisions, and improve repository context
+```
+
+Build and Review may cycle several times. Verify is not a model opinion: it is
+the repository's executable evidence. Gate is not another agent: it is a
+deterministic policy reducer. The role Apps make each handoff and authority
+visible without forcing every project into the same implementation procedure.
+
 The factory owns:
 
 - event and state contracts for review, triage, build, and merge gating;
 - discovery and loading of relevant repository context and skills;
 - safe review publication and fail-closed degradation;
 - role-specific GitHub App authentication;
+- model-provider adapters behind provider-neutral role contracts;
 - installation and versioned updates of thin caller workflows;
 - fixture-driven contract tests.
 
@@ -59,11 +79,19 @@ The installer creates `.agent-factory/config.json` and thin workflows under
 `.github/workflows/`. It preserves existing files unless `--force` is
 explicit.
 
-The review workflow requires `ANTHROPIC_API_KEY`, `AGENT_FACTORY_APP_ID`, and
-`AGENT_FACTORY_APP_PRIVATE_KEY`. It mints a short-lived installation token so
-formal reviews have a distinct App identity and never rely on a long-lived
-personal token. The gate fails closed unless it finds a current-head approval
-carrying the factory's machine-readable review contract.
+The runtime is model-agnostic: a role chooses a provider and model through
+versioned configuration, while its workflow receives a generic model
+credential. Provider choice does not change the review or gate contract. This
+The included adapters support Anthropic, Gemini, and OpenRouter. This allows
+hosted frontier models and inexpensive/free API tiers to participate without
+redesigning the loop; local and other compatible runtimes can implement the
+same boundary.
+
+Role workflows also receive `AGENT_FACTORY_APP_ID` and
+`AGENT_FACTORY_APP_PRIVATE_KEY`. They mint short-lived installation tokens so
+agent-authored work has a distinct App identity and never relies on a
+long-lived personal token. The gate fails closed unless it finds a current-head
+approval carrying the factory's machine-readable review contract.
 
 ## Design rule
 

@@ -5,13 +5,12 @@ import argparse
 import json
 import os
 import subprocess
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .app_auth import get_installation_token
 from .config import load_config
+from .model import complete
 from .protocol import encode_data, extract_json_reply
 
 
@@ -20,35 +19,6 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
-
-
-def _anthropic(system: str, user: str, model: str) -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY is required")
-    request = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=json.dumps({
-            "model": model,
-            "max_tokens": 8000,
-            "system": system,
-            "messages": [{"role": "user", "content": user}],
-        }).encode(),
-        headers={
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:2000]
-        raise RuntimeError(f"Anthropic HTTP {exc.code}: {detail}") from exc
-    blocks = payload.get("content") or []
-    return "".join(str(block.get("text") or "") for block in blocks if block.get("type") == "text")
 
 
 def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
@@ -108,7 +78,14 @@ def format_body(marker: str, head_sha: str, review: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(repo: str, pr: str, root: Path, config_path: Path, model: str) -> None:
+def run(
+    repo: str,
+    pr: str,
+    root: Path,
+    config_path: Path,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> None:
     # A distinct App identity is required for a formal approval that can gate a
     # consumer pull request. Keep its short-lived token out of files and logs.
     os.environ["GH_TOKEN"] = get_installation_token(repo)
@@ -133,7 +110,10 @@ def run(repo: str, pr: str, root: Path, config_path: Path, model: str) -> None:
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
         f"## Diff\n\n```diff\n{diff}\n```",
     ])
-    raw = normalize_review(extract_json_reply(_anthropic(system, user, model)))
+    provider = provider_override or config.review.provider
+    model = model_override or config.review.model
+    reply = complete(provider, model, system, user, os.environ.get("MODEL_API_KEY", ""))
+    raw = normalize_review(extract_json_reply(reply))
     if omitted:
         raw["approve"] = False
         raw["findings"].insert(0, {
@@ -153,9 +133,10 @@ def main() -> int:
     parser.add_argument("--pr", required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--model", default=os.environ.get("AGENT_FACTORY_REVIEW_MODEL", "claude-opus-5"))
+    parser.add_argument("--provider")
+    parser.add_argument("--model")
     args = parser.parse_args()
-    run(args.repo, args.pr, args.root, args.config, args.model)
+    run(args.repo, args.pr, args.root, args.config, args.provider, args.model)
     return 0
 
 

@@ -10,7 +10,7 @@ on:
         required: true
         type: string
     secrets:
-      ANTHROPIC_API_KEY:
+      MODEL_API_KEY:
         required: true
       AGENT_FACTORY_APP_ID:
         required: true
@@ -37,7 +37,7 @@ jobs:
           path: factory
       - name: Review current pull request
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
           AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_APP_ID }}
           AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-

@@ -60,6 +60,26 @@ be able to alter source code.
 The visual distinction is not decoration. It communicates who is acting, what
 authority the action carries, and where responsibility changes hands.
 
+These roles form a staged loop: intent enters Triage; Builder inspects and
+implements; deterministic Verify jobs produce evidence; Reviewer judges the
+current head; Gate computes policy; landing and learning write durable context
+back to the repository. Build, Verify, and Review can repeat until the evidence
+and current-head verdict agree.
+
+## Models are adapters
+
+No role should be synonymous with one model vendor. A provider is an execution
+adapter selected for capability, cost, latency, and availability. The role's
+mission, repository context, tools, permissions, output contract, and gate
+semantics remain stable when the model changes.
+
+That makes model choice explicit rather than accidental. A cheaper or free-tier
+model can serve routine work; a stronger model can handle riskier changes. A
+future fallback policy can change adapters between attempts without changing
+the role contract. The artifact should record which provider served the run,
+while policy evaluates the normalized result rather than granting a vendor
+special authority.
+
 ## Models propose; policy decides
 
 Agent output is untrusted, even when it is useful. A model can summarize a
