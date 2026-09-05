@@ -66,6 +66,32 @@ current head; Gate computes policy; landing and learning write durable context
 back to the repository. Build, Verify, and Review can repeat until the evidence
 and current-head verdict agree.
 
+## Orchestration needs a PM, not an issue firehose
+
+Turning every sentence into an issue confuses capture with commitment. It
+produces a busy tracker whose units follow the rhythm of conversation rather
+than the shape of the work. The failure is not that issues are too formal. It
+is that nobody edited the incoming material into a coherent project story.
+
+The Factory therefore puts a stewardship step before Triage. Feedback first
+updates a human-readable ledger: one continuing concern per row or record,
+with current status, recent change, evidence, unresolved decisions, and links
+to execution. The ledger can be a document table, a project view, a repository
+file, or an issue-backed view. The storage is an adapter. The requirement is
+that the project names one readable source of truth.
+
+Only distinct, actionable concerns are promoted into issues. Repeated evidence
+updates the existing concern. Related concerns merge. Overloaded concerns
+split. Questions and speculative ideas remain visible without pretending to be
+ready work. This is where AI should behave like a good PM: maintain structure,
+surface ambiguity, and make priority proposals that a person can cheaply
+correct.
+
+The distinction also clarifies agent authority. Triage may maintain the ledger
+and propose promotion. Builder pulls only ready items. Neither role gets to
+manufacture product consensus from the number of comments, labels, or agents
+that agree.
+
 ## Models are adapters
 
 No role should be synonymous with one model vendor. A provider is an execution
