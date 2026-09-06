@@ -37,6 +37,8 @@ class BuilderTests(unittest.TestCase):
             "HOME": "/tmp/home",
             "GEMINI_API_KEY": "gemini",
             "NVIDIA_API_KEY": "nvidia",
+            "MINIMAX_API_KEY": "minimax",
+            "OPENROUTER_API_KEY": "openrouter",
             "GH_TOKEN": "github",
             "AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY": "private",
         }
@@ -45,6 +47,8 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(safe["GEMINI_API_KEY"], "gemini")
         self.assertEqual(safe["GEMINI_CLI_TRUST_WORKSPACE"], "true")
         self.assertNotIn("NVIDIA_API_KEY", safe)
+        self.assertNotIn("MINIMAX_API_KEY", safe)
+        self.assertNotIn("OPENROUTER_API_KEY", safe)
         self.assertNotIn("GH_TOKEN", safe)
         self.assertFalse(any("PRIVATE_KEY" in key for key in safe))
 

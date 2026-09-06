@@ -95,7 +95,9 @@ jobs:
       gemini_cli_version: 0.55.1
     secrets:
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
+      MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}
       NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
+      OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
       AGENT_FACTORY_BUILDER_APP_ID: ${{{{ secrets.AGENT_FACTORY_BUILDER_APP_ID }}}}
       AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}}}
 """
@@ -144,6 +146,7 @@ def default_config(project_name: str) -> dict:
         },
         "builder": {
             "marker": "<!-- builder:agent-factory -->",
+            "provider": "gemini",
             "harness": "gemini-cli",
             "model": "gemini-3.6-flash",
             "cli_version": "0.55.1",
@@ -154,6 +157,9 @@ def default_config(project_name: str) -> dict:
             "fallback_provider": "nvidia",
             "fallback_model": "moonshotai/kimi-k3",
             "max_model_requests": 40,
+            "max_model_cost_usd": 3.0,
+            "input_cost_per_million": 0.0,
+            "output_cost_per_million": 0.0,
         },
         "review": {
             "marker": "<!-- reviewer:agent-factory -->",

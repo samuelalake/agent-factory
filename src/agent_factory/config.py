@@ -42,6 +42,7 @@ class StewardConfig:
 @dataclass(frozen=True)
 class BuilderConfig:
     marker: str
+    provider: str
     harness: str
     model: str
     cli_version: str
@@ -52,6 +53,9 @@ class BuilderConfig:
     fallback_provider: str | None
     fallback_model: str | None
     max_model_requests: int
+    max_model_cost_usd: float
+    input_cost_per_million: float
+    output_cost_per_million: float
 
 
 @dataclass(frozen=True)
@@ -141,13 +145,34 @@ def parse_config(raw: dict[str, Any]) -> Config:
     max_model_requests = builder.get("max_model_requests", 40)
     if not isinstance(max_model_requests, int) or max_model_requests < 1:
         raise ConfigError("builder.max_model_requests must be a positive integer")
+    max_model_cost_usd = builder.get("max_model_cost_usd", 3.0)
+    input_cost_per_million = builder.get("input_cost_per_million", 0.0)
+    output_cost_per_million = builder.get("output_cost_per_million", 0.0)
+    for value, path in (
+        (max_model_cost_usd, "builder.max_model_cost_usd"),
+        (input_cost_per_million, "builder.input_cost_per_million"),
+        (output_cost_per_million, "builder.output_cost_per_million"),
+    ):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            raise ConfigError(f"{path} must be a non-negative number")
+    if max_model_cost_usd <= 0:
+        raise ConfigError("builder.max_model_cost_usd must be greater than zero")
+    builder_provider = _string(builder.get("provider", "gemini"), "builder.provider").lower()
+    if builder_provider not in {"gemini", "minimax", "nvidia", "openrouter"}:
+        raise ConfigError(f"unsupported builder.provider: {builder_provider}")
+    builder_harness = _string(builder.get("harness", "gemini-cli"), "builder.harness")
+    expected_harness = "gemini-cli" if builder_provider == "gemini" else "openai-compatible"
+    if builder_harness != expected_harness:
+        raise ConfigError(
+            f"builder.harness must be {expected_harness!r} for provider {builder_provider!r}"
+        )
     builder_fallback_provider = builder.get("fallback_provider", "nvidia")
     builder_fallback_model = builder.get("fallback_model", "moonshotai/kimi-k3")
     if (builder_fallback_provider is None) != (builder_fallback_model is None):
         raise ConfigError("builder.fallback_provider and builder.fallback_model must be set together")
     if builder_fallback_provider is not None:
         builder_fallback_provider = _string(builder_fallback_provider, "builder.fallback_provider").lower()
-        if builder_fallback_provider not in supported_providers:
+        if builder_fallback_provider not in {"minimax", "nvidia", "openrouter"}:
             raise ConfigError(f"unsupported builder.fallback_provider: {builder_fallback_provider}")
         builder_fallback_model = _string(builder_fallback_model, "builder.fallback_model")
     integration_mode = _string(
@@ -180,7 +205,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
             marker=_string(
                 builder.get("marker", "<!-- builder:agent-factory -->"), "builder.marker"
             ),
-            harness=_string(builder.get("harness", "gemini-cli"), "builder.harness"),
+            provider=builder_provider,
+            harness=builder_harness,
             model=_string(builder.get("model", "gemini-3.6-flash"), "builder.model"),
             cli_version=_string(builder.get("cli_version", "0.55.1"), "builder.cli_version"),
             timeout_seconds=timeout_seconds,
@@ -192,6 +218,9 @@ def parse_config(raw: dict[str, Any]) -> Config:
             fallback_provider=builder_fallback_provider,
             fallback_model=builder_fallback_model,
             max_model_requests=max_model_requests,
+            max_model_cost_usd=float(max_model_cost_usd),
+            input_cost_per_million=float(input_cost_per_million),
+            output_cost_per_million=float(output_cost_per_million),
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),

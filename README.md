@@ -99,16 +99,23 @@ verification still belong in each adopting repository.
 
 The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
-not change the review or gate contract. The included adapters cover Anthropic,
-Gemini, NVIDIA's OpenAI-compatible endpoint, and OpenRouter. The generated
-configuration starts with Gemini and falls back to NVIDIA Kimi; both are
-quota-limited services, so the review records the provider and model that
-actually served the run instead of implying that a free tier is unlimited.
+not change the review or gate contract. Builder supports Gemini CLI plus bounded
+OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter; Reviewer also
+supports Anthropic. The generated configuration starts with Gemini and falls
+back to NVIDIA Kimi; both are quota-limited services, so the delivery record
+names the provider and model that actually served the run instead of implying
+that a free tier is unlimited.
 
-Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY` and
-`NVIDIA_API_KEY`. `MODEL_API_KEY` remains available for a single-provider
-caller, but a fallback setup should use the named secrets so credentials can
-never be sent to the wrong provider.
+Builder configuration can also set `max_model_requests`,
+`max_model_cost_usd`, `input_cost_per_million`, and
+`output_cost_per_million`. The cost ceiling is calculated from provider-reported
+token usage. Keep a provider-side account or key budget as the authoritative
+hard stop because a response is billed before its usage can be evaluated.
+
+Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
+`MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`
+remains available for a single-provider caller, but a fallback setup should use
+the named secrets so credentials can never be sent to the wrong provider.
 
 Role workflows receive dedicated `AGENT_FACTORY_STEWARD_*`,
 `AGENT_FACTORY_BUILDER_*`, and `AGENT_FACTORY_REVIEWER_*` credentials. They mint

@@ -14,7 +14,7 @@ from typing import Any
 from .config import Config, load_config
 from .context import discover_context
 from .protocol import encode_data
-from .nvidia_builder import NvidiaBuilderError, run_nvidia_builder
+from .nvidia_builder import API_KEY_ENV, NvidiaBuilderError, run_openai_builder
 
 
 class BuilderBlocked(RuntimeError):
@@ -226,8 +226,6 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     if not token:
         raise RuntimeError("GH_TOKEN must be a Builder App installation token")
     config = load_config(config_path)
-    if config.builder.harness != "gemini-cli":
-        raise RuntimeError(f"unsupported builder harness: {config.builder.harness}")
     issue = json.loads(
         _gh(
             ["issue", "view", issue_number, "--repo", repo, "--json", "number,title,body,state"],
@@ -254,35 +252,59 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     prompt = build_prompt(config, issue, root)
     harness = config.builder.harness
     model = config.builder.model
-    try:
-        output = _run_gemini(
+    estimated_cost: float | None = None
+
+    def run_compatible(provider: str, selected_model: str) -> tuple[str, int, float]:
+        secret_name = API_KEY_ENV.get(provider)
+        if secret_name is None:
+            raise NvidiaBuilderError(f"unsupported Builder provider: {provider}")
+        return run_openai_builder(
             prompt,
-            root=root,
-            model=config.builder.model,
+            root,
+            provider=provider,
+            model=selected_model,
+            api_key=os.environ.get(secret_name, ""),
+            max_requests=config.builder.max_model_requests,
             timeout_seconds=config.builder.timeout_seconds,
+            max_cost_usd=config.builder.max_model_cost_usd,
+            input_cost_per_million=config.builder.input_cost_per_million,
+            output_cost_per_million=config.builder.output_cost_per_million,
         )
-        response, tool_calls = parse_gemini_stream(output)
-    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        if config.builder.fallback_provider != "nvidia" or not config.builder.fallback_model:
-            raise BuilderBlocked(f"Gemini CLI failed: {exc}") from exc
-        if _run(["git", "status", "--porcelain"], cwd=root).strip():
-            raise BuilderBlocked(
-                f"Gemini CLI failed after modifying the workspace; fallback was not mixed into partial work: {exc}"
-            ) from exc
-        try:
-            response, tool_calls = run_nvidia_builder(
+
+    try:
+        if config.builder.provider == "gemini":
+            if config.builder.harness != "gemini-cli":
+                raise RuntimeError(f"unsupported Gemini harness: {config.builder.harness}")
+            output = _run_gemini(
                 prompt,
-                root,
-                model=config.builder.fallback_model,
-                api_key=os.environ.get("NVIDIA_API_KEY", ""),
-                max_requests=config.builder.max_model_requests,
+                root=root,
+                model=config.builder.model,
                 timeout_seconds=config.builder.timeout_seconds,
             )
-            harness = "nvidia-tool-loop"
+            response, tool_calls = parse_gemini_stream(output)
+        else:
+            response, tool_calls, estimated_cost = run_compatible(
+                config.builder.provider, config.builder.model
+            )
+            harness = "openai-compatible-tool-loop"
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, NvidiaBuilderError) as exc:
+        if not config.builder.fallback_provider or not config.builder.fallback_model:
+            raise BuilderBlocked(f"{config.builder.provider} Builder failed: {exc}") from exc
+        if _run(["git", "status", "--porcelain"], cwd=root).strip():
+            raise BuilderBlocked(
+                f"{config.builder.provider} Builder failed after modifying the workspace; "
+                f"fallback was not mixed into partial work: {exc}"
+            ) from exc
+        try:
+            response, tool_calls, estimated_cost = run_compatible(
+                config.builder.fallback_provider, config.builder.fallback_model
+            )
+            harness = "openai-compatible-tool-loop"
             model = config.builder.fallback_model
         except NvidiaBuilderError as fallback_exc:
             raise BuilderBlocked(
-                f"Gemini CLI failed: {exc}; NVIDIA fallback failed: {fallback_exc}"
+                f"{config.builder.provider} Builder failed: {exc}; "
+                f"{config.builder.fallback_provider} fallback failed: {fallback_exc}"
             ) from fallback_exc
 
     if "BUILDER_BLOCKED:" in response:
@@ -317,6 +339,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 f"- Harness: `{harness}`",
                 f"- Model: `{model}`",
                 f"- Repository tool calls: `{tool_calls}`",
+                f"- Estimated model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
                 "- Verification: repository workflows run on this pull request",
                 "",
             ]

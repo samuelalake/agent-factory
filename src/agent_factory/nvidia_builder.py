@@ -1,4 +1,4 @@
-"""Bounded OpenAI-compatible tool loop for NVIDIA-hosted Builder fallbacks."""
+"""Bounded OpenAI-compatible Builder loop for hosted model providers."""
 
 from __future__ import annotations
 
@@ -13,7 +13,17 @@ import urllib.error
 import urllib.request
 
 
-ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
+ENDPOINTS = {
+    "minimax": "https://api.minimax.io/v1/chat/completions",
+    "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+}
+API_KEY_ENV = {
+    "minimax": "MINIMAX_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+ENDPOINT = ENDPOINTS["nvidia"]
 TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 _BLOCKED_COMMANDS = re.compile(
     r"(?:^|[;&|]\s*)(?:sudo|gh|ssh|scp)\b|git\s+push\b|rm\s+-[A-Za-z]*r[A-Za-z]*f\b|"
@@ -124,7 +134,17 @@ def _tools() -> list[dict[str, Any]]:
     ]
 
 
-def _post(model: str, messages: list[dict[str, Any]], api_key: str, timeout: int) -> dict[str, Any]:
+def _post(
+    model: str,
+    messages: list[dict[str, Any]],
+    api_key: str,
+    timeout: int,
+    *,
+    provider: str = "nvidia",
+) -> dict[str, Any]:
+    endpoint = ENDPOINTS.get(provider)
+    if endpoint is None:
+        raise NvidiaBuilderError(f"unsupported OpenAI-compatible provider: {provider}")
     payload = {
         "model": model,
         "messages": messages,
@@ -135,7 +155,7 @@ def _post(model: str, messages: list[dict[str, Any]], api_key: str, timeout: int
         "stream": False,
     }
     request = urllib.request.Request(
-        ENDPOINT,
+        endpoint,
         data=json.dumps(payload).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
@@ -147,7 +167,7 @@ def _post(model: str, messages: list[dict[str, Any]], api_key: str, timeout: int
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:1000]
             if exc.code not in TRANSIENT_HTTP_CODES or attempt == 2:
-                raise NvidiaBuilderError(f"NVIDIA HTTP {exc.code}: {detail}") from exc
+                raise NvidiaBuilderError(f"{provider} HTTP {exc.code}: {detail}") from exc
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
             try:
                 delay = int(float(retry_after)) if retry_after else 30 * (attempt + 1)
@@ -155,39 +175,67 @@ def _post(model: str, messages: list[dict[str, Any]], api_key: str, timeout: int
                 delay = 30 * (attempt + 1)
             time.sleep(max(1, min(delay, 60)))
         except urllib.error.URLError as exc:
-            raise NvidiaBuilderError(f"NVIDIA endpoint unreachable: {exc.reason}") from exc
-    raise NvidiaBuilderError("NVIDIA retry loop exhausted")
+            raise NvidiaBuilderError(f"{provider} endpoint unreachable: {exc.reason}") from exc
+    raise NvidiaBuilderError(f"{provider} retry loop exhausted")
 
 
-def run_nvidia_builder(
+def run_openai_builder(
     prompt: str,
     root: Path,
     *,
+    provider: str,
     model: str,
     api_key: str,
     max_requests: int,
     timeout_seconds: int,
-) -> tuple[str, int]:
+    max_cost_usd: float,
+    input_cost_per_million: float,
+    output_cost_per_million: float,
+) -> tuple[str, int, float]:
+    secret_name = API_KEY_ENV.get(provider)
+    if secret_name is None:
+        raise NvidiaBuilderError(f"unsupported OpenAI-compatible provider: {provider}")
     if not api_key:
-        raise NvidiaBuilderError("NVIDIA_API_KEY is unavailable")
+        raise NvidiaBuilderError(f"{secret_name} is unavailable")
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     deadline = time.monotonic() + timeout_seconds
     tool_count = 0
+    prompt_tokens = 0
+    completion_tokens = 0
     for _ in range(max_requests):
         remaining = int(deadline - time.monotonic())
         if remaining <= 0:
-            raise NvidiaBuilderError("NVIDIA Builder exceeded its time budget")
-        response = _post(model, messages, api_key, min(300, remaining))
+            raise NvidiaBuilderError(f"{provider} Builder exceeded its time budget")
+        response = _post(
+            model, messages, api_key, min(300, remaining), provider=provider
+        )
+        usage = response.get("usage") or {}
+        if (input_cost_per_million or output_cost_per_million) and not usage:
+            raise NvidiaBuilderError(
+                f"{provider} omitted token usage required for cost enforcement"
+            )
+        prompt_tokens += int(usage.get("prompt_tokens") or 0)
+        completion_tokens += int(usage.get("completion_tokens") or 0)
+        estimated_cost = (
+            prompt_tokens * input_cost_per_million
+            + completion_tokens * output_cost_per_million
+        ) / 1_000_000
+        if estimated_cost > max_cost_usd:
+            raise NvidiaBuilderError(
+                f"{provider} Builder exceeded its ${max_cost_usd:.2f} estimated cost limit"
+            )
         choices = response.get("choices") or []
         if not choices:
-            raise NvidiaBuilderError("NVIDIA returned no choices")
+            raise NvidiaBuilderError(f"{provider} returned no choices")
         assistant = choices[0].get("message") or {}
         messages.append(assistant)
         calls = assistant.get("tool_calls") or []
         if not calls:
             if tool_count < 1:
-                raise NvidiaBuilderError("NVIDIA Builder returned without using repository tools")
-            return str(assistant.get("content") or ""), tool_count
+                raise NvidiaBuilderError(
+                    f"{provider} Builder returned without using repository tools"
+                )
+            return str(assistant.get("content") or ""), tool_count, estimated_cost
         for call in calls:
             function = call.get("function") or {}
             name = str(function.get("name") or "")
@@ -207,4 +255,28 @@ def run_nvidia_builder(
                     "content": json.dumps(result),
                 }
             )
-    raise NvidiaBuilderError(f"NVIDIA Builder exceeded {max_requests} model requests")
+    raise NvidiaBuilderError(f"{provider} Builder exceeded {max_requests} model requests")
+
+
+def run_nvidia_builder(
+    prompt: str,
+    root: Path,
+    *,
+    model: str,
+    api_key: str,
+    max_requests: int,
+    timeout_seconds: int,
+) -> tuple[str, int]:
+    response, tool_count, _ = run_openai_builder(
+        prompt,
+        root,
+        provider="nvidia",
+        model=model,
+        api_key=api_key,
+        max_requests=max_requests,
+        timeout_seconds=timeout_seconds,
+        max_cost_usd=float("inf"),
+        input_cost_per_million=0,
+        output_cost_per_million=0,
+    )
+    return response, tool_count
