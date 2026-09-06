@@ -14,6 +14,7 @@ import urllib.request
 
 
 ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
+TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 _BLOCKED_COMMANDS = re.compile(
     r"(?:^|[;&|]\s*)(?:sudo|gh|ssh|scp)\b|git\s+push\b|rm\s+-[A-Za-z]*r[A-Za-z]*f\b|"
     r"(?:printenv|env)\b|/proc/(?:self|[0-9]+)/environ",
@@ -145,7 +146,7 @@ def _post(model: str, messages: list[dict[str, Any]], api_key: str, timeout: int
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:1000]
-            if exc.code != 429 or attempt == 2:
+            if exc.code not in TRANSIENT_HTTP_CODES or attempt == 2:
                 raise NvidiaBuilderError(f"NVIDIA HTTP {exc.code}: {detail}") from exc
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
             try:
