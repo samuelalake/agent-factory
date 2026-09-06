@@ -10,6 +10,12 @@ REVIEW_CALLER = """name: agent-review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review again
+        required: true
+        type: string
 permissions:
   actions: read
   checks: read
@@ -19,9 +25,10 @@ permissions:
   statuses: write
 jobs:
   review:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == false
     uses: samuelalake/agent-factory/.github/workflows/review.yml@{factory_ref}
     with:
-      pr: ${{{{ github.event.pull_request.number }}}}
+      pr: ${{{{ format('{{0}}', github.event.pull_request.number || inputs.pr) }}}}
       factory_ref: {factory_ref}
     secrets:
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
@@ -32,7 +39,7 @@ jobs:
     needs: review
     uses: samuelalake/agent-factory/.github/workflows/integration.yml@{factory_ref}
     with:
-      pr: ${{{{ github.event.pull_request.number }}}}
+      pr: ${{{{ format('{{0}}', github.event.pull_request.number || inputs.pr) }}}}
       factory_ref: {factory_ref}
       timeout_seconds: 1800
     secrets:
@@ -49,7 +56,7 @@ on:
       issue:
         description: Issue number
         required: true
-        type: number
+        type: string
 permissions:
   contents: read
 jobs:
@@ -57,7 +64,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ready' || github.event.label.name == 'agent:steward' || github.event.label.name == 'agent:retry'
     uses: samuelalake/agent-factory/.github/workflows/steward.yml@{factory_ref}
     with:
-      issue: ${{{{ github.event.issue.number || inputs.issue }}}}
+      issue: ${{{{ format('{{0}}', github.event.issue.number || inputs.issue) }}}}
       factory_ref: {factory_ref}
     secrets:
       AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
@@ -73,7 +80,7 @@ on:
       issue:
         description: Issue number
         required: true
-        type: number
+        type: string
 permissions:
   contents: read
 jobs:
@@ -81,7 +88,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:builder'
     uses: samuelalake/agent-factory/.github/workflows/builder.yml@{factory_ref}
     with:
-      issue: ${{{{ github.event.issue.number || inputs.issue }}}}
+      issue: ${{{{ format('{{0}}', github.event.issue.number || inputs.issue) }}}}
       factory_ref: {factory_ref}
       runner: ubuntu-latest
       base_ref: main
@@ -104,7 +111,7 @@ on:
       pr:
         description: Pull request number
         required: true
-        type: number
+        type: string
 permissions:
   contents: read
   pull-requests: read
@@ -114,7 +121,7 @@ jobs:
   gate:
     uses: samuelalake/agent-factory/.github/workflows/gate.yml@{factory_ref}
     with:
-      pr: ${{{{ github.event.pull_request.number || inputs.pr }}}}
+      pr: ${{{{ format('{{0}}', github.event.pull_request.number || inputs.pr) }}}}
       factory_ref: {factory_ref}
     secrets: inherit
 """

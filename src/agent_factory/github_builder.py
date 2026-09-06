@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -54,7 +55,17 @@ def _safe_agent_env() -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if key in allowed}
     env["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY", "")
     env["GEMINI_SANDBOX"] = "false"
+    # Hosted runners are disposable checkouts. Gemini CLI otherwise downgrades
+    # YOLO to interactive approval and refuses to run in headless CI.
+    env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
     return env
+
+
+def _clean_detail(value: str) -> str:
+    """Keep issue status concise and free of terminal control sequences."""
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    lines = list(dict.fromkeys(line.strip() for line in clean.splitlines() if line.strip()))
+    return "\n".join(lines)[-2000:]
 
 
 def parse_gemini_stream(output: str) -> tuple[str, int]:
@@ -300,9 +311,17 @@ def main() -> int:
         run(args.repo, args.issue, args.root, args.config)
     except (BuilderBlocked, RuntimeError, subprocess.TimeoutExpired) as exc:
         config = load_config(args.config)
-        detail = str(exc)[:2000]
+        detail = _clean_detail(str(exc))
         body = format_issue_status(config.builder.marker, args.issue, "blocked", detail)
         _upsert_issue_comment(args.repo, args.issue, config.builder.marker, body, root=args.root)
+        _gh(
+            [
+                "label", "create", "agent:steward", "--repo", args.repo,
+                "--color", "8250DF", "--description", "Builder needs Steward routing",
+                "--force",
+            ],
+            cwd=args.root,
+        )
         _gh(["issue", "edit", args.issue, "--repo", args.repo, "--add-label", "agent:steward"], cwd=args.root)
         try:
             _gh(

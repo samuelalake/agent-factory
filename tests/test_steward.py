@@ -40,7 +40,10 @@ class StewardTests(unittest.TestCase):
             state = run("owner/repo", "83", self._config(Path(tmp)))
 
         self.assertEqual(state, "dispatched")
-        self.assertTrue(any(args[:2] == ["label", "create"] for args in calls))
+        created = [args[2] for args in calls if args[:2] == ["label", "create"]]
+        self.assertIn("agent:steward", created)
+        self.assertIn("agent:retry", created)
+        self.assertIn("agent:builder", created)
         self.assertTrue(any("--add-label" in args and "agent:builder" in args for args in calls))
 
     def test_blocked_builder_waits_until_retry_label(self) -> None:
@@ -66,7 +69,9 @@ class StewardTests(unittest.TestCase):
         blocked_state, blocked_calls = exercise(["ready", "agent:steward"])
         retry_state, retry_calls = exercise(["ready", "agent:steward", "agent:retry"])
         self.assertEqual(blocked_state, "blocked")
-        self.assertFalse(any(args[:2] == ["label", "create"] for args in blocked_calls))
+        self.assertFalse(
+            any("--add-label" in args and "agent:builder" in args for args in blocked_calls)
+        )
         self.assertEqual(retry_state, "dispatched")
         self.assertTrue(any(args[:2] == ["label", "create"] for args in retry_calls))
 
