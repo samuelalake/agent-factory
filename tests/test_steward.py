@@ -75,6 +75,22 @@ class StewardTests(unittest.TestCase):
         self.assertEqual(retry_state, "dispatched")
         self.assertTrue(any(args[:2] == ["label", "create"] for args in retry_calls))
 
+        redispatch_state, redispatch_calls = exercise(
+            ["ready", "agent:steward", "agent:retry", "agent:builder"]
+        )
+        self.assertEqual(redispatch_state, "dispatched")
+        remove_index = next(
+            index
+            for index, args in enumerate(redispatch_calls)
+            if "--remove-label" in args and "agent:builder" in args
+        )
+        add_index = next(
+            index
+            for index, args in enumerate(redispatch_calls)
+            if "--add-label" in args and "agent:builder" in args
+        )
+        self.assertLess(remove_index, add_index)
+
 
 if __name__ == "__main__":
     unittest.main()

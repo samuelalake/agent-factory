@@ -118,6 +118,19 @@ def run(repo: str, issue: str, config_path: Path) -> str:
                 "The issue is open and ready. Builder is assigned from the configured base "
                 "branch; implementation and verification remain repository-owned."
             )
+            # A failed Builder may leave its dispatch label attached. GitHub
+            # emits no labeled event when an already-present label is added,
+            # so a retry must remove that stale edge before re-adding it.
+            if (
+                config.steward.retry_label in labels
+                and config.steward.dispatch_label in labels
+            ):
+                _gh(
+                    [
+                        "issue", "edit", issue, "--repo", repo,
+                        "--remove-label", config.steward.dispatch_label,
+                    ]
+                )
             _gh(
                 [
                     "label", "create", config.steward.dispatch_label, "--repo", repo,
