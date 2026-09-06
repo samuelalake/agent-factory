@@ -45,9 +45,11 @@ performing judgment or authoring work benefits from a distinct identity.
 
 Agent Factory separates those identities by role:
 
-- **Steward** maintains the readable project narrative, interprets new work,
-  finds related history, and promotes sufficiently clear concerns through the
-  Triage stage.
+- **Steward** acts as the engineering and integration manager: it maintains the
+  readable project narrative, qualifies and dispatches work, routes blockers
+  and review findings, admits healthy changes to an integration lane, and
+  authorizes policy-based promotion without editing source or reviewing its own
+  work.
 - **Builder** inspects the repository, selects relevant skills, changes code,
   runs verification, and opens a pull request with evidence.
 - **Reviewer** evaluates the current head against repository decisions and
@@ -61,9 +63,10 @@ be able to alter source code.
 The visual distinction is not decoration. It communicates who is acting, what
 authority the action carries, and where responsibility changes hands.
 
-These roles form a staged loop: Steward carries intent through Triage; Builder inspects and
+These roles form a staged loop: Steward carries intent through intake and integration; Builder inspects and
 implements; deterministic Verify jobs produce evidence; Reviewer judges the
-current head; Gate computes policy; landing and learning write durable context
+current head; Gate computes policy; deterministic integration and landing
+apply Steward's readiness decision; learning writes durable context
 back to the repository. Build, Verify, and Review can repeat until the evidence
 and current-head verdict agree.
 
@@ -74,7 +77,7 @@ produces a busy tracker whose units follow the rhythm of conversation rather
 than the shape of the work. The failure is not that issues are too formal. It
 is that nobody edited the incoming material into a coherent project story.
 
-The Factory therefore puts a stewardship step before Triage. Feedback first
+The Factory therefore puts stewardship before dispatch. Feedback first
 updates a human-readable ledger: one continuing concern per row or record,
 with current status, recent change, evidence, unresolved decisions, and links
 to execution. The ledger can be a document table, a project view, a repository
@@ -89,7 +92,7 @@ surface ambiguity, and make priority proposals that a person can cheaply
 correct.
 
 The distinction also clarifies agent authority. Steward may maintain the ledger
-and propose promotion through Triage. Builder pulls only ready items. Neither role gets to
+and authorize dispatch and integration. Builder pulls only ready items. Neither role gets to
 manufacture product consensus from the number of comments, labels, or agents
 that agree.
 

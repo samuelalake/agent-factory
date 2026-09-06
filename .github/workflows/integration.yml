@@ -1,0 +1,67 @@
+name: reusable-agent-integration
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        required: true
+        type: number
+      factory_ref:
+        required: true
+        type: string
+      timeout_seconds:
+        required: false
+        type: number
+        default: 1800
+    secrets:
+      AGENT_FACTORY_STEWARD_APP_ID:
+        required: true
+      AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    concurrency:
+      group: agent-factory-integration-${{ github.repository }}-${{ inputs.pr }}
+      cancel-in-progress: true
+    steps:
+      - name: Mint Steward installation token
+        id: steward-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Checkout consumer
+        uses: actions/checkout@v7
+        with:
+          path: consumer
+          persist-credentials: false
+      - name: Checkout factory
+        uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - name: Validate integrated state and authorize landing
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_TOKEN: ${{ steps.steward-token.outputs.token }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_integration
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --config consumer/.agent-factory/config.json
+          --timeout-seconds "${{ inputs.timeout_seconds }}"

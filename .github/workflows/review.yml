@@ -21,9 +21,13 @@ on:
       OPENROUTER_API_KEY:
         required: false
       AGENT_FACTORY_APP_ID:
-        required: true
+        required: false
       AGENT_FACTORY_APP_PRIVATE_KEY:
-        required: true
+        required: false
+      AGENT_FACTORY_REVIEWER_APP_ID:
+        required: false
+      AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -50,8 +54,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_APP_ID }}
-          AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
+          AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_ID || secrets.AGENT_FACTORY_APP_ID }}
+          AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY || secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-
           python3 -m pip install --disable-pip-version-check 'PyJWT[crypto]>=2.8,<3' &&
           PYTHONPATH=factory/src python3 -m agent_factory.github_review

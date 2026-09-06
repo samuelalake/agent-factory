@@ -32,6 +32,38 @@ class ReviewConfig:
 
 
 @dataclass(frozen=True)
+class StewardConfig:
+    marker: str
+    ready_labels: tuple[str, ...]
+    dispatch_label: str
+    retry_label: str
+
+
+@dataclass(frozen=True)
+class BuilderConfig:
+    marker: str
+    harness: str
+    model: str
+    cli_version: str
+    timeout_seconds: int
+    branch_prefix: str
+    base_branch: str
+    runner: str
+    fallback_provider: str | None
+    fallback_model: str | None
+    max_model_requests: int
+
+
+@dataclass(frozen=True)
+class IntegrationConfig:
+    marker: str
+    status_context: str
+    environment: str
+    mode: str
+    automatic_promotion: bool
+
+
+@dataclass(frozen=True)
 class GateConfig:
     context: str
     required_checks: tuple[str, ...]
@@ -42,7 +74,10 @@ class GateConfig:
 class Config:
     version: int
     project: ProjectConfig
+    steward: StewardConfig
+    builder: BuilderConfig
     review: ReviewConfig
+    integration: IntegrationConfig
     gate: GateConfig
 
 
@@ -65,7 +100,7 @@ def _strings(value: Any, path: str) -> tuple[str, ...]:
 
 
 def parse_config(raw: dict[str, Any]) -> Config:
-    allowed = {"version", "project", "review", "gate"}
+    allowed = {"version", "project", "steward", "builder", "review", "integration", "gate"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ConfigError(f"unknown top-level keys: {', '.join(unknown)}")
@@ -74,7 +109,10 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError(f"unsupported config version: {version!r}")
 
     project = _mapping(raw.get("project"), "project")
+    steward = _mapping(raw.get("steward", {}), "steward")
+    builder = _mapping(raw.get("builder", {}), "builder")
     review = _mapping(raw.get("review"), "review")
+    integration = _mapping(raw.get("integration", {}), "integration")
     gate = _mapping(raw.get("gate"), "gate")
     max_diff = review.get("max_diff_bytes", 200_000)
     if not isinstance(max_diff, int) or max_diff < 1:
@@ -97,6 +135,26 @@ def parse_config(raw: dict[str, Any]) -> Config:
     max_skills = project.get("max_skills", 3)
     if not isinstance(max_skills, int) or max_skills < 0:
         raise ConfigError("project.max_skills must be a non-negative integer")
+    timeout_seconds = builder.get("timeout_seconds", 1800)
+    if not isinstance(timeout_seconds, int) or timeout_seconds < 60:
+        raise ConfigError("builder.timeout_seconds must be an integer of at least 60")
+    max_model_requests = builder.get("max_model_requests", 40)
+    if not isinstance(max_model_requests, int) or max_model_requests < 1:
+        raise ConfigError("builder.max_model_requests must be a positive integer")
+    builder_fallback_provider = builder.get("fallback_provider", "nvidia")
+    builder_fallback_model = builder.get("fallback_model", "moonshotai/kimi-k3")
+    if (builder_fallback_provider is None) != (builder_fallback_model is None):
+        raise ConfigError("builder.fallback_provider and builder.fallback_model must be set together")
+    if builder_fallback_provider is not None:
+        builder_fallback_provider = _string(builder_fallback_provider, "builder.fallback_provider").lower()
+        if builder_fallback_provider not in supported_providers:
+            raise ConfigError(f"unsupported builder.fallback_provider: {builder_fallback_provider}")
+        builder_fallback_model = _string(builder_fallback_model, "builder.fallback_model")
+    integration_mode = _string(
+        integration.get("mode", "pull_request_merge_ref"), "integration.mode"
+    )
+    if integration_mode not in {"pull_request_merge_ref", "branch"}:
+        raise ConfigError(f"unsupported integration.mode: {integration_mode}")
 
     return Config(
         version=1,
@@ -105,6 +163,35 @@ def parse_config(raw: dict[str, Any]) -> Config:
             context_files=_strings(project.get("context_files", []), "project.context_files"),
             skill_dirs=_strings(project.get("skill_dirs", ["skills", "skill"]), "project.skill_dirs"),
             max_skills=max_skills,
+        ),
+        steward=StewardConfig(
+            marker=_string(
+                steward.get("marker", "<!-- steward:agent-factory -->"), "steward.marker"
+            ),
+            ready_labels=_strings(steward.get("ready_labels", ["ready"]), "steward.ready_labels"),
+            dispatch_label=_string(
+                steward.get("dispatch_label", "agent:builder"), "steward.dispatch_label"
+            ),
+            retry_label=_string(
+                steward.get("retry_label", "agent:retry"), "steward.retry_label"
+            ),
+        ),
+        builder=BuilderConfig(
+            marker=_string(
+                builder.get("marker", "<!-- builder:agent-factory -->"), "builder.marker"
+            ),
+            harness=_string(builder.get("harness", "gemini-cli"), "builder.harness"),
+            model=_string(builder.get("model", "gemini-3.6-flash"), "builder.model"),
+            cli_version=_string(builder.get("cli_version", "0.55.1"), "builder.cli_version"),
+            timeout_seconds=timeout_seconds,
+            branch_prefix=_string(
+                builder.get("branch_prefix", "agent-factory/issue-"), "builder.branch_prefix"
+            ),
+            base_branch=_string(builder.get("base_branch", "main"), "builder.base_branch"),
+            runner=_string(builder.get("runner", "ubuntu-latest"), "builder.runner"),
+            fallback_provider=builder_fallback_provider,
+            fallback_model=builder_fallback_model,
+            max_model_requests=max_model_requests,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),
@@ -115,6 +202,21 @@ def parse_config(raw: dict[str, Any]) -> Config:
             model=_string(review.get("model", "claude-opus-5"), "review.model"),
             fallback_provider=fallback_provider,
             fallback_model=fallback_model,
+        ),
+        integration=IntegrationConfig(
+            marker=_string(
+                integration.get("marker", "<!-- steward:agent-factory-integration -->"),
+                "integration.marker",
+            ),
+            status_context=_string(
+                integration.get("status_context", "agent-factory/integration"),
+                "integration.status_context",
+            ),
+            environment=_string(
+                integration.get("environment", "development"), "integration.environment"
+            ),
+            mode=integration_mode,
+            automatic_promotion=bool(integration.get("automatic_promotion", True)),
         ),
         gate=GateConfig(
             context=_string(gate.get("context", "agent-factory"), "gate.context"),

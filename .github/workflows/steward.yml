@@ -1,0 +1,53 @@
+name: reusable-agent-steward
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: number
+      factory_ref:
+        required: true
+        type: string
+    secrets:
+      AGENT_FACTORY_STEWARD_APP_ID:
+        required: true
+      AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  steward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Mint Steward installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Checkout consumer
+        uses: actions/checkout@v7
+        with:
+          path: consumer
+          persist-credentials: false
+      - name: Checkout factory
+        uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - name: Qualify and dispatch issue
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_steward
+          --repo "${{ github.repository }}"
+          --issue "${{ inputs.issue }}"
+          --config consumer/.agent-factory/config.json

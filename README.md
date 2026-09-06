@@ -15,7 +15,7 @@ Agent Factory separates three concerns:
 
 - **Knowledge:** repository guidance, decisions, skills, commands, and evidence
   standards that agents discover for the task at hand.
-- **Agency:** role-specific agents for triage, implementation, and review, each
+- **Agency:** role-specific agents for stewardship, implementation, and review, each
   operating with the tools and least privilege its role requires.
 - **Policy:** deterministic state transitions and merge gates that validate
   agent output without trusting model-authored prose.
@@ -26,22 +26,24 @@ The factory coordinates a staged loop rather than one all-powerful bot:
 
 ```text
 Intent
-  → Triage: understand, de-duplicate, and route
-  → Build: inspect, plan, implement, and self-check
+  → Steward: understand, de-duplicate, qualify, and dispatch
+  → Builder: inspect, plan, implement, and self-check
   → Verify: run deterministic tests and collect evidence
-  → Review: evaluate the current head against context and evidence
+  → Reviewer: evaluate the current head against context and evidence
   → Gate: compute merge readiness from trusted state
-  → Land and learn: publish, record decisions, and improve repository context
+  → Integrate: test the combined state in a preview or development lane
+  → Land and learn: promote by policy and improve repository context
 ```
 
-Build and Review may cycle several times. Verify is not a model opinion: it is
+Build and Review may cycle several times. Integration failures return to
+Builder rather than silently weakening the release. Verify is not a model opinion: it is
 the repository's executable evidence. Gate is not another agent: it is a
 deterministic policy reducer. The role Apps make each handoff and authority
 visible without forcing every project into the same implementation procedure.
 
 The factory owns:
 
-- event and state contracts for review, triage, build, and merge gating;
+- event and state contracts for stewardship, build, review, integration, and merge gating;
 - discovery and loading of relevant repository context and skills;
 - safe review publication and fail-closed degradation;
 - role-specific GitHub App authentication;
@@ -58,14 +60,18 @@ Each adopting repository owns:
 
 ## Status
 
-Agent Factory is a public alpha. The current implementation includes a
-versioned configuration contract, pure priority-ordered gate, GitHub
-review/gate adapters, machine-readable review artifacts, short-lived GitHub
-App authentication, reusable caller workflows, and an idempotent installer.
+Agent Factory is a public alpha. The implementation includes a versioned
+configuration contract; executable Steward, Builder, and Reviewer roles;
+current-head machine contracts; a pure priority-ordered gate; a deterministic
+integration/landing adapter; short-lived GitHub App authentication; reusable
+caller workflows; and an idempotent installer.
 
-Triage and general implementation agents are the next runtime boundary. The
-alpha should be evaluated in trusted repositories before it is treated as a
-hands-off production system.
+Builder uses a pinned Gemini CLI headless harness first and can fall back to a
+bounded NVIDIA Kimi tool loop. Model credentials are withheld from publication
+steps, GitHub credentials are withheld from model tool environments, and the
+fallback refuses to mix with a partially modified primary workspace. This is
+still an alpha: dispatch labels should be restricted to trusted maintainers and
+the workflows should be evaluated in trusted repositories before hands-off use.
 
 ## Quick start
 
@@ -75,9 +81,11 @@ agent-factory init /path/to/repository --factory-ref main
 python3 -m unittest discover -s tests -v
 ```
 
-The installer creates `.agent-factory/config.json` and thin workflows under
-`.github/workflows/`. It preserves existing files unless `--force` is
-explicit.
+The installer creates `.agent-factory/config.json` and thin Steward, Builder,
+Reviewer, and Gate workflows under `.github/workflows/`. It preserves existing
+files unless `--force` is explicit. The generated Builder caller uses
+`ubuntu-latest`; a consumer that requires a different toolchain changes the
+caller's `runner` input while keeping the role contract unchanged.
 
 `project.context_files` names the repository's durable guidance.
 `project.skill_dirs` names local skill catalogs; each role selects a bounded
@@ -89,7 +97,7 @@ adopters: project stewardship that prevents issue-sprawl, and human-facing
 writing. They are intentionally small. Domain judgment and project-specific
 verification still belong in each adopting repository.
 
-The runtime is model-agnostic: a role chooses a primary provider/model and an
+The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
 not change the review or gate contract. The included adapters cover Anthropic,
 Gemini, NVIDIA's OpenAI-compatible endpoint, and OpenRouter. The generated
@@ -102,11 +110,12 @@ Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY` and
 caller, but a fallback setup should use the named secrets so credentials can
 never be sent to the wrong provider.
 
-Role workflows also receive `AGENT_FACTORY_APP_ID` and
-`AGENT_FACTORY_APP_PRIVATE_KEY`. They mint short-lived installation tokens so
-agent-authored work has a distinct App identity and never relies on a
-long-lived personal token. The gate fails closed unless it finds a current-head
-approval carrying the factory's machine-readable review contract.
+Role workflows receive dedicated `AGENT_FACTORY_STEWARD_*`,
+`AGENT_FACTORY_BUILDER_*`, and `AGENT_FACTORY_REVIEWER_*` credentials. They mint
+short-lived installation tokens so agent-authored work has a distinct App
+identity and never relies on a long-lived personal token. The gate fails closed
+unless it finds a current-head approval carrying the factory's machine-readable
+review contract.
 
 The alpha is self-hosted. Repositories controlled by one operator may share
 that operator's role Apps through centrally managed secrets. Independent
