@@ -41,6 +41,7 @@ class BuilderTests(unittest.TestCase):
         with mock.patch.dict("os.environ", source, clear=True):
             safe = _safe_agent_env()
         self.assertEqual(safe["GEMINI_API_KEY"], "gemini")
+        self.assertEqual(safe["GEMINI_CLI_TRUST_WORKSPACE"], "true")
         self.assertNotIn("NVIDIA_API_KEY", safe)
         self.assertNotIn("GH_TOKEN", safe)
         self.assertFalse(any("PRIVATE_KEY" in key for key in safe))

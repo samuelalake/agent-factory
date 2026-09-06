@@ -73,6 +73,16 @@ def run(repo: str, issue: str, config_path: Path) -> str:
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("GH_TOKEN must be a Steward App installation token")
     config = load_config(config_path)
+    for name, color, description in (
+        ("agent:steward", "8250DF", "Builder needs Steward routing"),
+        (config.steward.retry_label, "FBCA04", "Steward should retry this issue"),
+    ):
+        _gh(
+            [
+                "label", "create", name, "--repo", repo, "--color", color,
+                "--description", description, "--force",
+            ]
+        )
     item = json.loads(
         _gh(["issue", "view", issue, "--repo", repo, "--json", "state,title,body,labels"])
     )
