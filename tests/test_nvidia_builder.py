@@ -5,7 +5,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_factory.nvidia_builder import NvidiaBuilderError, _execute_tool, _inside, _post
+from agent_factory.nvidia_builder import (
+    NvidiaBuilderError,
+    _execute_tool,
+    _inside,
+    _post,
+    run_openai_builder,
+)
 
 
 class NvidiaBuilderTests(unittest.TestCase):
@@ -66,6 +72,56 @@ class NvidiaBuilderTests(unittest.TestCase):
         ):
             self.assertEqual(_post("model", [], "key", 30), {"choices": []})
         sleep.assert_called_once_with(30)
+
+    def test_minimax_uses_its_openai_compatible_endpoint(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch("agent_factory.nvidia_builder.urllib.request.urlopen", return_value=response) as open_url,
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+        ):
+            _post("MiniMax-M2.7", [], "key", 30, provider="minimax")
+        self.assertEqual(
+            open_url.call_args.args[0].full_url,
+            "https://api.minimax.io/v1/chat/completions",
+        )
+
+    def test_usage_stops_the_builder_at_configured_cost_limit(self) -> None:
+        response = {
+            "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+        }
+        with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
+            with self.assertRaisesRegex(NvidiaBuilderError, "estimated cost limit"):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="minimax",
+                    model="MiniMax-M2.7",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=0.25,
+                    input_cost_per_million=0.3,
+                    output_cost_per_million=1.2,
+                )
+
+    def test_priced_provider_must_report_usage(self) -> None:
+        response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+        with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
+            with self.assertRaisesRegex(NvidiaBuilderError, "omitted token usage"):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="minimax",
+                    model="MiniMax-M2.7",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=3,
+                    input_cost_per_million=0.3,
+                    output_cost_per_million=1.2,
+                )
 
 
 if __name__ == "__main__":

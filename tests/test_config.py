@@ -15,7 +15,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.steward.dispatch_label, "agent:builder")
         self.assertEqual(config.steward.retry_label, "agent:retry")
         self.assertEqual(config.builder.harness, "gemini-cli")
+        self.assertEqual(config.builder.provider, "gemini")
         self.assertEqual(config.builder.cli_version, "0.55.1")
+        self.assertEqual(config.builder.max_model_cost_usd, 3.0)
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.fallback_provider, "nvidia")
@@ -37,6 +39,28 @@ class ConfigTests(unittest.TestCase):
         raw = default_config("demo")
         raw["builder"]["timeout_seconds"] = 1
         with self.assertRaisesRegex(ConfigError, "at least 60"):
+            parse_config(raw)
+
+    def test_minimax_builder_and_costs_are_configurable(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "minimax",
+                "harness": "openai-compatible",
+                "model": "MiniMax-M2.7",
+                "max_model_cost_usd": 2.5,
+                "input_cost_per_million": 0.3,
+                "output_cost_per_million": 1.2,
+            }
+        )
+        config = parse_config(raw)
+        self.assertEqual(config.builder.provider, "minimax")
+        self.assertEqual(config.builder.input_cost_per_million, 0.3)
+
+    def test_builder_cost_limit_must_be_positive(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["max_model_cost_usd"] = 0
+        with self.assertRaisesRegex(ConfigError, "greater than zero"):
             parse_config(raw)
 
     def test_unknown_integration_mode_fails(self) -> None:

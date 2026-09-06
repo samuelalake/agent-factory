@@ -23,8 +23,12 @@ on:
         default: 0.55.1
     secrets:
       GEMINI_API_KEY:
-        required: true
+        required: false
+      MINIMAX_API_KEY:
+        required: false
       NVIDIA_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
         required: false
       AGENT_FACTORY_BUILDER_APP_ID:
         required: true
@@ -73,7 +77,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.github_builder
           --repo "${{ github.repository }}"
