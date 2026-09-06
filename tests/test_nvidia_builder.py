@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_factory.nvidia_builder import NvidiaBuilderError, _execute_tool, _inside
+from agent_factory.nvidia_builder import NvidiaBuilderError, _execute_tool, _inside, _post
 
 
 class NvidiaBuilderTests(unittest.TestCase):
@@ -35,6 +35,20 @@ class NvidiaBuilderTests(unittest.TestCase):
             for command in ("git push origin main", "gh pr create", "printenv", "sudo true", "rm -rf out"):
                 with self.subTest(command=command), self.assertRaisesRegex(NvidiaBuilderError, "rejected"):
                     _execute_tool(root, "run_command", {"command": command})
+
+    def test_post_retries_rate_limit_with_server_delay(self) -> None:
+        limited = __import__("urllib.error").error.HTTPError(
+            "https://example.test", 429, "limited", {"Retry-After": "2"}, None
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch("agent_factory.nvidia_builder.urllib.request.urlopen", side_effect=[limited, response]),
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+            mock.patch("agent_factory.nvidia_builder.time.sleep") as sleep,
+        ):
+            self.assertEqual(_post("model", [], "key", 30), {"choices": []})
+        sleep.assert_called_once_with(2)
 
 
 if __name__ == "__main__":
