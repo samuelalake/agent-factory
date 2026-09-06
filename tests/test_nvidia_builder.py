@@ -50,6 +50,23 @@ class NvidiaBuilderTests(unittest.TestCase):
             self.assertEqual(_post("model", [], "key", 30), {"choices": []})
         sleep.assert_called_once_with(2)
 
+    def test_post_retries_transient_service_capacity(self) -> None:
+        unavailable = __import__("urllib.error").error.HTTPError(
+            "https://example.test", 503, "unavailable", {}, None
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch(
+                "agent_factory.nvidia_builder.urllib.request.urlopen",
+                side_effect=[unavailable, response],
+            ),
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+            mock.patch("agent_factory.nvidia_builder.time.sleep") as sleep,
+        ):
+            self.assertEqual(_post("model", [], "key", 30), {"choices": []})
+        sleep.assert_called_once_with(30)
+
 
 if __name__ == "__main__":
     unittest.main()
