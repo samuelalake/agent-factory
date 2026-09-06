@@ -12,7 +12,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.version, 1)
         self.assertEqual(config.project.name, "demo")
         self.assertEqual(config.gate.context, "agent-factory")
-        self.assertEqual(config.review.provider, "anthropic")
+        self.assertEqual(config.review.provider, "gemini")
+        self.assertEqual(config.review.fallback_provider, "nvidia")
 
     def test_supported_provider_is_configurable(self) -> None:
         raw = default_config("demo")
@@ -20,6 +21,12 @@ class ConfigTests(unittest.TestCase):
         raw["review"]["model"] = "gemini-3.5-flash"
         config = parse_config(raw)
         self.assertEqual((config.review.provider, config.review.model), ("gemini", "gemini-3.5-flash"))
+
+    def test_fallback_pair_is_required(self) -> None:
+        raw = default_config("demo")
+        raw["review"].pop("fallback_model")
+        with self.assertRaisesRegex(ConfigError, "must be set together"):
+            parse_config(raw)
 
     def test_unknown_provider_fails(self) -> None:
         raw = default_config("demo")

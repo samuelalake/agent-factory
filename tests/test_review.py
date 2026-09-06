@@ -17,6 +17,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_body_carries_human_and_machine_contracts(self) -> None:
         review = normalize_review({"approve": True, "summary": "ok", "findings": []})
-        body = format_body("<!-- reviewer:test -->", "abc", review)
+        body = format_body("<!-- reviewer:test -->", "abc", review, "gemini", "gemini-3.6-flash")
         self.assertTrue(body.startswith("<!-- reviewer:test -->"))
+        self.assertIn("Reviewer: `gemini/gemini-3.6-flash`", body)
         self.assertEqual(decode_data(body)["head_sha"], "abc")

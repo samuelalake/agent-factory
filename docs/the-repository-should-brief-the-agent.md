@@ -101,11 +101,11 @@ mission, repository context, tools, permissions, output contract, and gate
 semantics remain stable when the model changes.
 
 That makes model choice explicit rather than accidental. A cheaper or free-tier
-model can serve routine work; a stronger model can handle riskier changes. A
-future fallback policy can change adapters between attempts without changing
-the role contract. The artifact should record which provider served the run,
-while policy evaluates the normalized result rather than granting a vendor
-special authority.
+model can serve routine work; a stronger model can handle riskier changes. The
+review runtime can try one configured fallback when the primary adapter is
+unavailable or out of quota without changing the role contract. The artifact
+records which provider served the run, while policy evaluates the normalized
+result rather than granting a vendor special authority.
 
 ## Models propose; policy decides
 

@@ -63,8 +63,10 @@ def default_config(project_name: str) -> dict:
             "failure_marker": "<!-- reviewer:agent-factory-failure -->",
             "required": True,
             "max_diff_bytes": 200_000,
-            "provider": "anthropic",
-            "model": "claude-opus-5",
+            "provider": "gemini",
+            "model": "gemini-3.6-flash",
+            "fallback_provider": "nvidia",
+            "fallback_model": "moonshotai/kimi-k3",
         },
         "gate": {
             "context": "agent-factory",
