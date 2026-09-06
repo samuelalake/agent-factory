@@ -11,7 +11,15 @@ on:
         type: string
     secrets:
       MODEL_API_KEY:
-        required: true
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      GEMINI_API_KEY:
+        required: false
+      NVIDIA_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
       AGENT_FACTORY_APP_ID:
         required: true
       AGENT_FACTORY_APP_PRIVATE_KEY:
@@ -38,6 +46,10 @@ jobs:
       - name: Review current pull request
         env:
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_APP_ID }}
           AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-

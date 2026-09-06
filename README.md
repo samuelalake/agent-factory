@@ -89,12 +89,18 @@ adopters: project stewardship that prevents issue-sprawl, and human-facing
 writing. They are intentionally small. Domain judgment and project-specific
 verification still belong in each adopting repository.
 
-The runtime is model-agnostic: a role chooses a provider and model through
-versioned configuration, while its workflow receives a generic model
-credential. Provider choice does not change the review or gate contract. The
-included adapters for Anthropic, Gemini, and OpenRouter let hosted frontier
-models and inexpensive/free API tiers participate without redesigning the
-loop; local and other compatible runtimes can implement the same boundary.
+The runtime is model-agnostic: a role chooses a primary provider/model and an
+optional fallback pair through versioned configuration. Provider choice does
+not change the review or gate contract. The included adapters cover Anthropic,
+Gemini, NVIDIA's OpenAI-compatible endpoint, and OpenRouter. The generated
+configuration starts with Gemini and falls back to NVIDIA Kimi; both are
+quota-limited services, so the review records the provider and model that
+actually served the run instead of implying that a free tier is unlimited.
+
+Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY` and
+`NVIDIA_API_KEY`. `MODEL_API_KEY` remains available for a single-provider
+caller, but a fallback setup should use the named secrets so credentials can
+never be sent to the wrong provider.
 
 Role workflows also receive `AGENT_FACTORY_APP_ID` and
 `AGENT_FACTORY_APP_PRIVATE_KEY`. They mint short-lived installation tokens so

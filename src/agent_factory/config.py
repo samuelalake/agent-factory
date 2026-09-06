@@ -27,6 +27,8 @@ class ReviewConfig:
     max_diff_bytes: int
     provider: str
     model: str
+    fallback_provider: str | None
+    fallback_model: str | None
 
 
 @dataclass(frozen=True)
@@ -78,8 +80,20 @@ def parse_config(raw: dict[str, Any]) -> Config:
     if not isinstance(max_diff, int) or max_diff < 1:
         raise ConfigError("review.max_diff_bytes must be a positive integer")
     provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
-    if provider not in {"anthropic", "gemini", "openrouter"}:
+    supported_providers = {"anthropic", "gemini", "nvidia", "openrouter"}
+    if provider not in supported_providers:
         raise ConfigError(f"unsupported review.provider: {provider}")
+    fallback_provider_value = review.get("fallback_provider")
+    fallback_model_value = review.get("fallback_model")
+    if (fallback_provider_value is None) != (fallback_model_value is None):
+        raise ConfigError("review.fallback_provider and review.fallback_model must be set together")
+    fallback_provider = None
+    fallback_model = None
+    if fallback_provider_value is not None:
+        fallback_provider = _string(fallback_provider_value, "review.fallback_provider").lower()
+        if fallback_provider not in supported_providers:
+            raise ConfigError(f"unsupported review.fallback_provider: {fallback_provider}")
+        fallback_model = _string(fallback_model_value, "review.fallback_model")
     max_skills = project.get("max_skills", 3)
     if not isinstance(max_skills, int) or max_skills < 0:
         raise ConfigError("project.max_skills must be a non-negative integer")
@@ -99,6 +113,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
             max_diff_bytes=max_diff,
             provider=provider,
             model=_string(review.get("model", "claude-opus-5"), "review.model"),
+            fallback_provider=fallback_provider,
+            fallback_model=fallback_model,
         ),
         gate=GateConfig(
             context=_string(gate.get("context", "agent-factory"), "gate.context"),

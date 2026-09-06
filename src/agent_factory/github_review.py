@@ -11,7 +11,7 @@ from typing import Any
 from .app_auth import get_installation_token
 from .config import load_config
 from .context import discover_context
-from .model import complete
+from .model import ModelError, complete
 from .protocol import encode_data, extract_json_reply
 
 
@@ -44,7 +44,7 @@ def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
     return {"summary": str(raw.get("summary") or "").strip(), "approve": approve, "findings": findings}
 
 
-def format_body(marker: str, head_sha: str, review: dict[str, Any]) -> str:
+def format_body(marker: str, head_sha: str, review: dict[str, Any], provider: str, model: str) -> str:
     counts = {severity: 0 for severity in ("P1", "P2", "P3")}
     for finding in review["findings"]:
         counts[finding["severity"]] += 1
@@ -53,6 +53,7 @@ def format_body(marker: str, head_sha: str, review: dict[str, Any]) -> str:
         "",
         "## Agent Factory review",
         f"HEAD: `{head_sha}` · verdict: **{'approve' if review['approve'] else 'request changes'}**",
+        f"Reviewer: `{provider}/{model}`",
         "",
         review["summary"] or "No summary provided.",
         "",
@@ -114,7 +115,21 @@ def run(
     ])
     provider = provider_override or config.review.provider
     model = model_override or config.review.model
-    reply = complete(provider, model, system, user, os.environ.get("MODEL_API_KEY", ""))
+    candidates = [(provider, model)]
+    if config.review.fallback_provider and config.review.fallback_model:
+        candidates.append((config.review.fallback_provider, config.review.fallback_model))
+    failures: list[str] = []
+    for active_provider, active_model in candidates:
+        env_name = f"{active_provider.upper()}_API_KEY"
+        api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
+        try:
+            reply = complete(active_provider, active_model, system, user, api_key)
+            provider, model = active_provider, active_model
+            break
+        except ModelError as exc:
+            failures.append(f"{active_provider}/{active_model}: {exc}")
+    else:
+        raise ModelError("all configured review providers failed: " + "; ".join(failures))
     raw = normalize_review(extract_json_reply(reply))
     if omitted:
         raw["approve"] = False
@@ -123,7 +138,7 @@ def run(
             "title": f"Reviewer input omitted {omitted} bytes", "reasoning": "The full diff was not reviewed.",
             "suggestion": "Split the pull request or raise the configured review limit.",
         })
-    body = format_body(config.review.marker, meta["headRefOid"], raw)
+    body = format_body(config.review.marker, meta["headRefOid"], raw, provider, model)
     event = "APPROVE" if raw["approve"] else "REQUEST_CHANGES"
     payload = json.dumps({"body": body, "event": event, "commit_id": meta["headRefOid"]})
     _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)

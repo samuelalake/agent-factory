@@ -81,4 +81,20 @@ def complete(provider: str, model: str, system: str, user: str, api_key: str) ->
         )
         choices = response.get("choices") or []
         return str(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
+    if provider == "nvidia":
+        response = _post(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            {
+                "model": model,
+                "max_tokens": 8000,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            {"Authorization": f"Bearer {api_key}"},
+        )
+        choices = response.get("choices") or []
+        return str(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
     raise ModelError(f"unsupported model provider: {provider}")

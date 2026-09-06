@@ -38,6 +38,15 @@ class ModelAdapterTests(unittest.TestCase):
         })):
             self.assertEqual(complete("openrouter", "free/model", "system", "user", "key"), '{"approve":true}')
 
+    def test_nvidia_text_and_endpoint(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=_response({
+            "choices": [{"message": {"content": "{\"approve\":true}"}}]
+        })) as urlopen:
+            text = complete("nvidia", "moonshotai/kimi-k3", "system", "user", "key")
+        self.assertEqual(text, '{"approve":true}')
+        self.assertEqual(urlopen.call_args.args[0].full_url, "https://integrate.api.nvidia.com/v1/chat/completions")
+        self.assertEqual(urlopen.call_args.args[0].get_header("Authorization"), "Bearer key")
+
     def test_unknown_provider_fails(self) -> None:
         with self.assertRaisesRegex(ModelError, "unsupported"):
             complete("mystery", "model", "system", "user", "key")
