@@ -11,15 +11,86 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 permissions:
-  contents: read
+  actions: read
+  checks: read
+  contents: write
+  issues: write
   pull-requests: write
+  statuses: write
 jobs:
   review:
     uses: samuelalake/agent-factory/.github/workflows/review.yml@{factory_ref}
     with:
       pr: ${{{{ github.event.pull_request.number }}}}
       factory_ref: {factory_ref}
-    secrets: inherit
+    secrets:
+      GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
+      NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
+      AGENT_FACTORY_REVIEWER_APP_ID: ${{{{ secrets.AGENT_FACTORY_REVIEWER_APP_ID }}}}
+      AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY }}}}
+  integration:
+    needs: review
+    uses: samuelalake/agent-factory/.github/workflows/integration.yml@{factory_ref}
+    with:
+      pr: ${{{{ github.event.pull_request.number }}}}
+      factory_ref: {factory_ref}
+      timeout_seconds: 1800
+    secrets:
+      AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
+      AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
+"""
+
+STEWARD_CALLER = """name: agent-steward
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: number
+permissions:
+  contents: read
+jobs:
+  steward:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ready' || github.event.label.name == 'agent:steward' || github.event.label.name == 'agent:retry'
+    uses: samuelalake/agent-factory/.github/workflows/steward.yml@{factory_ref}
+    with:
+      issue: ${{{{ github.event.issue.number || inputs.issue }}}}
+      factory_ref: {factory_ref}
+    secrets:
+      AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
+      AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
+"""
+
+BUILDER_CALLER = """name: agent-builder
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: number
+permissions:
+  contents: read
+jobs:
+  builder:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:builder'
+    uses: samuelalake/agent-factory/.github/workflows/builder.yml@{factory_ref}
+    with:
+      issue: ${{{{ github.event.issue.number || inputs.issue }}}}
+      factory_ref: {factory_ref}
+      runner: ubuntu-latest
+      base_ref: main
+      gemini_cli_version: 0.55.1
+    secrets:
+      GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
+      NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
+      AGENT_FACTORY_BUILDER_APP_ID: ${{{{ secrets.AGENT_FACTORY_BUILDER_APP_ID }}}}
+      AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}}}
 """
 
 GATE_CALLER = """name: agent-gate
@@ -58,6 +129,25 @@ def default_config(project_name: str) -> dict:
             "skill_dirs": ["skills", "skill"],
             "max_skills": 3,
         },
+        "steward": {
+            "marker": "<!-- steward:agent-factory -->",
+            "ready_labels": ["ready"],
+            "dispatch_label": "agent:builder",
+            "retry_label": "agent:retry",
+        },
+        "builder": {
+            "marker": "<!-- builder:agent-factory -->",
+            "harness": "gemini-cli",
+            "model": "gemini-3.6-flash",
+            "cli_version": "0.55.1",
+            "timeout_seconds": 1800,
+            "branch_prefix": "agent-factory/issue-",
+            "base_branch": "main",
+            "runner": "ubuntu-latest",
+            "fallback_provider": "nvidia",
+            "fallback_model": "moonshotai/kimi-k3",
+            "max_model_requests": 40,
+        },
         "review": {
             "marker": "<!-- reviewer:agent-factory -->",
             "failure_marker": "<!-- reviewer:agent-factory-failure -->",
@@ -67,6 +157,13 @@ def default_config(project_name: str) -> dict:
             "model": "gemini-3.6-flash",
             "fallback_provider": "nvidia",
             "fallback_model": "moonshotai/kimi-k3",
+        },
+        "integration": {
+            "marker": "<!-- steward:agent-factory-integration -->",
+            "status_context": "agent-factory/integration",
+            "environment": "development",
+            "mode": "pull_request_merge_ref",
+            "automatic_promotion": True,
         },
         "gate": {
             "context": "agent-factory",
@@ -97,6 +194,16 @@ def install(root: Path, *, factory_ref: str, force: bool) -> dict[str, str]:
         ".github/workflows/agent-review.yml": _write(
             root / ".github/workflows/agent-review.yml",
             REVIEW_CALLER.format(factory_ref=factory_ref),
+            force=force,
+        ),
+        ".github/workflows/agent-steward.yml": _write(
+            root / ".github/workflows/agent-steward.yml",
+            STEWARD_CALLER.format(factory_ref=factory_ref),
+            force=force,
+        ),
+        ".github/workflows/agent-builder.yml": _write(
+            root / ".github/workflows/agent-builder.yml",
+            BUILDER_CALLER.format(factory_ref=factory_ref),
             force=force,
         ),
         ".github/workflows/agent-gate.yml": _write(

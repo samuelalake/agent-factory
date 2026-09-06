@@ -12,6 +12,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.version, 1)
         self.assertEqual(config.project.name, "demo")
         self.assertEqual(config.gate.context, "agent-factory")
+        self.assertEqual(config.steward.dispatch_label, "agent:builder")
+        self.assertEqual(config.steward.retry_label, "agent:retry")
+        self.assertEqual(config.builder.harness, "gemini-cli")
+        self.assertEqual(config.builder.cli_version, "0.55.1")
+        self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.fallback_provider, "nvidia")
 
@@ -26,6 +31,18 @@ class ConfigTests(unittest.TestCase):
         raw = default_config("demo")
         raw["review"].pop("fallback_model")
         with self.assertRaisesRegex(ConfigError, "must be set together"):
+            parse_config(raw)
+
+    def test_builder_limits_are_validated(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["timeout_seconds"] = 1
+        with self.assertRaisesRegex(ConfigError, "at least 60"):
+            parse_config(raw)
+
+    def test_unknown_integration_mode_fails(self) -> None:
+        raw = default_config("demo")
+        raw["integration"]["mode"] = "mystery"
+        with self.assertRaisesRegex(ConfigError, "integration.mode"):
             parse_config(raw)
 
     def test_unknown_provider_fails(self) -> None:

@@ -1,0 +1,82 @@
+name: reusable-agent-builder
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: number
+      factory_ref:
+        required: true
+        type: string
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+      base_ref:
+        required: false
+        type: string
+        default: main
+      gemini_cli_version:
+        required: false
+        type: string
+        default: 0.55.1
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+      NVIDIA_API_KEY:
+        required: false
+      AGENT_FACTORY_BUILDER_APP_ID:
+        required: true
+      AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  builder:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 40
+    concurrency:
+      group: agent-factory-builder-${{ github.repository }}-${{ inputs.issue }}
+      cancel-in-progress: false
+    steps:
+      - name: Mint Builder installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_FACTORY_BUILDER_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Checkout consumer base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.base_ref }}
+          fetch-depth: 0
+          path: consumer
+          persist-credentials: false
+      - name: Checkout factory
+        uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install pinned Gemini CLI harness
+        run: npm install --global "@google/gemini-cli@${{ inputs.gemini_cli_version }}"
+      - name: Build and publish pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_builder
+          --repo "${{ github.repository }}"
+          --issue "${{ inputs.issue }}"
+          --root consumer
+          --config consumer/.agent-factory/config.json
