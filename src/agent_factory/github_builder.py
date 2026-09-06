@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Any
 
 from .config import Config, load_config
@@ -90,6 +91,52 @@ def parse_gemini_stream(output: str) -> tuple[str, int]:
     if tool_calls < 1:
         raise BuilderBlocked("Gemini CLI completed without using repository tools")
     return (messages[-1] if messages else ""), tool_calls
+
+
+def _quota_delay(detail: str) -> int | None:
+    """Return a bounded server-requested delay for transient quota failures."""
+    if "429" not in detail and "quota exceeded" not in detail.lower():
+        return None
+    match = re.search(r"retry in\s+([0-9]+(?:\.[0-9]+)?)s", detail, re.IGNORECASE)
+    requested = int(float(match.group(1))) + 2 if match else 60
+    return max(5, min(requested, 90))
+
+
+def _run_gemini(prompt: str, *, root: Path, model: str, timeout_seconds: int) -> str:
+    """Run Gemini once, then resume the saved session across transient 429s."""
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    for attempt in range(3):
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            break
+        if attempt == 0:
+            task_args = ["--prompt", prompt]
+        else:
+            task_args = [
+                "--resume", "latest", "--prompt",
+                "Continue the assigned issue from the saved session. Finish the implementation and verification.",
+            ]
+        try:
+            return _run(
+                [
+                    "gemini", "--model", model,
+                    "--approval-mode", "yolo", "--output-format", "stream-json",
+                    *task_args,
+                ],
+                cwd=root,
+                env=_safe_agent_env(),
+                timeout=remaining,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+            delay = _quota_delay(str(exc))
+            if delay is None or attempt == 2 or delay >= remaining:
+                raise
+            time.sleep(delay)
+    if last_error:
+        raise last_error
+    raise subprocess.TimeoutExpired("gemini", timeout_seconds)
 
 
 def build_prompt(config: Config, issue: dict[str, Any], root: Path) -> str:
@@ -208,15 +255,11 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     harness = config.builder.harness
     model = config.builder.model
     try:
-        output = _run(
-            [
-                "gemini", "--model", config.builder.model,
-                "--approval-mode", "yolo", "--output-format", "stream-json",
-                "--prompt", prompt,
-            ],
-            cwd=root,
-            env=_safe_agent_env(),
-            timeout=config.builder.timeout_seconds,
+        output = _run_gemini(
+            prompt,
+            root=root,
+            model=config.builder.model,
+            timeout_seconds=config.builder.timeout_seconds,
         )
         response, tool_calls = parse_gemini_stream(output)
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:

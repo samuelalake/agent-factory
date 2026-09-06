@@ -139,14 +139,23 @@ def _post(model: str, messages: list[dict[str, Any]], api_key: str, timeout: int
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:1000]
-        raise NvidiaBuilderError(f"NVIDIA HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise NvidiaBuilderError(f"NVIDIA endpoint unreachable: {exc.reason}") from exc
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:1000]
+            if exc.code != 429 or attempt == 2:
+                raise NvidiaBuilderError(f"NVIDIA HTTP {exc.code}: {detail}") from exc
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            try:
+                delay = int(float(retry_after)) if retry_after else 30 * (attempt + 1)
+            except ValueError:
+                delay = 30 * (attempt + 1)
+            time.sleep(max(1, min(delay, 60)))
+        except urllib.error.URLError as exc:
+            raise NvidiaBuilderError(f"NVIDIA endpoint unreachable: {exc.reason}") from exc
+    raise NvidiaBuilderError("NVIDIA retry loop exhausted")
 
 
 def run_nvidia_builder(

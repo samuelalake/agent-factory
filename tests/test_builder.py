@@ -10,6 +10,8 @@ from agent_factory.cli import default_config
 from agent_factory.config import parse_config
 from agent_factory.github_builder import (
     BuilderBlocked,
+    _quota_delay,
+    _run_gemini,
     _safe_agent_env,
     build_prompt,
     format_issue_status,
@@ -67,6 +69,26 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(parse_gemini_stream(output), ("Implemented.", 1))
         with self.assertRaisesRegex(BuilderBlocked, "without using repository tools"):
             parse_gemini_stream(json.dumps({"type": "result", "status": "success"}))
+
+    def test_quota_delay_is_bounded(self) -> None:
+        self.assertEqual(_quota_delay("429 Please retry in 50.9s."), 52)
+        self.assertEqual(_quota_delay("quota exceeded"), 60)
+        self.assertIsNone(_quota_delay("permission denied"))
+
+    def test_gemini_resumes_saved_session_after_rate_limit(self) -> None:
+        success = json.dumps({"type": "result", "status": "success"})
+        with (
+            mock.patch(
+                "agent_factory.github_builder._run",
+                side_effect=[RuntimeError("429 Please retry in 5s."), success],
+            ) as run,
+            mock.patch("agent_factory.github_builder.time.sleep") as sleep,
+            mock.patch("agent_factory.github_builder.time.monotonic", side_effect=[0, 0, 7]),
+        ):
+            output = _run_gemini("task", root=Path("."), model="gemini", timeout_seconds=100)
+        self.assertEqual(output, success)
+        sleep.assert_called_once_with(7)
+        self.assertIn("--resume", run.call_args_list[1].args[0])
 
 
 if __name__ == "__main__":
