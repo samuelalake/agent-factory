@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from .config import load_config
+from .github_gate import run as recompute_gate
 from .protocol import encode_data
 
 
@@ -117,6 +118,11 @@ def run(
     last_detail = "waiting for integration requirements"
     meta: dict[str, Any] = {}
     while True:
+        # Required repository checks can finish after the Reviewer verdict. Do
+        # not depend on another webhook to refresh the protected Gate:
+        # integration owns keeping that current-head decision fresh.
+        os.environ["GH_TOKEN"] = github_token
+        recompute_gate(repo, pr, config_path)
         meta = json.loads(
             _gh(
                 ["pr", "view", pr, "--repo", repo, "--json", "headRefOid,mergeable,statusCheckRollup,url"],
@@ -145,7 +151,10 @@ def run(
         )
         _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)
         if config.integration.automatic_promotion:
-            _gh(["pr", "merge", pr, "--repo", repo, "--auto", "--squash"], token=github_token)
+            _gh(
+                ["pr", "merge", pr, "--repo", repo, "--squash", "--delete-branch"],
+                token=github_token,
+            )
         print("ready")
         return "ready"
 
