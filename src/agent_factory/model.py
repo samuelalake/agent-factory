@@ -1,6 +1,7 @@
 """Provider-neutral text generation for normalized agent contracts."""
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -26,6 +27,10 @@ def _post(url: str, payload: dict, headers: dict[str, str]) -> dict:
         raise ModelError(f"model HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise ModelError(f"model endpoint unreachable: {exc.reason}") from exc
+    except (ConnectionError, TimeoutError, http.client.HTTPException) as exc:
+        raise ModelError(f"model transport failed: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ModelError("model returned invalid JSON") from exc
 
 
 def complete(provider: str, model: str, system: str, user: str, api_key: str) -> str:
