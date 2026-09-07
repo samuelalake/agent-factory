@@ -10,6 +10,7 @@ from agent_factory.cli import default_config
 from agent_factory.config import parse_config
 from agent_factory.github_builder import (
     BuilderBlocked,
+    _blocked_detail,
     _builder_summary,
     _quota_delay,
     _reconcile_workflow_control_plane,
@@ -26,6 +27,21 @@ from agent_factory.protocol import decode_data
 
 
 class BuilderTests(unittest.TestCase):
+    def test_capacity_failure_is_a_concise_steward_handoff(self) -> None:
+        raw = (
+            "gemini Builder failed: stack trace code: 429 quota exceeded; "
+            "openrouter fallback failed: HTTP 429 {\"huge\":\"payload\"}"
+        )
+        detail = _blocked_detail(raw, "gemini", "openrouter")
+        self.assertEqual(
+            detail,
+            "Model capacity unavailable: Gemini primary and OpenRouter fallback returned "
+            "quota or rate-limit responses. Steward should retry after provider limits "
+            "reset or select another configured provider.",
+        )
+        self.assertNotIn("stack", detail)
+        self.assertNotIn("payload", detail)
+
     def test_prompt_briefs_agent_without_hardcoding_consumer(self) -> None:
         config = parse_config(default_config("demo"))
         issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}

@@ -66,7 +66,30 @@ def _clean_detail(value: str) -> str:
     """Keep issue status concise and free of terminal control sequences."""
     clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
     lines = list(dict.fromkeys(line.strip() for line in clean.splitlines() if line.strip()))
-    return "\n".join(lines)[-2000:]
+    return "\n".join(lines)[:800]
+
+
+def _blocked_detail(value: str, primary: str, fallback: str | None) -> str:
+    """Turn provider/terminal failures into a short Steward-facing handoff."""
+    lower = value.lower()
+    capacity_markers = ("http 429", "code: 429", "quota exceeded", "rate limit exceeded")
+    if any(marker in lower for marker in capacity_markers):
+        names = [primary]
+        if fallback:
+            names.append(fallback)
+        display_names = {"openrouter": "OpenRouter", "minimax": "MiniMax", "nvidia": "NVIDIA"}
+        roles = [
+            f"{display_names.get(name.lower(), name.title())} "
+            f"{'primary' if index == 0 else 'fallback'}"
+            for index, name in enumerate(names)
+        ]
+        providers = " and ".join(roles)
+        return (
+            f"Model capacity unavailable: {providers} returned quota or rate-limit "
+            "responses. Steward should retry after provider limits reset or select "
+            "another configured provider."
+        )
+    return _clean_detail(value)
 
 
 def _preserve_workflow_control_plane(
@@ -638,7 +661,9 @@ def main() -> int:
         run(args.repo, args.issue, args.root, args.config)
     except (BuilderBlocked, RuntimeError, subprocess.TimeoutExpired) as exc:
         config = load_config(args.config)
-        detail = _clean_detail(str(exc))
+        detail = _blocked_detail(
+            str(exc), config.builder.provider, config.builder.fallback_provider
+        )
         body = format_issue_status(config.builder.marker, args.issue, "blocked", detail)
         _upsert_issue_comment(args.repo, args.issue, config.builder.marker, body, root=args.root)
         _gh(
