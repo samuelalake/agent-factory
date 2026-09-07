@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from .config import load_config
-from .gate import Check, Finding, GateInput, Review, evaluate_gate
+from .gate import Check, Finding, GateDecision, GateInput, Review, evaluate_gate
 from .protocol import decode_data
 
 
@@ -32,6 +32,19 @@ def _issue_numbers(body: str) -> set[int]:
     return {int(value) for value in re.findall(r"(?<![\w])#([1-9][0-9]*)", body)}
 
 
+def _followup_issue_numbers(body: str) -> set[int]:
+    """Return only issues explicitly linked as Reviewer follow-up debt."""
+    return {
+        int(value)
+        for value in re.findall(
+            r"<!--\s*agent-factory:review-followup-link\s*-->\s*"
+            r"Reviewer follow-up:\s*#([1-9][0-9]*)",
+            body,
+            flags=re.IGNORECASE,
+        )
+    }
+
+
 def _issue_is_valid_followup(issue: dict) -> bool:
     """Accept open issues and completed issues, never not-planned closures."""
     state = str(issue.get("state") or "").upper()
@@ -39,7 +52,7 @@ def _issue_is_valid_followup(issue: dict) -> bool:
     return state == "OPEN" or (state == "CLOSED" and reason != "not_planned")
 
 
-def run(repo: str, pr: str, config_path: Path) -> str:
+def evaluate_and_publish(repo: str, pr: str, config_path: Path) -> GateDecision:
     config = load_config(config_path)
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json",
@@ -61,7 +74,11 @@ def run(repo: str, pr: str, config_path: Path) -> str:
 
     review = None
     if selected is not None and data is not None:
-        refs = _issue_numbers(str(meta.get("body") or "")) if config.gate.allow_followup_issues else set()
+        refs = (
+            _followup_issue_numbers(str(meta.get("body") or ""))
+            if config.gate.allow_followup_issues
+            else set()
+        )
         issue_bodies: list[str] = []
         for number in refs:
             try:
@@ -89,7 +106,11 @@ def run(repo: str, pr: str, config_path: Path) -> str:
     })
     _gh(["api", f"repos/{repo}/statuses/{head}", "-X", "POST", "--input", "-"], stdin=payload)
     print(f"{decision.state}: {decision.code}: {decision.description}")
-    return decision.state
+    return decision
+
+
+def run(repo: str, pr: str, config_path: Path) -> str:
+    return evaluate_and_publish(repo, pr, config_path).state
 
 
 def main() -> int:

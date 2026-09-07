@@ -69,6 +69,11 @@ jobs:
     secrets:
       AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
       AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
+      MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
+      ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
+      GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
+      NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
+      OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
 """
 
 BUILDER_CALLER = """name: agent-builder
@@ -143,6 +148,11 @@ def default_config(project_name: str) -> dict:
             "ready_labels": ["ready"],
             "dispatch_label": "agent:builder",
             "retry_label": "agent:retry",
+            "provider": "gemini",
+            "model": "gemini-3.6-flash",
+            "fallback_provider": "nvidia",
+            "fallback_model": "moonshotai/kimi-k3",
+            "max_subtasks": 3,
         },
         "builder": {
             "marker": "<!-- builder:agent-factory -->",

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import unittest
+import urllib.error
 from unittest import mock
 
 from agent_factory.model import ModelError, complete
@@ -17,6 +20,30 @@ def _response(value: dict) -> mock.MagicMock:
 
 
 class ModelAdapterTests(unittest.TestCase):
+    def test_transient_model_capacity_retries_before_provider_fallback(self) -> None:
+        def unavailable() -> urllib.error.HTTPError:
+            return urllib.error.HTTPError(
+                "https://example.test",
+                503,
+                "Unavailable",
+                {"Retry-After": "1"},
+                io.BytesIO(b'{"error":"high demand"}'),
+            )
+
+        with (
+            mock.patch(
+                "urllib.request.urlopen",
+                side_effect=[unavailable(), unavailable(), _response({
+                    "candidates": [{"content": {"parts": [{"text": "{\"approve\":true}"}]}}]
+                })],
+            ) as urlopen,
+            mock.patch("agent_factory.model.time.sleep") as sleep,
+        ):
+            text = complete("gemini", "gemini-3.6-flash", "system", "user", "key")
+        self.assertEqual(text, '{"approve":true}')
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 1])
+
     def test_anthropic_text(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
             "content": [{"type": "text", "text": "{\"approve\":true}"}]
@@ -50,3 +77,21 @@ class ModelAdapterTests(unittest.TestCase):
     def test_unknown_provider_fails(self) -> None:
         with self.assertRaisesRegex(ModelError, "unsupported"):
             complete("mystery", "model", "system", "user", "key")
+
+    def test_dropped_connection_becomes_provider_failure(self) -> None:
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=http.client.RemoteDisconnected("closed without response"),
+        ):
+            with self.assertRaisesRegex(ModelError, "model transport failed"):
+                complete("gemini", "gemini-3.5-flash", "system", "user", "key")
+
+    def test_invalid_provider_json_becomes_provider_failure(self) -> None:
+        response = mock.MagicMock()
+        response.read.return_value = b"not-json"
+        context = mock.MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = False
+        with mock.patch("urllib.request.urlopen", return_value=context):
+            with self.assertRaisesRegex(ModelError, "model returned invalid JSON"):
+                complete("gemini", "gemini-3.5-flash", "system", "user", "key")

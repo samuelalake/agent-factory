@@ -14,6 +14,16 @@ on:
         required: true
       AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY:
         required: true
+      MODEL_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      GEMINI_API_KEY:
+        required: false
+      NVIDIA_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -46,8 +56,14 @@ jobs:
       - name: Qualify and dispatch issue
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.github_steward
           --repo "${{ github.repository }}"
           --issue "${{ inputs.issue }}"
+          --root consumer
           --config consumer/.agent-factory/config.json

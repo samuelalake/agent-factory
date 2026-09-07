@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
 
 
 def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
-    findings: list[dict[str, str]] = []
+    findings: list[dict[str, Any]] = []
     for item in raw.get("findings") or []:
         if not isinstance(item, dict):
             continue
@@ -32,10 +33,13 @@ def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
             continue
         path = str(item.get("file") or "").strip()
         line = item.get("line")
-        location = path + (f":{line}" if path and isinstance(line, int) else "")
+        line = line if type(line) is int and line > 0 else None
+        location = path + (f":{line}" if path and line is not None else "")
         findings.append({
             "severity": severity,
             "key": location or "review-wide",
+            "path": path,
+            "line": line,
             "title": str(item.get("title") or "untitled finding").strip(),
             "reasoning": str(item.get("reasoning") or "").strip(),
             "suggestion": str(item.get("suggestion") or "").strip(),
@@ -44,7 +48,83 @@ def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
     return {"summary": str(raw.get("summary") or "").strip(), "approve": approve, "findings": findings}
 
 
-def format_body(marker: str, head_sha: str, review: dict[str, Any], provider: str, model: str) -> str:
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def diff_right_lines(diff: str) -> dict[str, set[int]]:
+    """Return RIGHT-side line numbers GitHub accepts for each file in a diff."""
+    lines: dict[str, set[int]] = {}
+    path: str | None = None
+    right_line: int | None = None
+    for raw_line in diff.splitlines():
+        if raw_line.startswith("diff --git "):
+            path = None
+            right_line = None
+            continue
+        if raw_line.startswith("+++ "):
+            candidate = raw_line[4:].strip()
+            path = None if candidate == "/dev/null" else candidate.removeprefix("b/")
+            if path is not None:
+                lines.setdefault(path, set())
+            continue
+        match = _HUNK.match(raw_line)
+        if match:
+            right_line = int(match.group(1))
+            continue
+        if path is None or right_line is None or not raw_line:
+            continue
+        prefix = raw_line[0]
+        if prefix == "\\":
+            continue
+        if prefix == "-":
+            continue
+        if prefix in {"+", " "}:
+            lines[path].add(right_line)
+            right_line += 1
+    return lines
+
+
+def format_inline_comment(finding: dict[str, Any]) -> str:
+    lines = [f"**[{finding['severity']}] {finding['title']}**"]
+    if finding["reasoning"]:
+        lines.extend(["", finding["reasoning"]])
+    if finding["suggestion"]:
+        lines.extend(["", f"Suggested change: {finding['suggestion']}"])
+    return "\n".join(lines)
+
+
+def partition_findings(
+    findings: list[dict[str, Any]], diff: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split findings into GitHub-inline comments and summary-only findings."""
+    valid_lines = diff_right_lines(diff)
+    inline: list[dict[str, Any]] = []
+    summary_only: list[dict[str, Any]] = []
+    for finding in findings:
+        path = str(finding.get("path") or "").removeprefix("a/").removeprefix("b/")
+        line = finding.get("line")
+        if path and type(line) is int and line in valid_lines.get(path, set()):
+            inline.append({
+                "path": path,
+                "line": line,
+                "side": "RIGHT",
+                "body": format_inline_comment(finding),
+            })
+        else:
+            summary_only.append(finding)
+    return inline, summary_only
+
+
+def format_body(
+    marker: str,
+    head_sha: str,
+    review: dict[str, Any],
+    provider: str,
+    model: str,
+    *,
+    inline_count: int = 0,
+    summary_findings: list[dict[str, Any]] | None = None,
+) -> str:
     counts = {severity: 0 for severity in ("P1", "P2", "P3")}
     for finding in review["findings"]:
         counts[finding["severity"]] += 1
@@ -62,9 +142,14 @@ def format_body(marker: str, head_sha: str, review: dict[str, Any], provider: st
         "### Findings",
         "",
     ]
+    displayed = review["findings"] if summary_findings is None else summary_findings
+    if inline_count:
+        lines.append(f"_{inline_count} finding{' is' if inline_count == 1 else 's are'} attached inline to the changed code._")
+        if displayed:
+            lines.append("")
     if not review["findings"]:
         lines.append("_No findings._")
-    for finding in review["findings"]:
+    for finding in displayed:
         lines.extend([
             f"- **[{finding['severity']}] `{finding['key']}`** {finding['title']}",
             *( [f"  - {finding['reasoning']}"] if finding["reasoning"] else [] ),
@@ -74,10 +159,78 @@ def format_body(marker: str, head_sha: str, review: dict[str, Any], provider: st
         "version": 1,
         "head_sha": head_sha,
         "verdict": "approve" if review["approve"] else "request_changes",
-        "findings": [{"severity": f["severity"], "key": f["key"]} for f in review["findings"]],
+        "findings": [
+            {
+                "severity": f["severity"],
+                "key": f["key"],
+                "title": f["title"],
+                "reasoning": f["reasoning"],
+                "suggestion": f["suggestion"],
+            }
+            for f in review["findings"]
+        ],
     }
     lines.extend(["", encode_data(machine)])
     return "\n".join(lines) + "\n"
+
+
+def review_payload(
+    marker: str,
+    head_sha: str,
+    review: dict[str, Any],
+    provider: str,
+    model: str,
+    diff: str,
+) -> dict[str, Any]:
+    inline, summary_only = partition_findings(review["findings"], diff)
+    body = format_body(
+        marker,
+        head_sha,
+        review,
+        provider,
+        model,
+        inline_count=len(inline),
+        summary_findings=summary_only,
+    )
+    payload: dict[str, Any] = {
+        "body": body,
+        "event": "APPROVE" if review["approve"] else "REQUEST_CHANGES",
+        "commit_id": head_sha,
+    }
+    if inline:
+        payload["comments"] = inline
+    return payload
+
+
+def failed_review(detail: str) -> dict[str, Any]:
+    return normalize_review({
+        "approve": False,
+        "summary": (
+            "Reviewer could not produce a valid structured verdict. "
+            "Steward must resolve the provider or review-input failure before integration."
+        ),
+        "findings": [{
+            "severity": "P1",
+            "title": "Reviewer unavailable",
+            "reasoning": detail[:1000],
+            "suggestion": "Restore a structured Reviewer response, then review this same head again.",
+        }],
+    })
+
+
+def request_review(
+    candidates: list[tuple[str, str]], system: str, user: str
+) -> tuple[dict[str, Any], str, str]:
+    failures: list[str] = []
+    for provider, model in candidates:
+        env_name = f"{provider.upper()}_API_KEY"
+        api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
+        try:
+            reply = complete(provider, model, system, user, api_key)
+            return normalize_review(extract_json_reply(reply)), provider, model
+        except (ModelError, ValueError) as exc:
+            failures.append(f"{provider}/{model}: {type(exc).__name__}: {exc}")
+    raise ModelError("all configured review providers failed: " + "; ".join(failures))
 
 
 def run(
@@ -118,19 +271,13 @@ def run(
     candidates = [(provider, model)]
     if config.review.fallback_provider and config.review.fallback_model:
         candidates.append((config.review.fallback_provider, config.review.fallback_model))
-    failures: list[str] = []
-    for active_provider, active_model in candidates:
-        env_name = f"{active_provider.upper()}_API_KEY"
-        api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
-        try:
-            reply = complete(active_provider, active_model, system, user, api_key)
-            provider, model = active_provider, active_model
-            break
-        except ModelError as exc:
-            failures.append(f"{active_provider}/{active_model}: {exc}")
-    else:
-        raise ModelError("all configured review providers failed: " + "; ".join(failures))
-    raw = normalize_review(extract_json_reply(reply))
+    marker = config.review.marker
+    try:
+        raw, provider, model = request_review(candidates, system, user)
+    except ModelError as exc:
+        raw = failed_review(str(exc))
+        provider, model = "unavailable", "configured providers exhausted"
+        marker = f"{config.review.marker}\n{config.review.failure_marker}"
     if omitted:
         raw["approve"] = False
         raw["findings"].insert(0, {
@@ -138,9 +285,9 @@ def run(
             "title": f"Reviewer input omitted {omitted} bytes", "reasoning": "The full diff was not reviewed.",
             "suggestion": "Split the pull request or raise the configured review limit.",
         })
-    body = format_body(config.review.marker, meta["headRefOid"], raw, provider, model)
-    event = "APPROVE" if raw["approve"] else "REQUEST_CHANGES"
-    payload = json.dumps({"body": body, "event": event, "commit_id": meta["headRefOid"]})
+    payload = json.dumps(review_payload(
+        marker, meta["headRefOid"], raw, provider, model, diff
+    ))
     _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)
 
 

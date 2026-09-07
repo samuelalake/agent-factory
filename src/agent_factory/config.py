@@ -37,6 +37,11 @@ class StewardConfig:
     ready_labels: tuple[str, ...]
     dispatch_label: str
     retry_label: str
+    provider: str
+    model: str
+    fallback_provider: str | None
+    fallback_model: str | None
+    max_subtasks: int
 
 
 @dataclass(frozen=True)
@@ -137,6 +142,27 @@ def parse_config(raw: dict[str, Any]) -> Config:
         if fallback_provider not in supported_providers:
             raise ConfigError(f"unsupported review.fallback_provider: {fallback_provider}")
         fallback_model = _string(fallback_model_value, "review.fallback_model")
+    steward_provider = _string(steward.get("provider", "gemini"), "steward.provider").lower()
+    if steward_provider not in supported_providers:
+        raise ConfigError(f"unsupported steward.provider: {steward_provider}")
+    steward_fallback_provider_value = steward.get("fallback_provider", "nvidia")
+    steward_fallback_model_value = steward.get("fallback_model", "moonshotai/kimi-k3")
+    if (steward_fallback_provider_value is None) != (steward_fallback_model_value is None):
+        raise ConfigError("steward.fallback_provider and steward.fallback_model must be set together")
+    steward_fallback_provider = None
+    steward_fallback_model = None
+    if steward_fallback_provider_value is not None:
+        steward_fallback_provider = _string(
+            steward_fallback_provider_value, "steward.fallback_provider"
+        ).lower()
+        if steward_fallback_provider not in supported_providers:
+            raise ConfigError(f"unsupported steward.fallback_provider: {steward_fallback_provider}")
+        steward_fallback_model = _string(
+            steward_fallback_model_value, "steward.fallback_model"
+        )
+    max_subtasks = steward.get("max_subtasks", 3)
+    if not isinstance(max_subtasks, int) or isinstance(max_subtasks, bool) or max_subtasks < 0:
+        raise ConfigError("steward.max_subtasks must be a non-negative integer")
     max_skills = project.get("max_skills", 3)
     if not isinstance(max_skills, int) or max_skills < 0:
         raise ConfigError("project.max_skills must be a non-negative integer")
@@ -204,6 +230,11 @@ def parse_config(raw: dict[str, Any]) -> Config:
             retry_label=_string(
                 steward.get("retry_label", "agent:retry"), "steward.retry_label"
             ),
+            provider=steward_provider,
+            model=_string(steward.get("model", "gemini-3.6-flash"), "steward.model"),
+            fallback_provider=steward_fallback_provider,
+            fallback_model=steward_fallback_model,
+            max_subtasks=max_subtasks,
         ),
         builder=BuilderConfig(
             marker=_string(

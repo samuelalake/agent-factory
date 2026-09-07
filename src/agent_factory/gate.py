@@ -76,14 +76,14 @@ def evaluate_gate(value: GateInput) -> GateDecision:
     orphans = [
         finding
         for finding in review.findings
-        if finding.severity.upper() in {"P2", "P3"} and not finding.tracked
+        if finding.severity.upper() == "P2" and not finding.tracked
     ]
     if orphans:
         sample = ", ".join(finding.key for finding in orphans[:3])
         return GateDecision(
             "failure",
             "orphan-findings",
-            f"{len(orphans)} untracked P2/P3 finding(s): {sample}",
+            f"{len(orphans)} untracked P2 finding(s): {sample}",
         )
 
     return GateDecision("success", "all-clear", "all required evidence is current and clear")
