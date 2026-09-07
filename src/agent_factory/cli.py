@@ -31,8 +31,12 @@ jobs:
       pr: ${{{{ format('{{0}}', github.event.pull_request.number || inputs.pr) }}}}
       factory_ref: {factory_ref}
     secrets:
+      MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
+      ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
+      MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}
       NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
+      OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
       AGENT_FACTORY_REVIEWER_APP_ID: ${{{{ secrets.AGENT_FACTORY_REVIEWER_APP_ID }}}}
       AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY }}}}
   integration:
@@ -72,6 +76,7 @@ jobs:
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
       ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
+      MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}
       NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
       OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
 """

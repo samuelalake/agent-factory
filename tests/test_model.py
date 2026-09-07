@@ -65,6 +65,42 @@ class ModelAdapterTests(unittest.TestCase):
         })):
             self.assertEqual(complete("openrouter", "free/model", "system", "user", "key"), '{"approve":true}')
 
+    def test_minimax_text_and_endpoint(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=_response({
+            "choices": [{"message": {
+                "reasoning_details": [{"type": "reasoning.text", "text": "private reasoning"}],
+                "content": "{\"approve\":true}",
+            }}]
+        })) as urlopen:
+            text = complete("minimax", "MiniMax-M2.7", "system", "user", "key")
+        self.assertEqual(text, '{"approve":true}')
+        self.assertEqual(
+            urlopen.call_args.args[0].full_url,
+            "https://api.minimax.io/v1/chat/completions",
+        )
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertNotIn("response_format", payload)
+        self.assertIs(payload["reasoning_split"], True)
+
+    def test_http_error_does_not_reflect_provider_body(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://example.test",
+            429,
+            "limited",
+            {"Retry-After": "10", "x-ratelimit-remaining": "0"},
+            io.BytesIO(b'{"error":"secret reflected prompt"}'),
+        )
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=[error, error, error]),
+            mock.patch("agent_factory.model.time.sleep"),
+        ):
+            with self.assertRaises(ModelError) as raised:
+                complete("minimax", "MiniMax-M2.7", "system", "user", "secret")
+        self.assertRegex(
+            str(raised.exception), "model HTTP 429.*retry_after=10.*remaining=0"
+        )
+        self.assertNotIn("secret", str(raised.exception))
+
     def test_nvidia_text_and_endpoint(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
             "choices": [{"message": {"content": "{\"approve\":true}"}}]
