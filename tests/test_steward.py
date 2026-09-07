@@ -7,7 +7,13 @@ from pathlib import Path
 from unittest import mock
 
 from agent_factory.cli import default_config
-from agent_factory.github_steward import format_status, run
+from agent_factory.github_steward import (
+    SHAPED_MARKER,
+    apply_shape,
+    format_status,
+    normalize_shape,
+    run,
+)
 from agent_factory.protocol import decode_data, encode_data
 
 
@@ -22,6 +28,110 @@ class StewardTests(unittest.TestCase):
         self.assertIn("## Steward", body)
         self.assertIn("Dispatched → Builder", body)
         self.assertEqual(decode_data(body)["next_owner"], "builder")
+
+    def test_shape_contract_rejects_issue_explosion(self) -> None:
+        raw = {
+            "decision": "split",
+            "title": "Parent",
+            "outcome": "Deliver the feature in bounded slices.",
+            "subtasks": [
+                {"title": f"Slice {index}", "outcome": "Deliver it."}
+                for index in range(4)
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "max_subtasks"):
+            normalize_shape(raw, 3)
+
+    def test_shape_contract_requires_actionable_content(self) -> None:
+        with self.assertRaisesRegex(ValueError, "title and outcome"):
+            normalize_shape({"decision": "ready", "title": "", "outcome": ""}, 3)
+
+    @mock.patch("agent_factory.github_steward._gh")
+    def test_split_is_bounded_and_child_creation_is_idempotent(self, gh) -> None:
+        plan = normalize_shape({
+            "decision": "split",
+            "title": "Interaction work",
+            "outcome": "Deliver two independent behaviors.",
+            "subtasks": [
+                {
+                    "title": "First behavior",
+                    "outcome": "Deliver the first behavior.",
+                    "acceptance_criteria": ["Matches its reference."],
+                    "verification": ["Capture evidence."],
+                },
+                {
+                    "title": "Second behavior",
+                    "outcome": "Deliver the second behavior.",
+                },
+            ],
+        }, 3)
+        inventory = [{
+            "number": 90,
+            "body": "<!-- agent-factory:steward-subtask parent=83 slot=1 -->",
+        }]
+        gh.side_effect = ["", json.dumps({"number": 91}), ""]
+        state, _, detail = apply_shape(
+            "owner/repo", "83", {"body": "rough intake"}, plan, inventory
+        )
+        self.assertEqual(state, "split")
+        self.assertIn("2 bounded delivery slices", detail)
+        self.assertEqual(gh.call_args_list[0].args[0][1], "repos/owner/repo/issues/90")
+        self.assertEqual(gh.call_args_list[1].args[0][1], "repos/owner/repo/issues")
+        parent_payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
+        self.assertIn(SHAPED_MARKER, parent_payload["body"])
+        self.assertIn("- [ ] #90", parent_payload["body"])
+        self.assertIn("- [ ] #91", parent_payload["body"])
+
+    def test_unready_issue_is_shaped_then_dispatched(self) -> None:
+        calls: list[tuple[list[str], str | None]] = []
+        plan = normalize_shape({
+            "decision": "ready",
+            "title": "Deliver drag interaction",
+            "outcome": "Translate the next corpus pattern.",
+            "acceptance_criteria": ["Match the reference states."],
+            "verification": ["Publish current-head visual evidence."],
+        }, 3)
+
+        def fake_gh(args: list[str], *, stdin: str | None = None) -> str:
+            calls.append((args, stdin))
+            if args[:2] == ["issue", "view"]:
+                return json.dumps({
+                    "number": 83,
+                    "state": "OPEN",
+                    "title": "do next one",
+                    "body": "rough intake",
+                    "labels": [{"name": "agent:steward"}],
+                })
+            if args[:2] == ["issue", "list"]:
+                return "[]"
+            if "/comments" in args[1] and "--paginate" in args:
+                return "[]"
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            "os.environ", {"GH_TOKEN": "steward-token"}, clear=True
+        ), mock.patch("agent_factory.github_steward._gh", side_effect=fake_gh), mock.patch(
+            "agent_factory.github_steward.shape_issue",
+            return_value=(plan, "gemini", "flash"),
+        ):
+            state = run("owner/repo", "83", self._config(Path(tmp)))
+
+        self.assertEqual(state, "dispatched")
+        self.assertTrue(any(
+            args[:2] == ["issue", "edit"] and "--add-label" in args and "ready" in args
+            for args, _ in calls
+        ))
+        self.assertTrue(any(
+            args[:2] == ["issue", "edit"] and "--add-label" in args and "agent:builder" in args
+            for args, _ in calls
+        ))
+        parent_patch = next(
+            json.loads(stdin)
+            for args, stdin in calls
+            if args[:2] == ["api", "repos/owner/repo/issues/83"] and stdin
+        )
+        self.assertEqual(parent_patch["title"], "Deliver drag interaction")
+        self.assertIn("## Acceptance criteria", parent_patch["body"])
 
     def test_ready_issue_dispatches_builder_idempotently(self) -> None:
         calls: list[list[str]] = []

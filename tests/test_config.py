@@ -36,6 +36,18 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "must be set together"):
             parse_config(raw)
 
+    def test_steward_fallback_pair_is_required(self) -> None:
+        raw = default_config("demo")
+        raw["steward"]["fallback_model"] = None
+        with self.assertRaisesRegex(ConfigError, "steward.fallback_provider"):
+            parse_config(raw)
+
+    def test_steward_split_limit_is_bounded(self) -> None:
+        raw = default_config("demo")
+        raw["steward"]["max_subtasks"] = -1
+        with self.assertRaisesRegex(ConfigError, "steward.max_subtasks"):
+            parse_config(raw)
+
     def test_builder_limits_are_validated(self) -> None:
         raw = default_config("demo")
         raw["builder"]["timeout_seconds"] = 1
