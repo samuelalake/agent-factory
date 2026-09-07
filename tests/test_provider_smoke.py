@@ -89,6 +89,9 @@ class ProviderSmokeTests(unittest.TestCase):
                     "message": {
                         "role": "assistant",
                         "content": "",
+                        "reasoning_details": [
+                            {"type": "reasoning.text", "text": "private reasoning"}
+                        ],
                         "tool_calls": [
                             {
                                 "id": "call-1",
@@ -116,13 +119,18 @@ class ProviderSmokeTests(unittest.TestCase):
             "agent_factory.provider_smoke._request", side_effect=[first, second]
         ) as request:
             probe_model(
-                "nvidia", "model", "secret", builder_shape=True,
+                "minimax", "model", "secret", builder_shape=True,
                 max_output_tokens=1024, prompt_bytes=4096,
             )
         payload = request.call_args.kwargs["payload"]
         self.assertEqual(payload["max_tokens"], 1024)
+        self.assertIs(payload["reasoning_split"], True)
         self.assertEqual(len(payload["tools"]), 6)
         self.assertGreaterEqual(len(payload["messages"][0]["content"].encode()), 4096)
+        self.assertEqual(
+            payload["messages"][1]["reasoning_details"][0]["text"],
+            "private reasoning",
+        )
 
     def test_http_error_reports_only_safe_rate_metadata(self) -> None:
         error = urllib.error.HTTPError(

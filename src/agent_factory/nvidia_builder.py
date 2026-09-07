@@ -167,6 +167,10 @@ def _post(
         "temperature": 0.2,
         "stream": False,
     }
+    if provider == "minimax":
+        # MiniMax M2.x always reasons. Split that state from visible content
+        # while preserving the complete assistant message between tool turns.
+        payload["reasoning_split"] = True
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode(),

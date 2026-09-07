@@ -136,6 +136,8 @@ class NvidiaBuilderTests(unittest.TestCase):
             open_url.call_args.args[0].full_url,
             "https://api.minimax.io/v1/chat/completions",
         )
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertIs(payload["reasoning_split"], True)
 
     def test_post_uses_configured_output_reservation(self) -> None:
         response = mock.MagicMock()
