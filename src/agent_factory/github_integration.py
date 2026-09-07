@@ -33,7 +33,11 @@ def route_failure(repo: str, meta: dict[str, Any], config: Any, token: str) -> s
     issues = linked_issue_numbers(str(meta.get("body") or ""))
     if not issues:
         return "No linked issue was available for automatic Builder routing."
-    attempts = len(meta.get("commits") or [])
+    attempts = sum(
+        1
+        for commit in meta.get("commits") or []
+        if str(commit.get("messageHeadline") or "").startswith("feat: implement issue #")
+    )
     if attempts >= config.builder.max_revision_attempts:
         label = "agent:steward"
         route = (

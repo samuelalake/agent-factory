@@ -114,6 +114,21 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("[P1] Deliver the promised output.", prompt)
         self.assertIn("Resolve every finding", prompt)
 
+    def test_revision_prompt_assigns_base_conflicts_to_builder(self) -> None:
+        config = parse_config(default_config("demo"))
+        issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_prompt(
+                config,
+                issue,
+                Path(tmp),
+                "[P1] Register the pattern.",
+                "skill/docc-authoring/SKILL.md",
+            )
+        self.assertIn("Current-base merge conflicts", prompt)
+        self.assertIn("skill/docc-authoring/SKILL.md", prompt)
+        self.assertIn("Remove all conflict markers", prompt)
+
     def test_current_head_review_feedback_is_selected(self) -> None:
         reviews = [
             {"commit_id": "old", "state": "CHANGES_REQUESTED", "body": "<!-- reviewer:test --> old"},

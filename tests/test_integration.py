@@ -28,7 +28,10 @@ class IntegrationTests(unittest.TestCase):
         config = parse_config(default_config("fixture"))
         detail = route_failure(
             "owner/repo",
-            {"body": "Closes #83", "commits": [{"oid": "one"}]},
+            {
+                "body": "Closes #83",
+                "commits": [{"messageHeadline": "feat: implement issue #83"}],
+            },
             config,
             "steward",
         )
@@ -43,7 +46,15 @@ class IntegrationTests(unittest.TestCase):
         config = parse_config(default_config("fixture"))
         detail = route_failure(
             "owner/repo",
-            {"body": "Closes #83", "commits": [{}, {}, {}]},
+            {
+                "body": "Closes #83",
+                "commits": [
+                    {"messageHeadline": "feat: implement issue #83"},
+                    {"messageHeadline": "feat: implement issue #83"},
+                    {"messageHeadline": "feat: implement issue #83"},
+                    {"messageHeadline": "Merge current main"},
+                ],
+            },
             config,
             "steward",
         )
