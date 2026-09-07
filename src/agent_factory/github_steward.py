@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,10 @@ from .protocol import decode_data, encode_data, extract_json_reply
 
 
 SHAPED_MARKER = "<!-- agent-factory:steward-shaped -->"
+ORIGINAL_INTAKE = re.compile(
+    r"<details>\s*<summary>Original intake</summary>\s*(.*?)\s*</details>",
+    flags=re.DOTALL | re.IGNORECASE,
+)
 
 
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
@@ -157,6 +162,14 @@ def format_shaped_issue(plan: dict[str, Any], original: str) -> str:
     return "\n".join(lines)
 
 
+def original_intake(body: str) -> str:
+    """Keep the operator's initial report readable across repeated Steward shaping."""
+    if SHAPED_MARKER not in body:
+        return body.strip()
+    match = ORIGINAL_INTAKE.search(body)
+    return match.group(1).strip() if match else ""
+
+
 def shape_issue(
     root: Path,
     config: Any,
@@ -213,7 +226,7 @@ def apply_shape(
     plan: dict[str, Any],
     issue_inventory: list[dict[str, Any]],
 ) -> tuple[str, str, str]:
-    original = str(item.get("body") or "")
+    original = original_intake(str(item.get("body") or ""))
     shaped_body = format_shaped_issue(plan, original)
     decision = plan["decision"]
     if decision == "duplicate":

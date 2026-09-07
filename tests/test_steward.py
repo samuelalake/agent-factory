@@ -10,8 +10,10 @@ from agent_factory.cli import default_config
 from agent_factory.github_steward import (
     SHAPED_MARKER,
     apply_shape,
+    format_shaped_issue,
     format_status,
     normalize_shape,
+    original_intake,
     run,
 )
 from agent_factory.protocol import decode_data, encode_data
@@ -45,6 +47,35 @@ class StewardTests(unittest.TestCase):
     def test_shape_contract_requires_actionable_content(self) -> None:
         with self.assertRaisesRegex(ValueError, "title and outcome"):
             normalize_shape({"decision": "ready", "title": "", "outcome": ""}, 3)
+
+    def test_repeated_shaping_preserves_original_intake(self) -> None:
+        first = """<!-- agent-factory:steward-shaped -->
+
+## Outcome
+
+First brief.
+
+<details>
+<summary>Original intake</summary>
+
+The user's rough report and product intent.
+
+</details>
+"""
+        self.assertEqual(
+            original_intake(first),
+            "The user's rough report and product intent.",
+        )
+        reshaped = format_shaped_issue(
+            normalize_shape({
+                "decision": "needs_human",
+                "title": "Clarify the flow",
+                "outcome": "Second brief after new evidence.",
+            }, 3),
+            original_intake(first),
+        )
+        self.assertIn("Second brief after new evidence.", reshaped)
+        self.assertIn("The user's rough report and product intent.", reshaped)
 
     @mock.patch("agent_factory.github_steward._gh")
     def test_split_is_bounded_and_child_creation_is_idempotent(self, gh) -> None:
