@@ -22,6 +22,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.fallback_provider, "nvidia")
+        self.assertFalse(config.review.require_builder_delivery)
+        self.assertEqual(config.review.delivery_wait_seconds, 1800)
 
     def test_supported_provider_is_configurable(self) -> None:
         raw = default_config("demo")
@@ -99,6 +101,18 @@ class ConfigTests(unittest.TestCase):
         raw = default_config("demo")
         raw["review"]["provider"] = "mystery"
         with self.assertRaisesRegex(ConfigError, "unsupported review.provider"):
+            parse_config(raw)
+
+    def test_delivery_review_contract_is_validated(self) -> None:
+        raw = default_config("demo")
+        raw["review"]["require_builder_delivery"] = True
+        raw["review"]["delivery_wait_seconds"] = 1200
+        config = parse_config(raw)
+        self.assertTrue(config.review.require_builder_delivery)
+        self.assertEqual(config.review.delivery_wait_seconds, 1200)
+
+        raw["review"]["delivery_wait_seconds"] = -1
+        with self.assertRaisesRegex(ConfigError, "delivery_wait_seconds"):
             parse_config(raw)
 
     def test_unknown_top_level_key_fails(self) -> None:

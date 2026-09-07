@@ -6,6 +6,7 @@ from unittest import mock
 from agent_factory.github_review import (
     diff_right_lines,
     failed_review,
+    failed_delivery_review,
     format_body,
     normalize_review,
     request_review,
@@ -40,6 +41,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(review["findings"][0]["severity"], "P1")
         self.assertEqual(review["findings"][0]["key"], "review-wide")
         self.assertIn("invalid JSON", review["findings"][0]["reasoning"])
+
+    def test_failed_builder_delivery_is_a_deterministic_p1(self) -> None:
+        review = failed_delivery_review("failed")
+        self.assertFalse(review["approve"])
+        self.assertEqual(review["findings"][0]["severity"], "P1")
+        self.assertIn("not proof", review["findings"][0]["reasoning"])
 
     def test_p1_overrides_model_approval(self) -> None:
         review = normalize_review({
@@ -132,3 +139,4 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("comments", payload)
         self.assertIn("Outside the diff", payload["body"])
         self.assertIn("Repository-wide cleanup", payload["body"])
+        self.assertIn("Summary-only because", payload["body"])

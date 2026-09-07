@@ -12,6 +12,7 @@ from typing import Any
 from .app_auth import get_installation_token
 from .config import load_config
 from .context import discover_context
+from .github_delivery import delivery_status, wait_for_delivery
 from .model import ModelError, complete
 from .protocol import encode_data, extract_json_reply
 
@@ -111,7 +112,12 @@ def partition_findings(
                 "body": format_inline_comment(finding),
             })
         else:
-            summary_only.append(finding)
+            reason = (
+                "the finding is repository-wide and has no file anchor"
+                if not path
+                else "the supplied line is not on the current right-side diff"
+            )
+            summary_only.append({**finding, "summary_reason": reason})
     return inline, summary_only
 
 
@@ -154,6 +160,7 @@ def format_body(
             f"- **[{finding['severity']}] `{finding['key']}`** {finding['title']}",
             *( [f"  - {finding['reasoning']}"] if finding["reasoning"] else [] ),
             *( [f"  - _suggestion:_ {finding['suggestion']}"] if finding["suggestion"] else [] ),
+            *( [f"  - _Summary-only because {finding['summary_reason']}._"] if finding.get("summary_reason") else [] ),
         ])
     machine = {
         "version": 1,
@@ -218,6 +225,22 @@ def failed_review(detail: str) -> dict[str, Any]:
     })
 
 
+def failed_delivery_review(status: str) -> dict[str, Any]:
+    return normalize_review({
+        "approve": False,
+        "summary": "Builder's current-head delivery evidence is not reviewable.",
+        "findings": [{
+            "severity": "P1",
+            "title": "Builder delivery evidence is not ready",
+            "reasoning": (
+                f"The canonical Builder delivery section reported {status!r}. "
+                "A URL or completed workflow alone is not proof of visual, behavioral, or documentation fidelity."
+            ),
+            "suggestion": "Produce current-head evidence and publish a ready delivery section before review.",
+        }],
+    })
+
+
 def request_review(
     candidates: list[tuple[str, str]], system: str, user: str
 ) -> tuple[dict[str, Any], str, str]:
@@ -246,6 +269,26 @@ def run(
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
     meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
+    if config.review.require_builder_delivery and config.builder.marker in str(meta.get("body") or ""):
+        status, refreshed_body = wait_for_delivery(
+            repo,
+            pr,
+            str(meta["headRefOid"]),
+            timeout_seconds=config.review.delivery_wait_seconds,
+        )
+        meta["body"] = refreshed_body
+        if status != "ready":
+            raw = failed_delivery_review(status)
+            payload = json.dumps(review_payload(
+                config.review.marker,
+                meta["headRefOid"],
+                raw,
+                "deterministic",
+                "builder-delivery-gate",
+                _gh(["pr", "diff", pr, "--repo", repo]),
+            ))
+            _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)
+            return
     diff = _gh(["pr", "diff", pr, "--repo", repo])
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
@@ -260,7 +303,12 @@ def run(
         f"You are the required code reviewer for {config.project.name}. "
         "Return only JSON with summary:string, approve:boolean, and findings:array. "
         "Each finding has severity P1|P2|P3, file, optional integer line, title, "
-        "reasoning, and suggestion. P1 is merge-blocking. Do not approve a partial diff."
+        "reasoning, and suggestion. P1 is merge-blocking. Do not approve a partial diff. "
+        "Treat the canonical Builder delivery section as evidence, not decoration: do not approve "
+        "material visual, behavioral, framing, documentation, or current-head mismatches. The "
+        "existence of a URL is not proof. For every file-specific finding, cite an exact integer "
+        "line that appears on the right side of the supplied diff; omit file and line only for a "
+        "genuinely repository-wide finding."
     )
     user = "\n\n".join(context + [
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",

@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from .config import Config, load_config
+from .github_delivery import pending_delivery
 from .context import discover_context
 from .protocol import encode_data
 from .nvidia_builder import API_KEY_ENV, NvidiaBuilderError, run_openai_builder
@@ -270,7 +271,9 @@ def format_pr_body(
         "",
         "## Verification",
         "",
-        "Repository workflows validate the committed head; current visual and DocC evidence appears below.",
+        "Repository workflows validate the committed head. Builder keeps the current-head delivery below up to date.",
+        "",
+        pending_delivery() if config.review.require_builder_delivery else "_No additional Builder delivery evidence is required by this consumer._",
         "",
         "<details>",
         "<summary>Execution details</summary>",

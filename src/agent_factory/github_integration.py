@@ -456,7 +456,7 @@ def run(
         if config.integration.automatic_promotion:
             try:
                 _gh(
-                    ["pr", "merge", pr, "--repo", repo, "--squash", "--delete-branch"],
+                    ["pr", "merge", pr, "--repo", repo, "--squash"],
                     token=steward_token,
                 )
             except RuntimeError as exc:
