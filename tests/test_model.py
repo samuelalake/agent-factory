@@ -61,7 +61,10 @@ class ModelAdapterTests(unittest.TestCase):
 
     def test_openrouter_text(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
-            "choices": [{"message": {"content": "{\"approve\":true}"}}]
+            "choices": [{"message": {
+                "reasoning_details": [{"type": "reasoning.text", "text": "private reasoning"}],
+                "content": "{\"approve\":true}",
+            }}]
         })):
             self.assertEqual(complete("openrouter", "free/model", "system", "user", "key"), '{"approve":true}')
 
@@ -77,6 +80,7 @@ class ModelAdapterTests(unittest.TestCase):
         )
         payload = json.loads(urlopen.call_args.args[0].data)
         self.assertNotIn("response_format", payload)
+        self.assertIs(payload["reasoning_split"], True)
 
     def test_http_error_does_not_reflect_provider_body(self) -> None:
         error = urllib.error.HTTPError(

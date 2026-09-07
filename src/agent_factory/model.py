@@ -111,7 +111,11 @@ def complete(provider: str, model: str, system: str, user: str, api_key: str) ->
                 {"role": "user", "content": user},
             ],
         }
-        if provider != "minimax":
+        if provider == "minimax":
+            # M2.x always reasons. Keep that reasoning out of content so the
+            # shared role protocol receives only the requested JSON object.
+            payload["reasoning_split"] = True
+        else:
             payload["response_format"] = {"type": "json_object"}
         response = _post(
             endpoints[provider],

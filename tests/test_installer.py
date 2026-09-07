@@ -32,10 +32,25 @@ class InstallerTests(unittest.TestCase):
             install(root, factory_ref="new", force=True)
             review = (root / ".github/workflows/agent-review.yml").read_text()
             self.assertIn("@new", review)
-            self.assertIn("MINIMAX_API_KEY", review)
-            self.assertIn("OPENROUTER_API_KEY", review)
+            for secret in (
+                "MODEL_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "GEMINI_API_KEY",
+                "MINIMAX_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENROUTER_API_KEY",
+            ):
+                self.assertIn(secret, review)
             steward = (root / ".github/workflows/agent-steward.yml").read_text()
-            self.assertIn("MINIMAX_API_KEY", steward)
+            for secret in (
+                "MODEL_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "GEMINI_API_KEY",
+                "MINIMAX_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENROUTER_API_KEY",
+            ):
+                self.assertIn(secret, steward)
             builder = (root / ".github/workflows/agent-builder.yml").read_text()
             self.assertIn("AGENT_FACTORY_BUILDER_APP_ID", builder)
             self.assertIn("runner: ubuntu-latest", builder)
