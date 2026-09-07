@@ -12,6 +12,7 @@ from agent_factory.config import parse_config
 from agent_factory.github_integration import (
     check_state,
     close_delivered_issues,
+    current_followup_findings,
     ensure_followup_issue,
     format_integration,
     integration_environment,
@@ -202,6 +203,32 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("Reviewer follow-up: #42", link_payload["body"])
 
     @patch("agent_factory.github_integration._gh")
+    def test_p3_findings_remain_review_context_not_project_issues(self, gh) -> None:
+        review_body = "\n".join([
+            "<!-- reviewer:agent-factory -->",
+            encode_data({
+                "version": 1,
+                "head_sha": "abc123",
+                "verdict": "approve",
+                "findings": [{
+                    "severity": "P3",
+                    "key": "docs/readme.md",
+                    "title": "Optional wording polish",
+                }],
+            }),
+        ])
+        gh.return_value = json.dumps([
+            {"state": "APPROVED", "commit_id": "abc123", "body": review_body}
+        ])
+
+        self.assertEqual(
+            current_followup_findings(
+                "owner/repo", "7", "abc123", "<!-- reviewer:agent-factory -->", "actions"
+            ),
+            [],
+        )
+
+    @patch("agent_factory.github_integration._gh")
     def test_steward_updates_existing_followup_instead_of_duplicating(self, gh) -> None:
         review_body = "\n".join([
             "<!-- reviewer:agent-factory -->",
@@ -209,7 +236,7 @@ class IntegrationTests(unittest.TestCase):
                 "version": 1,
                 "head_sha": "newhead",
                 "verdict": "approve",
-                "findings": [{"severity": "P3", "key": "review-wide", "title": "Clarify docs"}],
+                "findings": [{"severity": "P2", "key": "review-wide", "title": "Clarify docs"}],
             }),
         ])
         gh.side_effect = [

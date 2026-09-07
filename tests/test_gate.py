@@ -41,3 +41,7 @@ class GateTests(unittest.TestCase):
     def test_tracked_p2_passes(self) -> None:
         review = Review("abc", "approve", (Finding("P2", "src/a.py:2", tracked=True),))
         self.assertEqual(evaluate_gate(subject(review=review)).state, "success")
+
+    def test_p3_is_informational_and_passes_without_followup(self) -> None:
+        review = Review("abc", "approve", (Finding("P3", "docs/readme.md:2"),))
+        self.assertEqual(evaluate_gate(subject(review=review)).state, "success")

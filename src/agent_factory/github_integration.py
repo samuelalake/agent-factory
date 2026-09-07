@@ -123,7 +123,11 @@ def current_followup_findings(
         if not isinstance(raw, dict):
             continue
         severity = str(raw.get("severity") or "").upper()
-        if severity not in {"P2", "P3"}:
+        # P3 is advisory review context. Turning every polish observation into
+        # durable project work creates issue churn and asks Steward to manage
+        # noise rather than delivery. Only a deliberately deferred P2 needs a
+        # traceable follow-up before an otherwise approved PR can land.
+        if severity != "P2":
             continue
         findings.append({
             "severity": severity,
@@ -186,7 +190,7 @@ def ensure_followup_issue(
 ) -> int:
     findings = current_followup_findings(repo, pr, head, review_marker, github_token)
     if not findings:
-        raise RuntimeError("orphan-findings gate had no current approved P2/P3 findings")
+        raise RuntimeError("orphan-findings gate had no current approved P2 findings")
     marker = _followup_marker(pr)
     issues = json.loads(
         _gh(
