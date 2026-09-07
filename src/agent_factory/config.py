@@ -60,6 +60,7 @@ class BuilderConfig:
     fallback_provider: str | None
     fallback_model: str | None
     max_model_requests: int
+    max_output_tokens: int
     max_model_cost_usd: float
     input_cost_per_million: float
     output_cost_per_million: float
@@ -180,6 +181,13 @@ def parse_config(raw: dict[str, Any]) -> Config:
     max_model_requests = builder.get("max_model_requests", 40)
     if not isinstance(max_model_requests, int) or max_model_requests < 1:
         raise ConfigError("builder.max_model_requests must be a positive integer")
+    max_output_tokens = builder.get("max_output_tokens", 4096)
+    if (
+        not isinstance(max_output_tokens, int)
+        or isinstance(max_output_tokens, bool)
+        or not 1 <= max_output_tokens <= 32768
+    ):
+        raise ConfigError("builder.max_output_tokens must be an integer from 1 through 32768")
     max_revision_attempts = builder.get("max_revision_attempts", 3)
     if not isinstance(max_revision_attempts, int) or max_revision_attempts < 1:
         raise ConfigError("builder.max_revision_attempts must be a positive integer")
@@ -261,6 +269,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             fallback_provider=builder_fallback_provider,
             fallback_model=builder_fallback_model,
             max_model_requests=max_model_requests,
+            max_output_tokens=max_output_tokens,
             max_model_cost_usd=float(max_model_cost_usd),
             input_cost_per_million=float(input_cost_per_million),
             output_cost_per_million=float(output_cost_per_million),
