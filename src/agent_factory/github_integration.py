@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from typing import Any
@@ -17,6 +18,40 @@ from .protocol import encode_data
 
 SUCCESS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILURE = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE"}
+
+
+def linked_issue_numbers(body: str) -> tuple[str, ...]:
+    matches = re.findall(
+        r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b",
+        body,
+        flags=re.IGNORECASE,
+    )
+    return tuple(dict.fromkeys(matches))
+
+
+def route_failure(repo: str, meta: dict[str, Any], config: Any, token: str) -> str:
+    issues = linked_issue_numbers(str(meta.get("body") or ""))
+    if not issues:
+        return "No linked issue was available for automatic Builder routing."
+    attempts = len(meta.get("commits") or [])
+    if attempts >= config.builder.max_revision_attempts:
+        label = "agent:steward"
+        route = (
+            f"Automatic Builder revisions reached the configured limit of "
+            f"{config.builder.max_revision_attempts}; Steward retained the blocker for intervention."
+        )
+    else:
+        label = config.steward.retry_label
+        route = (
+            f"Steward routed the current-head failure back to Builder "
+            f"(revision {attempts + 1} of {config.builder.max_revision_attempts})."
+        )
+    for issue in issues:
+        _gh(
+            ["issue", "edit", issue, "--repo", repo, "--add-label", label],
+            token=token,
+        )
+    return route
 
 
 def _gh(args: list[str], *, token: str, stdin: str | None = None) -> str:
@@ -125,7 +160,10 @@ def run(
         recompute_gate(repo, pr, config_path)
         meta = json.loads(
             _gh(
-                ["pr", "view", pr, "--repo", repo, "--json", "headRefOid,mergeable,statusCheckRollup,url"],
+                [
+                    "pr", "view", pr, "--repo", repo, "--json",
+                    "headRefOid,mergeable,statusCheckRollup,url,body,commits",
+                ],
                 token=github_token,
             )
         )
@@ -160,11 +198,14 @@ def run(
 
     final_state = "error" if state == "failure" else "pending"
     _set_status(repo, head, config.integration.status_context, final_state, last_detail, github_token)
+    route_detail = ""
+    if state == "failure":
+        route_detail = route_failure(repo, meta, config, steward_token)
     body = format_integration(
         config.integration.marker,
         head,
         "failed" if state == "failure" else "waiting",
-        last_detail,
+        f"{last_detail}. {route_detail}" if route_detail else last_detail,
         config.integration.environment,
     )
     _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)

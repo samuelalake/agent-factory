@@ -56,6 +56,7 @@ class BuilderConfig:
     max_model_cost_usd: float
     input_cost_per_million: float
     output_cost_per_million: float
+    max_revision_attempts: int
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,9 @@ def parse_config(raw: dict[str, Any]) -> Config:
     max_model_requests = builder.get("max_model_requests", 40)
     if not isinstance(max_model_requests, int) or max_model_requests < 1:
         raise ConfigError("builder.max_model_requests must be a positive integer")
+    max_revision_attempts = builder.get("max_revision_attempts", 3)
+    if not isinstance(max_revision_attempts, int) or max_revision_attempts < 1:
+        raise ConfigError("builder.max_revision_attempts must be a positive integer")
     max_model_cost_usd = builder.get("max_model_cost_usd", 3.0)
     input_cost_per_million = builder.get("input_cost_per_million", 0.0)
     output_cost_per_million = builder.get("output_cost_per_million", 0.0)
@@ -221,6 +225,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             max_model_cost_usd=float(max_model_cost_usd),
             input_cost_per_million=float(input_cost_per_million),
             output_cost_per_million=float(output_cost_per_million),
+            max_revision_attempts=max_revision_attempts,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),

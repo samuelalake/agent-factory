@@ -10,7 +10,9 @@ from agent_factory.cli import default_config
 from agent_factory.config import parse_config
 from agent_factory.github_builder import (
     BuilderBlocked,
+    _builder_summary,
     _quota_delay,
+    _review_feedback,
     _preserve_workflow_control_plane,
     _run_gemini,
     _safe_agent_env,
@@ -101,6 +103,39 @@ class BuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             prompt = build_prompt(config, issue, Path(tmp))
         self.assertIn("Do not edit `.github/workflows/**`", prompt)
+
+    def test_revision_prompt_includes_current_reviewer_findings(self) -> None:
+        config = parse_config(default_config("demo"))
+        issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_prompt(config, issue, Path(tmp), "[P1] Deliver the promised output.")
+        self.assertIn("Current-head Reviewer feedback", prompt)
+        self.assertIn("[P1] Deliver the promised output.", prompt)
+        self.assertIn("Resolve every finding", prompt)
+
+    def test_current_head_review_feedback_is_selected(self) -> None:
+        reviews = [
+            {"commit_id": "old", "state": "CHANGES_REQUESTED", "body": "<!-- reviewer:test --> old"},
+            {
+                "commit_id": "head",
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- reviewer:test -->\n[P1] Fix it.\n<!-- agent-factory:data abc -->",
+            },
+        ]
+        with mock.patch("agent_factory.github_builder._gh", return_value=json.dumps(reviews)):
+            feedback = _review_feedback(
+                "owner/repo", 7, "head", "<!-- reviewer:test -->", root=Path(".")
+            )
+        self.assertIn("[P1] Fix it.", feedback)
+        self.assertNotIn("agent-factory:data", feedback)
+        self.assertNotIn("old", feedback)
+
+    def test_builder_summary_drops_model_reasoning(self) -> None:
+        response = "<think>private chain of thought</think>\nLet me inspect one more thing:"
+        summary = _builder_summary(response, "83")
+        self.assertNotIn("chain of thought", summary)
+        self.assertNotIn("Let me", summary)
+        self.assertIn("issue #83", summary)
 
     def test_workflow_control_plane_is_restored_without_discarding_product_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

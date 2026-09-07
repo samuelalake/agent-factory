@@ -18,6 +18,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.builder.provider, "gemini")
         self.assertEqual(config.builder.cli_version, "0.55.1")
         self.assertEqual(config.builder.max_model_cost_usd, 3.0)
+        self.assertEqual(config.builder.max_revision_attempts, 3)
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.fallback_provider, "nvidia")
@@ -61,6 +62,12 @@ class ConfigTests(unittest.TestCase):
         raw = default_config("demo")
         raw["builder"]["max_model_cost_usd"] = 0
         with self.assertRaisesRegex(ConfigError, "greater than zero"):
+            parse_config(raw)
+
+    def test_builder_revision_limit_must_be_positive(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["max_revision_attempts"] = 0
+        with self.assertRaisesRegex(ConfigError, "max_revision_attempts"):
             parse_config(raw)
 
     def test_unknown_integration_mode_fails(self) -> None:
