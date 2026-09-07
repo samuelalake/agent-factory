@@ -15,6 +15,8 @@ from agent_factory.github_integration import (
     ensure_followup_issue,
     format_integration,
     linked_issue_numbers,
+    queue_followup_for_steward,
+    review_followup_issue_number,
     route_failure,
     run,
 )
@@ -88,6 +90,23 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("## Steward · integration", body)
         self.assertEqual(data["head_sha"], "abc123")
         self.assertEqual(data["next_owner"], "landing")
+
+    def test_review_followup_link_is_recovered_for_later_integration_run(self) -> None:
+        self.assertEqual(
+            review_followup_issue_number(
+                "body\n\n<!-- agent-factory:review-followup-link -->\nReviewer follow-up: #42\n"
+            ),
+            42,
+        )
+        self.assertIsNone(review_followup_issue_number("body without a follow-up"))
+
+    @patch("agent_factory.github_integration._gh")
+    def test_followup_is_queued_for_steward_after_landing(self, gh) -> None:
+        queue_followup_for_steward("owner/repo", 42, "steward")
+        gh.assert_called_once_with(
+            ["issue", "edit", "42", "--repo", "owner/repo", "--add-label", "agent:steward"],
+            token="steward",
+        )
 
     @patch("agent_factory.github_integration._gh")
     def test_steward_creates_one_traceable_followup_and_links_pr(self, gh) -> None:
@@ -202,12 +221,16 @@ class IntegrationTests(unittest.TestCase):
                 {
                     "headRefOid": "abc123",
                     "mergeable": "MERGEABLE",
+                    "body": "<!-- agent-factory:review-followup-link -->\nReviewer follow-up: #42",
                     "statusCheckRollup": [
                         {"name": "verify", "conclusion": "SUCCESS"},
                         {"context": "merge-gate", "state": "SUCCESS"},
                     ],
                 }
             ),
+            "",
+            json.dumps({"labels": []}),
+            "",
             "",
         ]
         config = default_config("fixture")
@@ -228,10 +251,47 @@ class IntegrationTests(unittest.TestCase):
         set_status.assert_called_once()
         upsert.assert_called_once()
         self.assertEqual(
-            gh.call_args_list[-1].args[0],
+            gh.call_args_list[1].args[0],
             ["pr", "merge", "7", "--repo", "owner/repo", "--squash", "--delete-branch"],
         )
-        self.assertEqual(gh.call_args_list[-1].kwargs["token"], "steward")
+        self.assertEqual(gh.call_args_list[1].kwargs["token"], "steward")
+        self.assertEqual(
+            gh.call_args_list[-1].args[0],
+            ["issue", "edit", "42", "--repo", "owner/repo", "--add-label", "agent:steward"],
+        )
+
+    @patch("agent_factory.github_integration._upsert_steward_comment")
+    @patch("agent_factory.github_integration._set_status")
+    @patch("agent_factory.github_integration.recompute_gate")
+    @patch("agent_factory.github_integration._gh")
+    def test_merge_permission_failure_is_visible_and_not_marked_success(
+        self, gh, gate, set_status, upsert
+    ) -> None:
+        gh.side_effect = [
+            json.dumps({
+                "headRefOid": "abc123",
+                "mergeable": "MERGEABLE",
+                "body": "",
+                "statusCheckRollup": [
+                    {"name": "verify", "conclusion": "SUCCESS"},
+                    {"context": "merge-gate", "state": "SUCCESS"},
+                ],
+            }),
+            RuntimeError("Resource not accessible by integration"),
+        ]
+        config = default_config("fixture")
+        config["gate"]["context"] = "merge-gate"
+        config["gate"]["required_checks"] = ["verify"]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "actions", "STEWARD_TOKEN": "steward"}):
+                with self.assertRaisesRegex(RuntimeError, "Contents: write"):
+                    run("owner/repo", "7", path, timeout_seconds=1)
+
+        self.assertEqual(set_status.call_args.args[3], "error")
+        self.assertIn("GitHub rejected Steward's merge", upsert.call_args.args[3])
+        self.assertIn("**Failed → Steward**", upsert.call_args.args[3])
 
 
 if __name__ == "__main__":

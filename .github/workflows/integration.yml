@@ -43,6 +43,12 @@ jobs:
           private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          # Ask for the exact landing permissions here. If the App is
+          # misconfigured, token minting fails before the integration job
+          # spends time waiting for repository verification.
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
       - name: Checkout consumer
         uses: actions/checkout@v7
         with:

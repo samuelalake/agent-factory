@@ -211,6 +211,21 @@ def ensure_followup_issue(
     return number
 
 
+def review_followup_issue_number(pr_body: str) -> int | None:
+    match = re.search(
+        rf"{re.escape(FOLLOWUP_LINK_MARKER)}\nReviewer follow-up: #(\d+)",
+        pr_body,
+    )
+    return int(match.group(1)) if match else None
+
+
+def queue_followup_for_steward(repo: str, issue: int, token: str) -> None:
+    _gh(
+        ["issue", "edit", str(issue), "--repo", repo, "--add-label", "agent:steward"],
+        token=token,
+    )
+
+
 def close_delivered_issues(repo: str, pr_body: str, config: Any, token: str) -> None:
     agent_labels = {config.steward.dispatch_label, config.steward.retry_label, "agent:steward"}
     for issue in linked_issue_numbers(pr_body):
@@ -284,8 +299,11 @@ def format_integration(
     state: str,
     detail: str,
     environment: str,
+    next_owner: str | None = None,
 ) -> str:
-    next_owner = "Landing" if state == "ready" else "Builder" if state == "failed" else "Integration"
+    next_owner = next_owner or (
+        "Landing" if state == "ready" else "Builder" if state == "failed" else "Integration"
+    )
     data = {
         "version": 1,
         "role": "steward",
@@ -372,24 +390,67 @@ def run(
 
     head = str(meta.get("headRefOid") or "")
     if state == "success":
+        pr_body = str(meta.get("body") or "")
+        followup_issue = review_followup_issue_number(pr_body)
+        if config.integration.automatic_promotion:
+            try:
+                _gh(
+                    ["pr", "merge", pr, "--repo", repo, "--squash", "--delete-branch"],
+                    token=steward_token,
+                )
+            except RuntimeError as exc:
+                detail = (
+                    "Landing passed policy but GitHub rejected Steward's merge. "
+                    "Confirm that the Steward App has Contents: write and Pull requests: write. "
+                    f"GitHub response: {str(exc)[:500]}"
+                )
+                _set_status(
+                    repo, head, config.integration.status_context, "error", detail, github_token,
+                )
+                body = format_integration(
+                    config.integration.marker,
+                    head,
+                    "failed",
+                    detail,
+                    config.integration.environment,
+                    next_owner="Steward",
+                )
+                _upsert_steward_comment(
+                    repo, pr, config.integration.marker, body, steward_token
+                )
+                raise RuntimeError(detail) from exc
+            close_delivered_issues(repo, pr_body, config, steward_token)
+            if followup_issue is not None:
+                queue_followup_for_steward(repo, followup_issue, steward_token)
+            detail = (
+                "Steward merged the current head after review, repository verification, "
+                "and the configured integration policy passed."
+            )
+            comment_state = "landed"
+        else:
+            detail = (
+                "The current head passed review, repository verification, and the "
+                "configured integration policy."
+            )
+            comment_state = "ready"
         _set_status(
             repo, head, config.integration.status_context, "success",
-            "integration policy passed; deterministic landing authorized", github_token,
+            "integration policy passed; deterministic landing completed"
+            if config.integration.automatic_promotion
+            else "integration policy passed; deterministic landing authorized",
+            github_token,
         )
         body = format_integration(
             config.integration.marker,
             head,
-            "ready",
-            "The current head passed review, repository verification, and the configured integration policy.",
+            comment_state,
+            detail,
             config.integration.environment,
+            next_owner=config.integration.environment.title()
+            if comment_state == "landed"
+            else None,
         )
         _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)
-        if config.integration.automatic_promotion:
-            _gh(
-                ["pr", "merge", pr, "--repo", repo, "--squash", "--delete-branch"],
-                token=steward_token,
-            )
-            close_delivered_issues(repo, str(meta.get("body") or ""), config, steward_token)
         print("ready")
         return "ready"
 
