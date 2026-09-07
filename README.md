@@ -41,6 +41,15 @@ the repository's executable evidence. Gate is not another agent: it is a
 deterministic policy reducer. The role Apps make each handoff and authority
 visible without forcing every project into the same implementation procedure.
 
+Builder's pull-request description is the canonical delivery record. Consumers
+that enable `review.require_builder_delivery` receive a current-head delivery
+section with an explicit `pending`, `ready`, or `failed` state. Their trusted
+repository verification publishes documentation, media, and test evidence into
+that section with Builder's App token. Reviewer waits for the section and fails
+closed on missing, stale, or failed evidence; a link or green workflow by itself
+is never treated as proof. Repository-specific rendering and interaction logic
+remain in the consumer.
+
 The factory owns:
 
 - event and state contracts for stewardship, build, review, integration, and merge gating;
@@ -65,6 +74,9 @@ configuration contract; executable Steward, Builder, and Reviewer roles;
 current-head machine contracts; a pure priority-ordered gate; a deterministic
 integration/landing adapter; short-lived GitHub App authentication; reusable
 caller workflows; and an idempotent installer.
+
+GitHub's repository-level automatic branch deletion owns post-merge cleanup.
+Steward owns the integration decision, not branch housekeeping.
 
 Builder uses a pinned Gemini CLI headless harness first and can fall back to a
 bounded NVIDIA Kimi tool loop. Model credentials are withheld from publication
@@ -126,6 +138,10 @@ short-lived installation tokens so agent-authored work has a distinct App
 identity and never relies on a long-lived personal token. The gate fails closed
 unless it finds a current-head approval carrying the factory's machine-readable
 review contract.
+
+Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
+consumer evidence. Keep it at least as long as the consumer's slowest required
+verification job.
 
 The self-hosted Apps need these repository permissions:
 

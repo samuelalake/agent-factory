@@ -29,6 +29,8 @@ class ReviewConfig:
     model: str
     fallback_provider: str | None
     fallback_model: str | None
+    require_builder_delivery: bool
+    delivery_wait_seconds: int
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,12 @@ def parse_config(raw: dict[str, Any]) -> Config:
     max_diff = review.get("max_diff_bytes", 200_000)
     if not isinstance(max_diff, int) or max_diff < 1:
         raise ConfigError("review.max_diff_bytes must be a positive integer")
+    require_builder_delivery = review.get("require_builder_delivery", False)
+    if not isinstance(require_builder_delivery, bool):
+        raise ConfigError("review.require_builder_delivery must be a boolean")
+    delivery_wait_seconds = review.get("delivery_wait_seconds", 1800)
+    if not isinstance(delivery_wait_seconds, int) or isinstance(delivery_wait_seconds, bool) or delivery_wait_seconds < 0:
+        raise ConfigError("review.delivery_wait_seconds must be a non-negative integer")
     provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
     supported_providers = {"anthropic", "gemini", "nvidia", "openrouter"}
     if provider not in supported_providers:
@@ -267,6 +275,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
             model=_string(review.get("model", "claude-opus-5"), "review.model"),
             fallback_provider=fallback_provider,
             fallback_model=fallback_model,
+            require_builder_delivery=require_builder_delivery,
+            delivery_wait_seconds=delivery_wait_seconds,
         ),
         integration=IntegrationConfig(
             marker=_string(

@@ -331,7 +331,7 @@ class IntegrationTests(unittest.TestCase):
         upsert.assert_called_once()
         self.assertEqual(
             gh.call_args_list[1].args[0],
-            ["pr", "merge", "7", "--repo", "owner/repo", "--squash", "--delete-branch"],
+            ["pr", "merge", "7", "--repo", "owner/repo", "--squash"],
         )
         self.assertEqual(gh.call_args_list[1].kwargs["token"], "steward")
         self.assertEqual(
