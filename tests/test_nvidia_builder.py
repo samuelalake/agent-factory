@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import subprocess
 from unittest import mock
 
 from agent_factory.nvidia_builder import (
@@ -122,6 +123,47 @@ class NvidiaBuilderTests(unittest.TestCase):
                     input_cost_per_million=0.3,
                     output_cost_per_million=1.2,
                 )
+
+    def test_request_boundary_publishes_an_existing_candidate(self) -> None:
+        response = {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": '{"path":"candidate.txt","content":"ready"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
+                summary, tool_count, cost = run_openai_builder(
+                    "task",
+                    root,
+                    provider="minimax",
+                    model="MiniMax-M2.7",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=3,
+                    input_cost_per_million=0.3,
+                    output_cost_per_million=1.2,
+                )
+        self.assertIn("reviewable repository candidate", summary)
+        self.assertEqual(tool_count, 1)
+        self.assertGreater(cost, 0)
 
 
 if __name__ == "__main__":

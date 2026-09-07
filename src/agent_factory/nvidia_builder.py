@@ -255,7 +255,24 @@ def run_openai_builder(
                     "content": json.dumps(result),
                 }
             )
-    raise NvidiaBuilderError(f"{provider} Builder exceeded {max_requests} model requests")
+    changed = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    ).stdout.strip()
+    if changed:
+        return (
+            f"Builder stopped at its {max_requests}-request boundary after producing "
+            "a reviewable repository candidate. Deterministic verification and Reviewer "
+            "remain authoritative for completeness.",
+            tool_count,
+            estimated_cost,
+        )
+    raise NvidiaBuilderError(
+        f"{provider} Builder exceeded {max_requests} model requests without repository changes"
+    )
 
 
 def run_nvidia_builder(
