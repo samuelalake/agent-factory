@@ -18,6 +18,7 @@ from agent_factory.github_builder import (
     _safe_agent_env,
     build_prompt,
     format_issue_status,
+    format_pr_body,
     parse_gemini_stream,
 )
 from agent_factory.protocol import decode_data
@@ -136,6 +137,22 @@ class BuilderTests(unittest.TestCase):
         self.assertNotIn("chain of thought", summary)
         self.assertNotIn("Let me", summary)
         self.assertIn("issue #83", summary)
+
+    def test_pr_body_is_safe_to_refresh_on_revision(self) -> None:
+        config = parse_config(default_config("demo"))
+        body = format_pr_body(
+            config,
+            "83",
+            "<think>hidden</think>\nLet me keep exploring:",
+            "openai-compatible-tool-loop",
+            "MiniMax-M2.7",
+            12,
+            0.25,
+        )
+        self.assertIn("Closes #83", body)
+        self.assertIn("issue #83", body)
+        self.assertNotIn("hidden", body)
+        self.assertIn("$0.2500", body)
 
     def test_workflow_control_plane_is_restored_without_discarding_product_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
