@@ -230,10 +230,13 @@ class BuilderTests(unittest.TestCase):
             subprocess.run(["git", "switch", "-q", "candidate"], cwd=root, check=True)
 
             reconciled = _reconcile_workflow_control_plane(root, "master")
+            product.write_text("repaired\n", encoding="utf-8")
+            preserved = _preserve_workflow_control_plane(root, "master")
 
             self.assertEqual(reconciled, (".github/workflows/verify.yml",))
+            self.assertEqual(preserved, (".github/workflows/verify.yml",))
             self.assertEqual(workflow.read_text(encoding="utf-8"), "safe: current-base\n")
-            self.assertEqual(product.read_text(encoding="utf-8"), "implemented\n")
+            self.assertEqual(product.read_text(encoding="utf-8"), "repaired\n")
 
 
 if __name__ == "__main__":
