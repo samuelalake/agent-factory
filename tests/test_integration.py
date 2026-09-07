@@ -14,6 +14,7 @@ from agent_factory.github_integration import (
     close_delivered_issues,
     ensure_followup_issue,
     format_integration,
+    integration_environment,
     linked_issue_numbers,
     queue_followup_for_steward,
     report_landing_permission_failure,
@@ -25,6 +26,12 @@ from agent_factory.protocol import decode_data, encode_data
 
 
 class IntegrationTests(unittest.TestCase):
+    def test_environment_follows_actual_integration_target(self) -> None:
+        config = parse_config(default_config("fixture"))
+        self.assertEqual(integration_environment(config, "development"), "development")
+        self.assertEqual(integration_environment(config, "main"), "production")
+        self.assertEqual(integration_environment(config, "release-candidate"), "release-candidate")
+
     def test_linked_issue_numbers_are_deduplicated(self) -> None:
         self.assertEqual(linked_issue_numbers("Closes #83 and fixes #83; resolves #91"), ("83", "91"))
 

@@ -21,6 +21,15 @@ FAILURE = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STA
 FOLLOWUP_LINK_MARKER = "<!-- agent-factory:review-followup-link -->"
 
 
+def integration_environment(config: Any, base_ref: str) -> str:
+    """Name the environment represented by the pull request's actual target."""
+    if base_ref in {"main", "master"}:
+        return "production"
+    if base_ref:
+        return base_ref
+    return config.integration.environment
+
+
 def linked_issue_numbers(body: str) -> tuple[str, ...]:
     matches = re.findall(
         r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b",
@@ -247,9 +256,13 @@ def report_landing_permission_failure(repo: str, pr: str, config_path: Path) -> 
         raise RuntimeError("GITHUB_TOKEN and STEWARD_TOKEN are required")
     config = load_config(config_path)
     meta = json.loads(
-        _gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid"], token=github_token)
+        _gh(
+            ["pr", "view", pr, "--repo", repo, "--json", "headRefOid,baseRefName"],
+            token=github_token,
+        )
     )
     head = str(meta.get("headRefOid") or "")
+    environment = integration_environment(config, str(meta.get("baseRefName") or ""))
     detail = (
         "Steward cannot land this change because its GitHub App installation does not "
         "grant Contents: write. Update and approve that permission; Issues: write and "
@@ -263,7 +276,7 @@ def report_landing_permission_failure(repo: str, pr: str, config_path: Path) -> 
         head,
         "failed",
         detail,
-        config.integration.environment,
+        environment,
         next_owner="Steward",
     )
     _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)
@@ -399,7 +412,7 @@ def run(
             _gh(
                 [
                     "pr", "view", pr, "--repo", repo, "--json",
-                    "headRefOid,mergeable,statusCheckRollup,url,body,commits,reviews",
+                    "headRefOid,baseRefName,mergeable,statusCheckRollup,url,body,commits,reviews",
                 ],
                 token=github_token,
             )
@@ -419,7 +432,7 @@ def run(
                 _gh(
                     [
                         "pr", "view", pr, "--repo", repo, "--json",
-                        "headRefOid,mergeable,statusCheckRollup,url,body,commits,reviews",
+                        "headRefOid,baseRefName,mergeable,statusCheckRollup,url,body,commits,reviews",
                     ],
                     token=github_token,
                 )
@@ -432,6 +445,7 @@ def run(
         time.sleep(poll_seconds)
 
     head = str(meta.get("headRefOid") or "")
+    environment = integration_environment(config, str(meta.get("baseRefName") or ""))
     if state == "success":
         pr_body = str(meta.get("body") or "")
         followup_issue = review_followup_issue_number(pr_body)
@@ -455,7 +469,7 @@ def run(
                     head,
                     "failed",
                     detail,
-                    config.integration.environment,
+                    environment,
                     next_owner="Steward",
                 )
                 _upsert_steward_comment(
@@ -488,8 +502,8 @@ def run(
             head,
             comment_state,
             detail,
-            config.integration.environment,
-            next_owner=config.integration.environment.title()
+            environment,
+            next_owner=environment.title()
             if comment_state == "landed"
             else None,
         )
@@ -507,7 +521,7 @@ def run(
         head,
         "failed" if state == "failure" else "waiting",
         f"{last_detail}. {route_detail}" if route_detail else last_detail,
-        config.integration.environment,
+        environment,
     )
     _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)
     if state == "failure":
