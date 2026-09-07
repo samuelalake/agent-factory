@@ -54,6 +54,18 @@ def _tool_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key in allowed}
 
 
+def _workspace_changed(root: Path) -> bool:
+    return bool(
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        ).stdout.strip()
+    )
+
+
 def _execute_tool(root: Path, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "list_files":
         pattern = str(arguments.get("pattern") or "*")
@@ -235,6 +247,10 @@ def run_openai_builder(
                 raise NvidiaBuilderError(
                     f"{provider} Builder returned without using repository tools"
                 )
+            if not _workspace_changed(root):
+                raise NvidiaBuilderError(
+                    f"{provider} Builder returned without repository changes"
+                )
             return str(assistant.get("content") or ""), tool_count, estimated_cost
         for call in calls:
             function = call.get("function") or {}
@@ -255,14 +271,7 @@ def run_openai_builder(
                     "content": json.dumps(result),
                 }
             )
-    changed = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    ).stdout.strip()
-    if changed:
+    if _workspace_changed(root):
         return (
             f"Builder stopped at its {max_requests}-request boundary after producing "
             "a reviewable repository candidate. Deterministic verification and Reviewer "
