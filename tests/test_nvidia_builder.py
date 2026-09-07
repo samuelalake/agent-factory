@@ -6,6 +6,7 @@ from pathlib import Path
 import io
 import json
 import subprocess
+import urllib.error
 from unittest import mock
 
 from agent_factory.nvidia_builder import (
@@ -136,6 +137,47 @@ class NvidiaBuilderTests(unittest.TestCase):
             open_url.call_args.args[0].full_url,
             "https://api.minimax.io/v1/chat/completions",
         )
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertIs(payload["reasoning_split"], True)
+
+    def test_other_providers_do_not_request_split_reasoning(self) -> None:
+        for provider in ("nvidia", "openrouter"):
+            with self.subTest(provider=provider):
+                response = mock.MagicMock()
+                response.__enter__.return_value = response
+                with (
+                    mock.patch(
+                        "agent_factory.nvidia_builder.urllib.request.urlopen",
+                        return_value=response,
+                    ) as open_url,
+                    mock.patch(
+                        "agent_factory.nvidia_builder.json.load",
+                        return_value={"choices": []},
+                    ),
+                ):
+                    _post("model", [], "key", 30, provider=provider)
+                payload = json.loads(open_url.call_args.args[0].data)
+                self.assertNotIn("reasoning_split", payload)
+
+    def test_http_error_body_cannot_reach_builder_issue_detail(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://example.test",
+            400,
+            "bad request",
+            {},
+            io.BytesIO(b'{"error":"secret reflected repository prompt"}'),
+        )
+        with mock.patch(
+            "agent_factory.nvidia_builder.urllib.request.urlopen", side_effect=error
+        ):
+            with self.assertRaises(NvidiaBuilderError) as raised:
+                _post("MiniMax-M2.7", [], "key", 30, provider="minimax")
+        from agent_factory.github_builder import _blocked_detail
+
+        issue_detail = _blocked_detail(str(raised.exception), "gemini", "minimax")
+        self.assertEqual(issue_detail, "minimax HTTP 400")
+        self.assertNotIn("secret", issue_detail)
+        self.assertNotIn("repository prompt", issue_detail)
 
     def test_post_uses_configured_output_reservation(self) -> None:
         response = mock.MagicMock()
@@ -225,6 +267,70 @@ class NvidiaBuilderTests(unittest.TestCase):
         self.assertIn("reviewable repository candidate", summary)
         self.assertEqual(tool_count, 1)
         self.assertGreater(cost, 0)
+
+    def test_minimax_preserves_reasoning_state_before_tool_result(self) -> None:
+        assistant = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_details": [
+                {"type": "reasoning.text", "text": "private reasoning"}
+            ],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"path":"candidate.txt","content":"ready"}',
+                    },
+                }
+            ],
+        }
+        responses = iter(
+            [
+                {
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+                    "choices": [{"message": assistant}],
+                },
+                {
+                    "usage": {"prompt_tokens": 200, "completion_tokens": 10},
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "<builder_summary>Done.</builder_summary>",
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+        histories: list[list[dict]] = []
+
+        def respond(_model, messages, *_args, **_kwargs):
+            histories.append(json.loads(json.dumps(messages)))
+            return next(responses)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            with mock.patch("agent_factory.nvidia_builder._post", side_effect=respond):
+                summary, tool_count, _ = run_openai_builder(
+                    "task",
+                    root,
+                    provider="minimax",
+                    model="MiniMax-M2.7",
+                    api_key="key",
+                    max_requests=2,
+                    timeout_seconds=60,
+                    max_cost_usd=3,
+                    input_cost_per_million=0.3,
+                    output_cost_per_million=1.2,
+                )
+        self.assertEqual(summary, "<builder_summary>Done.</builder_summary>")
+        self.assertEqual(tool_count, 1)
+        self.assertEqual(histories[1][1], assistant)
+        self.assertEqual(histories[1][2]["role"], "tool")
+        self.assertEqual(histories[1][2]["tool_call_id"], "call-1")
 
     def test_read_only_completion_fails_so_fallback_can_run(self) -> None:
         inspect_response = {

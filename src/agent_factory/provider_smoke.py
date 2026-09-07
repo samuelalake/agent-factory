@@ -166,6 +166,11 @@ def probe_model(
         "temperature": 0,
         "stream": False,
     }
+    if provider == "minimax":
+        # Match the production Builder loop: MiniMax requires its reasoning
+        # state to be preserved across tool turns, but the final content must
+        # remain clean enough for an exact acknowledgement.
+        payload["reasoning_split"] = True
     first = _request(endpoint, api_key, payload=payload)
     choices = first.get("choices") or []
     first_choice = choices[0] if isinstance(choices, list) and choices else None
