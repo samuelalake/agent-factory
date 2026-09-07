@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -82,7 +83,14 @@ def wait_for_delivery(
         time.sleep(poll_seconds)
 
 
-def publish(repo: str, pr: str, head: str, status: str, content: str) -> None:
+def publish(
+    repo: str,
+    pr: str,
+    head: str,
+    status: str,
+    content: str,
+    attachments: tuple[Path, ...] = (),
+) -> None:
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
     ]))
@@ -94,10 +102,22 @@ def publish(repo: str, pr: str, head: str, status: str, content: str) -> None:
     updated = replace_delivery(
         str(meta.get("body") or ""), format_delivery(status, content)
     )
-    _gh(
-        ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
-        stdin=json.dumps({"body": updated}),
-    )
+    if attachments:
+        missing = [str(path) for path in attachments if not path.is_file()]
+        if missing:
+            raise ValueError(f"Builder delivery attachments do not exist: {', '.join(missing)}")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".md") as body_file:
+            body_file.write(updated)
+            body_file.flush()
+            args = ["pr", "edit", pr, "--repo", repo, "--body-file", body_file.name]
+            for path in attachments:
+                args.extend(["--attach", str(path)])
+            _gh(args)
+    else:
+        _gh(
+            ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
+            stdin=json.dumps({"body": updated}),
+        )
 
 
 def main() -> int:
@@ -107,6 +127,7 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--status", required=True, choices=sorted(VALID_STATUSES))
     parser.add_argument("--body-file", type=Path, required=True)
+    parser.add_argument("--attach", type=Path, action="append", default=[])
     args = parser.parse_args()
     publish(
         args.repo,
@@ -114,6 +135,7 @@ def main() -> int:
         args.head,
         args.status,
         args.body_file.read_text(encoding="utf-8"),
+        tuple(args.attach),
     )
     return 0
 

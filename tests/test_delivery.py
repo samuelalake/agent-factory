@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from agent_factory.github_delivery import (
@@ -33,6 +35,30 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "refusing stale"):
             publish("owner/repo", "7", "old", "ready", "Evidence")
         self.assertEqual(gh.call_count, 1)
+
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_publish_embeds_native_github_attachments_in_pr_body(self, gh) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            video = Path(directory) / "drag.mp4"
+            image.write_bytes(b"png")
+            video.write_bytes(b"mp4")
+            body = pending_delivery()
+            gh.side_effect = [
+                json.dumps({"headRefOid": "abc", "body": body}),
+                "https://github.com/owner/repo/pull/7\n",
+            ]
+            publish(
+                "owner/repo",
+                "7",
+                "abc",
+                "ready",
+                f"![Swami]({image})\n\n![]({video})",
+                (image, video),
+            )
+        args = gh.call_args_list[1].args[0]
+        self.assertEqual(args[:6], ["pr", "edit", "7", "--repo", "owner/repo", "--body-file"])
+        self.assertEqual(args.count("--attach"), 2)
 
     @mock.patch("agent_factory.github_delivery._gh")
     def test_wait_returns_failed_delivery_without_sleeping(self, gh) -> None:

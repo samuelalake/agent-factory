@@ -49,6 +49,10 @@ that section with Builder's App token. Reviewer waits for the section and fails
 closed on missing, stale, or failed evidence; a link or green workflow by itself
 is never treated as proof. Repository-specific rendering and interaction logic
 remain in the consumer.
+The publisher can pass runner-generated images and videos through the official
+`gh pr edit --attach` path, which rewrites local Markdown references into
+durable GitHub-hosted media without adding a late evidence comment or a media
+branch.
 
 The factory owns:
 
