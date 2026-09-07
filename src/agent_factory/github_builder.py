@@ -69,6 +69,63 @@ def _clean_detail(value: str) -> str:
     return "\n".join(lines)[-2000:]
 
 
+def _preserve_workflow_control_plane(root: Path) -> tuple[str, ...]:
+    """Discard candidate edits to the workflows that execute Builder credentials."""
+    workflow_root = ".github/workflows"
+    changed = {
+        item
+        for item in _run(
+            ["git", "diff", "--name-only", "--cached", "-z", "--", workflow_root],
+            cwd=root,
+        ).split("\0")
+        if item
+    }
+    changed.update(
+        item
+        for item in _run(
+            ["git", "diff", "--name-only", "-z", "--", workflow_root], cwd=root
+        ).split("\0")
+        if item
+    )
+    tracked = _run(["git", "ls-files", "-z", "--", workflow_root], cwd=root)
+    if tracked and changed:
+        _run(
+            ["git", "restore", "--source=HEAD", "--staged", "--worktree", "--", workflow_root],
+            cwd=root,
+        )
+
+    untracked = tuple(
+        item
+        for item in _run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", workflow_root],
+            cwd=root,
+        ).split("\0")
+        if item
+    )
+    for relative in untracked:
+        target = (root / relative).resolve()
+        try:
+            target.relative_to((root / workflow_root).resolve())
+        except ValueError as exc:
+            raise BuilderBlocked(f"unsafe workflow path from Builder: {relative}") from exc
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+        else:
+            raise BuilderBlocked(f"cannot preserve workflow control-plane path: {relative}")
+    return tuple(sorted(changed | set(untracked)))
+
+
+def _validate_candidate(root: Path) -> tuple[str, ...]:
+    preserved = _preserve_workflow_control_plane(root)
+    if not _run(["git", "status", "--porcelain"], cwd=root).strip():
+        if preserved:
+            raise BuilderBlocked(
+                "Builder changed only protected GitHub workflows; the control plane was preserved"
+            )
+        raise BuilderBlocked("Builder produced no repository changes")
+    return preserved
+
+
 def parse_gemini_stream(output: str) -> tuple[str, int]:
     messages: list[str] = []
     tool_calls = 0
@@ -166,6 +223,7 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 - Do not use operator-authored implementation branches or unrelated pull requests as implementation input.
 - Inspect source artifacts and run repository tools on this runner; do not invent values or weaken acceptance criteria.
 - Implement the issue, run proportionate tests, and leave the complete working-tree changes in place.
+- Do not edit `.github/workflows/**`; those workflows are a protected control plane managed separately.
 - Do not commit, push, open a pull request, merge, or expose credentials. The harness performs publication.
 - If a real blocker prevents faithful completion, make no placeholder implementation and end your response with `BUILDER_BLOCKED:` followed by the concrete blocker.
 """
@@ -287,7 +345,14 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 config.builder.provider, config.builder.model
             )
             harness = "openai-compatible-tool-loop"
-    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError, NvidiaBuilderError) as exc:
+        _validate_candidate(root)
+    except (
+        BuilderBlocked,
+        RuntimeError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        NvidiaBuilderError,
+    ) as exc:
         if not config.builder.fallback_provider or not config.builder.fallback_model:
             raise BuilderBlocked(f"{config.builder.provider} Builder failed: {exc}") from exc
         if _run(["git", "status", "--porcelain"], cwd=root).strip():
@@ -301,7 +366,8 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             )
             harness = "openai-compatible-tool-loop"
             model = config.builder.fallback_model
-        except NvidiaBuilderError as fallback_exc:
+            _validate_candidate(root)
+        except (BuilderBlocked, NvidiaBuilderError) as fallback_exc:
             raise BuilderBlocked(
                 f"{config.builder.provider} Builder failed: {exc}; "
                 f"{config.builder.fallback_provider} fallback failed: {fallback_exc}"
@@ -309,10 +375,6 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
 
     if "BUILDER_BLOCKED:" in response:
         raise BuilderBlocked(response.split("BUILDER_BLOCKED:", 1)[1].strip()[:2000])
-    changed = _run(["git", "status", "--porcelain"], cwd=root).strip()
-    if not changed:
-        raise BuilderBlocked("Builder produced no repository changes")
-
     _run(["git", "config", "user.name", "Agent Factory Builder"], cwd=root)
     _run(["git", "config", "user.email", "agent-factory-builder[bot]@users.noreply.github.com"], cwd=root)
     _run(["git", "add", "--all"], cwd=root)
