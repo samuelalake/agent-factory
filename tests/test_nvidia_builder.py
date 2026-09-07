@@ -165,6 +165,54 @@ class NvidiaBuilderTests(unittest.TestCase):
         self.assertEqual(tool_count, 1)
         self.assertGreater(cost, 0)
 
+    def test_read_only_completion_fails_so_fallback_can_run(self) -> None:
+        inspect_response = {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": '{"pattern":"nothing","path":"."}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        final_response = {
+            "usage": {"prompt_tokens": 200, "completion_tokens": 10},
+            "choices": [
+                {"message": {"role": "assistant", "content": "I only inspected it."}}
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            with mock.patch(
+                "agent_factory.nvidia_builder._post",
+                side_effect=[inspect_response, final_response],
+            ):
+                with self.assertRaisesRegex(NvidiaBuilderError, "without repository changes"):
+                    run_openai_builder(
+                        "task",
+                        root,
+                        provider="minimax",
+                        model="MiniMax-M2.7",
+                        api_key="key",
+                        max_requests=2,
+                        timeout_seconds=60,
+                        max_cost_usd=3,
+                        input_cost_per_million=0.3,
+                        output_cost_per_million=1.2,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
