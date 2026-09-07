@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+import io
+import json
 import subprocess
 from unittest import mock
 
@@ -73,6 +75,54 @@ class NvidiaBuilderTests(unittest.TestCase):
         ):
             self.assertEqual(_post("model", [], "key", 30), {"choices": []})
         sleep.assert_called_once_with(30)
+
+    def test_post_retries_minimax_overload(self) -> None:
+        overloaded = __import__("urllib.error").error.HTTPError(
+            "https://example.test", 529, "overloaded", {}, io.BytesIO(b'{}')
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch(
+                "agent_factory.nvidia_builder.urllib.request.urlopen",
+                side_effect=[overloaded, response],
+            ),
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+            mock.patch("agent_factory.nvidia_builder.time.sleep") as sleep,
+        ):
+            self.assertEqual(
+                _post("MiniMax-M2.7", [], "key", 30, provider="minimax"),
+                {"choices": []},
+            )
+        sleep.assert_called_once_with(30)
+
+    def test_openrouter_in_flight_budget_honors_nested_retry_after(self) -> None:
+        detail = {
+            "error": {
+                "metadata": {
+                    "reason": "in_flight_budget_exhausted",
+                    "headers": {"Retry-After": "120"},
+                }
+            }
+        }
+        limited = __import__("urllib.error").error.HTTPError(
+            "https://example.test", 402, "limited", {}, io.BytesIO(json.dumps(detail).encode())
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch(
+                "agent_factory.nvidia_builder.urllib.request.urlopen",
+                side_effect=[limited, response],
+            ),
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+            mock.patch("agent_factory.nvidia_builder.time.sleep") as sleep,
+        ):
+            self.assertEqual(
+                _post("qwen/qwen3-coder-next", [], "key", 30, provider="openrouter"),
+                {"choices": []},
+            )
+        sleep.assert_called_once_with(120)
 
     def test_minimax_uses_its_openai_compatible_endpoint(self) -> None:
         response = mock.MagicMock()

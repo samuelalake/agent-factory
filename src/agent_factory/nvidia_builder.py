@@ -24,7 +24,7 @@ API_KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 ENDPOINT = ENDPOINTS["nvidia"]
-TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
+TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504, 529}
 _BLOCKED_COMMANDS = re.compile(
     r"(?:^|[;&|]\s*)(?:sudo|gh|ssh|scp)\b|git\s+push\b|rm\s+-[A-Za-z]*r[A-Za-z]*f\b|"
     r"(?:printenv|env)\b|/proc/(?:self|[0-9]+)/environ",
@@ -178,14 +178,26 @@ def _post(
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:1000]
-            if exc.code not in TRANSIENT_HTTP_CODES or attempt == 2:
+            in_flight_budget = (
+                provider == "openrouter"
+                and exc.code == 402
+                and "in_flight_budget_exhausted" in detail
+            )
+            if (exc.code not in TRANSIENT_HTTP_CODES and not in_flight_budget) or attempt == 2:
                 raise NvidiaBuilderError(f"{provider} HTTP {exc.code}: {detail}") from exc
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            if not retry_after and in_flight_budget:
+                try:
+                    retry_after = str(
+                        json.loads(detail)["error"]["metadata"]["headers"]["Retry-After"]
+                    )
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    retry_after = None
             try:
                 delay = int(float(retry_after)) if retry_after else 30 * (attempt + 1)
             except ValueError:
                 delay = 30 * (attempt + 1)
-            time.sleep(max(1, min(delay, 60)))
+            time.sleep(max(1, min(delay, 120)))
         except urllib.error.URLError as exc:
             raise NvidiaBuilderError(f"{provider} endpoint unreachable: {exc.reason}") from exc
     raise NvidiaBuilderError(f"{provider} retry loop exhausted")
