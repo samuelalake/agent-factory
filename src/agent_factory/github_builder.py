@@ -69,7 +69,9 @@ def _clean_detail(value: str) -> str:
     return "\n".join(lines)[-2000:]
 
 
-def _preserve_workflow_control_plane(root: Path) -> tuple[str, ...]:
+def _preserve_workflow_control_plane(
+    root: Path, source_ref: str = "HEAD"
+) -> tuple[str, ...]:
     """Discard candidate edits to the workflows that execute Builder credentials."""
     workflow_root = ".github/workflows"
     changed = {
@@ -90,7 +92,10 @@ def _preserve_workflow_control_plane(root: Path) -> tuple[str, ...]:
     tracked = _run(["git", "ls-files", "-z", "--", workflow_root], cwd=root)
     if tracked and changed:
         _run(
-            ["git", "restore", "--source=HEAD", "--staged", "--worktree", "--", workflow_root],
+            [
+                "git", "restore", f"--source={source_ref}", "--staged", "--worktree",
+                "--", workflow_root,
+            ],
             cwd=root,
         )
 
@@ -115,8 +120,8 @@ def _preserve_workflow_control_plane(root: Path) -> tuple[str, ...]:
     return tuple(sorted(changed | set(untracked)))
 
 
-def _validate_candidate(root: Path) -> tuple[str, ...]:
-    preserved = _preserve_workflow_control_plane(root)
+def _validate_candidate(root: Path, protected_ref: str = "HEAD") -> tuple[str, ...]:
+    preserved = _preserve_workflow_control_plane(root, protected_ref)
     if not _run(["git", "status", "--porcelain"], cwd=root).strip():
         if preserved:
             raise BuilderBlocked(
@@ -509,7 +514,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 config.builder.provider, config.builder.model
             )
             harness = "openai-compatible-tool-loop"
-        _validate_candidate(root)
+        _validate_candidate(root, f"origin/{config.builder.base_branch}")
     except (
         BuilderBlocked,
         RuntimeError,
@@ -530,7 +535,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             )
             harness = "openai-compatible-tool-loop"
             model = config.builder.fallback_model
-            _validate_candidate(root)
+            _validate_candidate(root, f"origin/{config.builder.base_branch}")
         except (BuilderBlocked, NvidiaBuilderError) as fallback_exc:
             raise BuilderBlocked(
                 f"{config.builder.provider} Builder failed: {exc}; "
