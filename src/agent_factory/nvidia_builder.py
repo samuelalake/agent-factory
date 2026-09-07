@@ -182,14 +182,15 @@ def _post(
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:1000]
+            # Read only enough to privately detect OpenRouter's retry signal.
+            # Provider bodies are arbitrary and may reflect prompts, repository
+            # content, or credentials, so never include them in raised errors.
+            detail = exc.read(8_192).decode(errors="replace")
             in_flight_budget = (
                 provider == "openrouter"
                 and exc.code == 402
                 and "in_flight_budget_exhausted" in detail
             )
-            if (exc.code not in TRANSIENT_HTTP_CODES and not in_flight_budget) or attempt == 2:
-                raise NvidiaBuilderError(f"{provider} HTTP {exc.code}: {detail}") from exc
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
             if not retry_after and in_flight_budget:
                 try:
@@ -198,6 +199,24 @@ def _post(
                     )
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                     retry_after = None
+            metadata = ", ".join(
+                f"{name}={value}"
+                for name, value in (
+                    ("retry_after", retry_after),
+                    (
+                        "remaining",
+                        exc.headers.get("x-ratelimit-remaining") if exc.headers else None,
+                    ),
+                    (
+                        "reset",
+                        exc.headers.get("x-ratelimit-reset") if exc.headers else None,
+                    ),
+                )
+                if value is not None
+            )
+            suffix = f" ({metadata})" if metadata else ""
+            if (exc.code not in TRANSIENT_HTTP_CODES and not in_flight_budget) or attempt == 2:
+                raise NvidiaBuilderError(f"{provider} HTTP {exc.code}{suffix}") from exc
             try:
                 delay = int(float(retry_after)) if retry_after else 30 * (attempt + 1)
             except ValueError:
