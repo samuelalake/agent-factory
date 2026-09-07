@@ -61,16 +61,16 @@ class ModelAdapterTests(unittest.TestCase):
 
     def test_openrouter_text(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
-            "choices": [{"message": {
-                "reasoning_details": [{"type": "reasoning.text", "text": "private reasoning"}],
-                "content": "{\"approve\":true}",
-            }}]
+            "choices": [{"message": {"content": "{\"approve\":true}"}}]
         })):
             self.assertEqual(complete("openrouter", "free/model", "system", "user", "key"), '{"approve":true}')
 
     def test_minimax_text_and_endpoint(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
-            "choices": [{"message": {"content": "{\"approve\":true}"}}]
+            "choices": [{"message": {
+                "reasoning_details": [{"type": "reasoning.text", "text": "private reasoning"}],
+                "content": "{\"approve\":true}",
+            }}]
         })) as urlopen:
             text = complete("minimax", "MiniMax-M2.7", "system", "user", "key")
         self.assertEqual(text, '{"approve":true}')
