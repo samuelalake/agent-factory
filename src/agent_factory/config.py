@@ -137,7 +137,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
     if not isinstance(delivery_wait_seconds, int) or isinstance(delivery_wait_seconds, bool) or delivery_wait_seconds < 0:
         raise ConfigError("review.delivery_wait_seconds must be a non-negative integer")
     provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
-    supported_providers = {"anthropic", "gemini", "nvidia", "openrouter"}
+    supported_providers = {"anthropic", "gemini", "minimax", "nvidia", "openrouter"}
     if provider not in supported_providers:
         raise ConfigError(f"unsupported review.provider: {provider}")
     fallback_provider_value = review.get("fallback_provider")

@@ -116,8 +116,9 @@ verification still belong in each adopting repository.
 The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
 not change the review or gate contract. Builder supports Gemini CLI plus bounded
-OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter; Reviewer also
-supports Anthropic. The generated configuration starts with Gemini and falls
+OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter. Reviewer and
+Steward use provider-neutral text adapters for Anthropic, Gemini, MiniMax,
+NVIDIA, and OpenRouter. The generated configuration starts with Gemini and falls
 back to NVIDIA Kimi; both are quota-limited services, so the delivery record
 names the provider and model that actually served the run instead of implying
 that a free tier is unlimited.

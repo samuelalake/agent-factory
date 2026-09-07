@@ -20,6 +20,8 @@ on:
         required: false
       GEMINI_API_KEY:
         required: false
+      MINIMAX_API_KEY:
+        required: false
       NVIDIA_API_KEY:
         required: false
       OPENROUTER_API_KEY:
@@ -59,6 +61,7 @@ jobs:
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: >-

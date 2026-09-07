@@ -45,12 +45,15 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "steward.fallback_provider"):
             parse_config(raw)
 
-    def test_builder_only_provider_is_rejected_for_steward(self) -> None:
+    def test_minimax_is_configurable_for_text_roles(self) -> None:
         raw = default_config("demo")
+        raw["review"]["provider"] = "minimax"
+        raw["review"]["model"] = "MiniMax-M2.7"
         raw["steward"]["fallback_provider"] = "minimax"
         raw["steward"]["fallback_model"] = "MiniMax-M2.7"
-        with self.assertRaisesRegex(ConfigError, "unsupported steward.fallback_provider"):
-            parse_config(raw)
+        config = parse_config(raw)
+        self.assertEqual(config.review.provider, "minimax")
+        self.assertEqual(config.steward.fallback_provider, "minimax")
 
     def test_steward_split_limit_is_bounded(self) -> None:
         raw = default_config("demo")
