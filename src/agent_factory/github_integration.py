@@ -34,12 +34,26 @@ def route_failure(repo: str, meta: dict[str, Any], config: Any, token: str) -> s
     issues = linked_issue_numbers(str(meta.get("body") or ""))
     if not issues:
         return "No linked issue was available for automatic Builder routing."
+    reviewer_unavailable = any(
+        config.review.failure_marker in str(review.get("body") or "")
+        and (
+            (data := decode_data(str(review.get("body") or ""))) is not None
+            and data.get("head_sha") == str(meta.get("headRefOid") or "")
+        )
+        for review in meta.get("reviews") or []
+    )
     attempts = sum(
         1
         for commit in meta.get("commits") or []
         if str(commit.get("messageHeadline") or "").startswith("feat: implement issue #")
     )
-    if attempts >= config.builder.max_revision_attempts:
+    if reviewer_unavailable:
+        label = "agent:steward"
+        route = (
+            "Reviewer providers did not produce a valid current-head verdict; "
+            "Steward retained the blocker instead of assigning an unreviewable revision to Builder."
+        )
+    elif attempts >= config.builder.max_revision_attempts:
         label = "agent:steward"
         route = (
             f"Automatic Builder revisions reached the configured limit of "
@@ -385,7 +399,7 @@ def run(
             _gh(
                 [
                     "pr", "view", pr, "--repo", repo, "--json",
-                    "headRefOid,mergeable,statusCheckRollup,url,body,commits",
+                    "headRefOid,mergeable,statusCheckRollup,url,body,commits,reviews",
                 ],
                 token=github_token,
             )
@@ -405,7 +419,7 @@ def run(
                 _gh(
                     [
                         "pr", "view", pr, "--repo", repo, "--json",
-                        "headRefOid,mergeable,statusCheckRollup,url,body,commits",
+                        "headRefOid,mergeable,statusCheckRollup,url,body,commits,reviews",
                     ],
                     token=github_token,
                 )

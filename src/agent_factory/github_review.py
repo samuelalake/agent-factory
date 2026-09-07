@@ -202,6 +202,37 @@ def review_payload(
     return payload
 
 
+def failed_review(detail: str) -> dict[str, Any]:
+    return normalize_review({
+        "approve": False,
+        "summary": (
+            "Reviewer could not produce a valid structured verdict. "
+            "Steward must resolve the provider or review-input failure before integration."
+        ),
+        "findings": [{
+            "severity": "P1",
+            "title": "Reviewer unavailable",
+            "reasoning": detail[:1000],
+            "suggestion": "Restore a structured Reviewer response, then review this same head again.",
+        }],
+    })
+
+
+def request_review(
+    candidates: list[tuple[str, str]], system: str, user: str
+) -> tuple[dict[str, Any], str, str]:
+    failures: list[str] = []
+    for provider, model in candidates:
+        env_name = f"{provider.upper()}_API_KEY"
+        api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
+        try:
+            reply = complete(provider, model, system, user, api_key)
+            return normalize_review(extract_json_reply(reply)), provider, model
+        except (ModelError, ValueError) as exc:
+            failures.append(f"{provider}/{model}: {type(exc).__name__}: {exc}")
+    raise ModelError("all configured review providers failed: " + "; ".join(failures))
+
+
 def run(
     repo: str,
     pr: str,
@@ -240,19 +271,13 @@ def run(
     candidates = [(provider, model)]
     if config.review.fallback_provider and config.review.fallback_model:
         candidates.append((config.review.fallback_provider, config.review.fallback_model))
-    failures: list[str] = []
-    for active_provider, active_model in candidates:
-        env_name = f"{active_provider.upper()}_API_KEY"
-        api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
-        try:
-            reply = complete(active_provider, active_model, system, user, api_key)
-            provider, model = active_provider, active_model
-            break
-        except ModelError as exc:
-            failures.append(f"{active_provider}/{active_model}: {exc}")
-    else:
-        raise ModelError("all configured review providers failed: " + "; ".join(failures))
-    raw = normalize_review(extract_json_reply(reply))
+    marker = config.review.marker
+    try:
+        raw, provider, model = request_review(candidates, system, user)
+    except ModelError as exc:
+        raw = failed_review(str(exc))
+        provider, model = "unavailable", "configured providers exhausted"
+        marker = f"{config.review.marker}\n{config.review.failure_marker}"
     if omitted:
         raw["approve"] = False
         raw["findings"].insert(0, {
@@ -261,7 +286,7 @@ def run(
             "suggestion": "Split the pull request or raise the configured review limit.",
         })
     payload = json.dumps(review_payload(
-        config.review.marker, meta["headRefOid"], raw, provider, model, diff
+        marker, meta["headRefOid"], raw, provider, model, diff
     ))
     _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)
 

@@ -1,17 +1,46 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from agent_factory.github_review import (
     diff_right_lines,
+    failed_review,
     format_body,
     normalize_review,
+    request_review,
     review_payload,
 )
 from agent_factory.protocol import decode_data
 
 
 class ReviewTests(unittest.TestCase):
+    def test_malformed_primary_reply_falls_back_to_structured_review(self) -> None:
+        with (
+            mock.patch(
+                "agent_factory.github_review.complete",
+                side_effect=["not json", '{"summary":"caught it","approve":false,"findings":[]}'],
+            ) as complete,
+            mock.patch.dict(
+                "os.environ",
+                {"OPENROUTER_API_KEY": "one", "NVIDIA_API_KEY": "two"},
+                clear=True,
+            ),
+        ):
+            review, provider, model = request_review(
+                [("openrouter", "free"), ("nvidia", "kimi")], "system", "user"
+            )
+        self.assertFalse(review["approve"])
+        self.assertEqual((provider, model), ("nvidia", "kimi"))
+        self.assertEqual(complete.call_count, 2)
+
+    def test_exhausted_providers_become_a_structured_blocking_review(self) -> None:
+        review = failed_review("invalid JSON")
+        self.assertFalse(review["approve"])
+        self.assertEqual(review["findings"][0]["severity"], "P1")
+        self.assertEqual(review["findings"][0]["key"], "review-wide")
+        self.assertIn("invalid JSON", review["findings"][0]["reasoning"])
+
     def test_p1_overrides_model_approval(self) -> None:
         review = normalize_review({
             "approve": True,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,18 +20,26 @@ def _post(url: str, payload: dict, headers: dict[str, str]) -> dict:
         headers={"content-type": "application/json", **headers},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:1000]
-        raise ModelError(f"model HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise ModelError(f"model endpoint unreachable: {exc.reason}") from exc
-    except (ConnectionError, TimeoutError, http.client.HTTPException) as exc:
-        raise ModelError(f"model transport failed: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ModelError("model returned invalid JSON") from exc
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:1000]
+            transient = exc.code in {429, 500, 502, 503, 504}
+            if transient and attempt < 2:
+                retry_after = str(exc.headers.get("Retry-After") or "").strip()
+                delay = int(retry_after) if retry_after.isdigit() else 5 * (attempt + 1)
+                time.sleep(max(1, min(delay, 30)))
+                continue
+            raise ModelError(f"model HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise ModelError(f"model endpoint unreachable: {exc.reason}") from exc
+        except (ConnectionError, TimeoutError, http.client.HTTPException) as exc:
+            raise ModelError(f"model transport failed: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ModelError("model returned invalid JSON") from exc
+    raise ModelError("model request exhausted retries")
 
 
 def complete(provider: str, model: str, system: str, user: str, api_key: str) -> str:

@@ -193,17 +193,26 @@ def _review_feedback(repo: str, pr: int, head: str, marker: str, *, root: Path) 
     return body.split("<!-- agent-factory:data", 1)[0].strip()[-8000:]
 
 
-def _builder_summary(response: str, issue_number: str) -> str:
-    summary = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL | re.IGNORECASE)
-    summary = re.sub(r"<analysis>.*?</analysis>", "", summary, flags=re.DOTALL | re.IGNORECASE)
-    summary = summary.strip()
-    self_talk = re.compile(r"^(let me|now i|i need|i'm (?:going|trying)|next i)\b", re.IGNORECASE)
-    if len(summary) < 80 or summary.endswith(":") or self_talk.search(summary):
-        return (
-            f"Builder completed an implementation pass for issue #{issue_number} using "
-            "repository tools. Reviewer and repository workflows will validate the current head."
+def _builder_summary(response: str, issue_number: str, issue_title: str = "") -> str:
+    """Return only an explicitly delimited final summary, never raw model output."""
+    match = re.search(
+        r"<builder_summary>\s*(.*?)\s*</builder_summary>",
+        response,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match:
+        summary = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        self_talk = re.compile(
+            r"(?im)^\s*(let me|now i|i need|i'm (?:going|trying)|next i)\b"
         )
-    return summary[-3000:]
+        if 20 <= len(summary) <= 1000 and not self_talk.search(summary):
+            return summary
+    title = re.sub(r"\s+", " ", issue_title).strip()[:180]
+    subject = f": {title}" if title else ""
+    return (
+        f"Builder prepared the repository changes for issue #{issue_number}{subject}. "
+        "Reviewer and repository workflows will validate the current head."
+    )
 
 
 def format_pr_body(
@@ -214,28 +223,44 @@ def format_pr_body(
     model: str,
     tool_calls: int,
     estimated_cost: float | None,
+    *,
+    issue_title: str = "",
+    changed_paths: tuple[str, ...] = (),
 ) -> str:
-    return "\n".join(
-        [
-            config.builder.marker,
-            "",
-            f"Closes #{issue_number}",
-            "",
-            "## Builder summary",
-            "",
-            _builder_summary(response, issue_number),
-            "",
-            "## Delivery",
-            "",
-            f"- Base: `{config.builder.base_branch}`",
-            f"- Harness: `{harness}`",
-            f"- Model: `{model}`",
-            f"- Repository tool calls: `{tool_calls}`",
-            f"- Estimated model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
-            "- Verification: repository workflows run on this pull request",
-            "",
-        ]
-    )
+    files = [f"- `{path}`" for path in changed_paths[:20]]
+    if len(changed_paths) > 20:
+        files.append(f"- _{len(changed_paths) - 20} more files_" )
+    if not files:
+        files.append("- _No changed paths reported._")
+    return "\n".join([
+        config.builder.marker,
+        "",
+        f"Closes #{issue_number}",
+        "",
+        "## Summary",
+        "",
+        _builder_summary(response, issue_number, issue_title),
+        "",
+        "## Changed files",
+        "",
+        *files,
+        "",
+        "## Verification",
+        "",
+        "Repository workflows validate the committed head; current visual and DocC evidence appears below.",
+        "",
+        "<details>",
+        "<summary>Execution details</summary>",
+        "",
+        f"- Base: `{config.builder.base_branch}`",
+        f"- Harness: `{harness}`",
+        f"- Model: `{model}`",
+        f"- Repository tool calls: `{tool_calls}`",
+        f"- Estimated model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
+        "",
+        "</details>",
+        "",
+    ])
 
 
 def parse_gemini_stream(output: str) -> tuple[str, int]:
@@ -368,6 +393,8 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 - Do not use operator-authored implementation branches or unrelated pull requests as implementation input.
 - Inspect source artifacts and run repository tools on this runner; do not invent values or weaken acceptance criteria.
 - Implement the issue, run proportionate tests, and leave the complete working-tree changes in place.
+- End with one concise, plain-language delivery summary wrapped exactly in
+  `<builder_summary>...</builder_summary>`. Put no analysis or work log inside it.
 - Do not edit `.github/workflows/**`; those workflows are a protected control plane managed separately.
 - Do not commit, push, open a pull request, merge, or expose credentials. The harness performs publication.
 - If a real blocker prevents faithful completion, make no placeholder implementation and end your response with `BUILDER_BLOCKED:` followed by the concrete blocker.
@@ -548,6 +575,12 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     _run(["git", "commit", "-m", f"feat: implement issue #{issue_number}"], cwd=root)
     _run(["gh", "auth", "setup-git"], cwd=root)
     _run(["git", "push", "--force-with-lease", "origin", branch], cwd=root)
+    changed_paths = tuple(
+        path for path in _run(
+            ["git", "diff", "--name-only", f"origin/{config.builder.base_branch}...HEAD"],
+            cwd=root,
+        ).splitlines() if path
+    )
 
     pr_body = format_pr_body(
         config,
@@ -557,6 +590,8 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         model,
         tool_calls,
         estimated_cost,
+        issue_title=str(issue.get("title") or ""),
+        changed_paths=changed_paths,
     )
 
     if existing:

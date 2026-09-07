@@ -34,8 +34,10 @@ class IntegrationTests(unittest.TestCase):
         detail = route_failure(
             "owner/repo",
             {
+                "headRefOid": "head",
                 "body": "Closes #83",
                 "commits": [{"messageHeadline": "feat: implement issue #83"}],
+                "reviews": [],
             },
             config,
             "steward",
@@ -52,6 +54,7 @@ class IntegrationTests(unittest.TestCase):
         detail = route_failure(
             "owner/repo",
             {
+                "headRefOid": "head",
                 "body": "Closes #83",
                 "commits": [
                     {"messageHeadline": "feat: implement issue #83"},
@@ -59,11 +62,34 @@ class IntegrationTests(unittest.TestCase):
                     {"messageHeadline": "feat: implement issue #83"},
                     {"messageHeadline": "Merge current main"},
                 ],
+                "reviews": [],
             },
             config,
             "steward",
         )
         self.assertIn("configured limit of 3", detail)
+        self.assertEqual(gh.call_args.args[0][-1], "agent:steward")
+
+    @patch("agent_factory.github_integration._gh")
+    def test_reviewer_provider_failure_routes_to_steward_not_builder(self, gh) -> None:
+        config = parse_config(default_config("fixture"))
+        review_body = "\n".join([
+            config.review.marker,
+            config.review.failure_marker,
+            encode_data({"version": 1, "head_sha": "head", "verdict": "request_changes"}),
+        ])
+        detail = route_failure(
+            "owner/repo",
+            {
+                "headRefOid": "head",
+                "body": "Closes #83",
+                "commits": [{"messageHeadline": "feat: implement issue #83"}],
+                "reviews": [{"body": review_body}],
+            },
+            config,
+            "steward",
+        )
+        self.assertIn("Reviewer providers", detail)
         self.assertEqual(gh.call_args.args[0][-1], "agent:steward")
 
     def test_required_checks_all_pass(self) -> None:
