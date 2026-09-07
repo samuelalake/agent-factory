@@ -12,6 +12,7 @@ from agent_factory.github_builder import (
     BuilderBlocked,
     _builder_summary,
     _quota_delay,
+    _reconcile_workflow_control_plane,
     _review_feedback,
     _preserve_workflow_control_plane,
     _run_gemini,
@@ -198,6 +199,40 @@ class BuilderTests(unittest.TestCase):
             )
             self.assertEqual(workflow.read_text(encoding="utf-8"), "safe: true\n")
             self.assertFalse(new_workflow.exists())
+            self.assertEqual(product.read_text(encoding="utf-8"), "implemented\n")
+
+    def test_inherited_workflow_changes_are_reconciled_to_current_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            import subprocess
+
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            workflow = root / ".github/workflows/verify.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("safe: original\n", encoding="utf-8")
+            product = root / "Product.swift"
+            product.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+
+            subprocess.run(["git", "switch", "-qc", "candidate"], cwd=root, check=True)
+            workflow.write_text("unsafe: candidate\n", encoding="utf-8")
+            product.write_text("implemented\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "candidate"], cwd=root, check=True)
+
+            subprocess.run(["git", "switch", "-q", "master"], cwd=root, check=True)
+            workflow.write_text("safe: current-base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "base update"], cwd=root, check=True)
+            subprocess.run(["git", "switch", "-q", "candidate"], cwd=root, check=True)
+
+            reconciled = _reconcile_workflow_control_plane(root, "master")
+
+            self.assertEqual(reconciled, (".github/workflows/verify.yml",))
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "safe: current-base\n")
             self.assertEqual(product.read_text(encoding="utf-8"), "implemented\n")
 
 
