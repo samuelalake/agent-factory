@@ -1,0 +1,77 @@
+name: reusable-provider-tool-smoke
+
+on:
+  workflow_call:
+    inputs:
+      factory_ref:
+        required: true
+        type: string
+      provider:
+        required: false
+        type: string
+        default: nvidia
+      models:
+        required: false
+        type: string
+        default: ""
+      max_candidates:
+        required: false
+        type: number
+        default: 4
+      builder_shape:
+        required: false
+        type: boolean
+        default: false
+      max_output_tokens:
+        required: false
+        type: number
+        default: 128
+      prompt_bytes:
+        required: false
+        type: number
+        default: 0
+    secrets:
+      MINIMAX_API_KEY:
+        required: false
+      NVIDIA_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  tool-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout Factory
+        uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - name: Probe a two-turn repository tool exchange
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          MODELS: ${{ inputs.models }}
+          MAX_CANDIDATES: ${{ inputs.max_candidates }}
+          BUILDER_SHAPE: ${{ inputs.builder_shape }}
+          MAX_OUTPUT_TOKENS: ${{ inputs.max_output_tokens }}
+          PROMPT_BYTES: ${{ inputs.prompt_bytes }}
+          PROVIDER_API_KEY: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY || inputs.provider == 'minimax' && secrets.MINIMAX_API_KEY || inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
+        run: |
+          args=(
+            --provider "$PROVIDER"
+            --models-csv "$MODELS"
+            --discover
+            --max-candidates "$MAX_CANDIDATES"
+            --max-output-tokens "$MAX_OUTPUT_TOKENS"
+            --prompt-bytes "$PROMPT_BYTES"
+          )
+          if [[ "$BUILDER_SHAPE" == "true" ]]; then
+            args+=(--builder-shape)
+          fi
+          PYTHONPATH=factory/src python3 -m agent_factory.provider_smoke "${args[@]}"

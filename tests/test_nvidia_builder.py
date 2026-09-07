@@ -137,6 +137,17 @@ class NvidiaBuilderTests(unittest.TestCase):
             "https://api.minimax.io/v1/chat/completions",
         )
 
+    def test_post_uses_configured_output_reservation(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch("agent_factory.nvidia_builder.urllib.request.urlopen", return_value=response) as open_url,
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+        ):
+            _post("model", [], "key", 30, max_output_tokens=2048)
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertEqual(payload["max_tokens"], 2048)
+
     def test_usage_stops_the_builder_at_configured_cost_limit(self) -> None:
         response = {
             "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0},

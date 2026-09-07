@@ -549,6 +549,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             max_cost_usd=config.builder.max_model_cost_usd,
             input_cost_per_million=config.builder.input_cost_per_million,
             output_cost_per_million=config.builder.output_cost_per_million,
+            max_output_tokens=config.builder.max_output_tokens,
         )
 
     try:

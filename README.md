@@ -122,7 +122,7 @@ back to NVIDIA Kimi; both are quota-limited services, so the delivery record
 names the provider and model that actually served the run instead of implying
 that a free tier is unlimited.
 
-Builder configuration can also set `max_model_requests`,
+Builder configuration can also set `max_model_requests`, `max_output_tokens`,
 `max_model_cost_usd`, `input_cost_per_million`, and
 `output_cost_per_million`. The cost ceiling is calculated from provider-reported
 token usage. Keep a provider-side account or key budget as the authoritative
