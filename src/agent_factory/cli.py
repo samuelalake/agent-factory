@@ -157,6 +157,7 @@ def default_config(project_name: str) -> dict:
             "fallback_provider": "nvidia",
             "fallback_model": "moonshotai/kimi-k3",
             "max_model_requests": 40,
+            "max_revision_attempts": 3,
             "max_model_cost_usd": 3.0,
             "input_cost_per_million": 0.0,
             "output_cost_per_million": 0.0,

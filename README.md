@@ -111,6 +111,9 @@ Builder configuration can also set `max_model_requests`,
 `output_cost_per_million`. The cost ceiling is calculated from provider-reported
 token usage. Keep a provider-side account or key budget as the authoritative
 hard stop because a response is billed before its usage can be evaluated.
+`max_revision_attempts` bounds the Steward-managed Builder → Reviewer repair
+loop. On each clean revision, Builder receives the current-head review findings;
+after the limit, Steward retains the blocker instead of creating an infinite loop.
 
 Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
 `MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`

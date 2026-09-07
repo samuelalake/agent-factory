@@ -126,6 +126,36 @@ def _validate_candidate(root: Path) -> tuple[str, ...]:
     return preserved
 
 
+def _review_feedback(repo: str, pr: int, head: str, marker: str, *, root: Path) -> str:
+    reviews = json.loads(
+        _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"], cwd=root)
+    )
+    current = [
+        item
+        for item in reviews
+        if str(item.get("commit_id") or "") == head
+        and marker in str(item.get("body") or "")
+        and str(item.get("state") or "").upper() == "CHANGES_REQUESTED"
+    ]
+    if not current:
+        return ""
+    body = str(current[-1].get("body") or "")
+    return body.split("<!-- agent-factory:data", 1)[0].strip()[-8000:]
+
+
+def _builder_summary(response: str, issue_number: str) -> str:
+    summary = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL | re.IGNORECASE)
+    summary = re.sub(r"<analysis>.*?</analysis>", "", summary, flags=re.DOTALL | re.IGNORECASE)
+    summary = summary.strip()
+    self_talk = re.compile(r"^(let me|now i|i need|i'm (?:going|trying)|next i)\b", re.IGNORECASE)
+    if len(summary) < 80 or summary.endswith(":") or self_talk.search(summary):
+        return (
+            f"Builder completed an implementation pass for issue #{issue_number} using "
+            "repository tools. Reviewer and repository workflows will validate the current head."
+        )
+    return summary[-3000:]
+
+
 def parse_gemini_stream(output: str) -> tuple[str, int]:
     messages: list[str] = []
     tool_calls = 0
@@ -196,11 +226,28 @@ def _run_gemini(prompt: str, *, root: Path, model: str, timeout_seconds: int) ->
     raise subprocess.TimeoutExpired("gemini", timeout_seconds)
 
 
-def build_prompt(config: Config, issue: dict[str, Any], root: Path) -> str:
+def build_prompt(
+    config: Config,
+    issue: dict[str, Any],
+    root: Path,
+    review_feedback: str = "",
+) -> str:
     task = f"{issue.get('title', '')}\n{issue.get('body', '')}"
     context = discover_context(root, config.project, task, role="builder")
     documents = "\n\n".join(
         f"## {document.kind}: {document.path}\n\n{document.content}" for document in context
+    )
+    feedback = (
+        f"""
+## Current-head Reviewer feedback
+
+This is a revision of an existing pull request. Resolve every finding below; do not merely
+describe it. Re-run relevant verification and keep unrelated valid work intact.
+
+{review_feedback}
+"""
+        if review_feedback
+        else ""
     )
     return f"""You are Builder for {config.project.name}.
 
@@ -215,6 +262,7 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 ## Repository briefing
 
 {documents or 'No configured briefing files were found. Discover the repository before acting.'}
+{feedback}
 
 ## Contract
 
@@ -296,18 +344,29 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     branch = f"{config.builder.branch_prefix}{issue_number}"
     existing = json.loads(
         _gh(
-            ["pr", "list", "--repo", repo, "--state", "open", "--head", branch, "--json", "number,url"],
+            [
+                "pr", "list", "--repo", repo, "--state", "open", "--head", branch,
+                "--json", "number,url,headRefOid",
+            ],
             cwd=root,
         )
     )
+    feedback = ""
     if existing:
+        feedback = _review_feedback(
+            repo,
+            int(existing[0]["number"]),
+            str(existing[0].get("headRefOid") or ""),
+            config.review.marker,
+            root=root,
+        )
         _run(["gh", "auth", "setup-git"], cwd=root)
         _run(["git", "fetch", "origin", branch], cwd=root)
         start_ref = "FETCH_HEAD"
     else:
         start_ref = f"origin/{config.builder.base_branch}"
     _run(["git", "checkout", "-B", branch, start_ref], cwd=root)
-    prompt = build_prompt(config, issue, root)
+    prompt = build_prompt(config, issue, root, feedback)
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
@@ -393,7 +452,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 "",
                 "## Builder summary",
                 "",
-                response.strip() or "Implementation completed from the assigned issue and repository context.",
+                _builder_summary(response, issue_number),
                 "",
                 "## Delivery",
                 "",

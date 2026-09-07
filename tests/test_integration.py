@@ -8,11 +8,48 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from agent_factory.cli import default_config
-from agent_factory.github_integration import check_state, format_integration, run
+from agent_factory.config import parse_config
+from agent_factory.github_integration import (
+    check_state,
+    format_integration,
+    linked_issue_numbers,
+    route_failure,
+    run,
+)
 from agent_factory.protocol import decode_data
 
 
 class IntegrationTests(unittest.TestCase):
+    def test_linked_issue_numbers_are_deduplicated(self) -> None:
+        self.assertEqual(linked_issue_numbers("Closes #83 and fixes #83; resolves #91"), ("83", "91"))
+
+    @patch("agent_factory.github_integration._gh")
+    def test_failed_revision_routes_linked_issue_back_to_builder(self, gh) -> None:
+        config = parse_config(default_config("fixture"))
+        detail = route_failure(
+            "owner/repo",
+            {"body": "Closes #83", "commits": [{"oid": "one"}]},
+            config,
+            "steward",
+        )
+        self.assertIn("revision 2 of 3", detail)
+        gh.assert_called_once_with(
+            ["issue", "edit", "83", "--repo", "owner/repo", "--add-label", "agent:retry"],
+            token="steward",
+        )
+
+    @patch("agent_factory.github_integration._gh")
+    def test_revision_limit_routes_to_steward_without_another_retry(self, gh) -> None:
+        config = parse_config(default_config("fixture"))
+        detail = route_failure(
+            "owner/repo",
+            {"body": "Closes #83", "commits": [{}, {}, {}]},
+            config,
+            "steward",
+        )
+        self.assertIn("configured limit of 3", detail)
+        self.assertEqual(gh.call_args.args[0][-1], "agent:steward")
+
     def test_required_checks_all_pass(self) -> None:
         state, _ = check_state(
             ("verify", "merge-gate"),
