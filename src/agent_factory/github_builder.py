@@ -144,6 +144,33 @@ def _merge_current_base(root: Path, base_ref: str) -> str:
     raise BuilderBlocked(f"could not integrate current base: {detail}")
 
 
+def _reconcile_workflow_control_plane(root: Path, base_ref: str) -> tuple[str, ...]:
+    """Make inherited workflow state match the current consumer base exactly."""
+    workflow_root = ".github/workflows"
+    divergent = tuple(
+        item
+        for item in _run(
+            ["git", "diff", "--name-only", "-z", base_ref, "HEAD", "--", workflow_root],
+            cwd=root,
+        ).split("\0")
+        if item
+    )
+    unmerged = tuple(
+        item
+        for item in _run(
+            ["git", "diff", "--name-only", "--diff-filter=U", "-z", "--", workflow_root],
+            cwd=root,
+        ).split("\0")
+        if item
+    )
+    if divergent or unmerged:
+        _run(
+            ["git", "restore", f"--source={base_ref}", "--staged", "--worktree", "--", workflow_root],
+            cwd=root,
+        )
+    return tuple(sorted(set(divergent) | set(unmerged)))
+
+
 def _review_feedback(repo: str, pr: int, head: str, marker: str, *, root: Path) -> str:
     reviews = json.loads(
         _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"], cwd=root)
@@ -438,6 +465,12 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         base_conflicts = _merge_current_base(
             root, f"origin/{config.builder.base_branch}"
         )
+        _reconcile_workflow_control_plane(
+            root, f"origin/{config.builder.base_branch}"
+        )
+        base_conflicts = _run(
+            ["git", "diff", "--name-only", "--diff-filter=U"], cwd=root
+        ).strip()
     prompt = build_prompt(config, issue, root, feedback, base_conflicts)
     harness = config.builder.harness
     model = config.builder.model
