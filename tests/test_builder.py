@@ -11,6 +11,7 @@ from agent_factory.config import parse_config
 from agent_factory.github_builder import (
     BuilderBlocked,
     _quota_delay,
+    _preserve_workflow_control_plane,
     _run_gemini,
     _safe_agent_env,
     build_prompt,
@@ -93,6 +94,44 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(output, success)
         sleep.assert_called_once_with(7)
         self.assertIn("--resume", run.call_args_list[1].args[0])
+
+    def test_builder_prompt_protects_workflow_control_plane(self) -> None:
+        config = parse_config(default_config("demo"))
+        issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_prompt(config, issue, Path(tmp))
+        self.assertIn("Do not edit `.github/workflows/**`", prompt)
+
+    def test_workflow_control_plane_is_restored_without_discarding_product_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            import subprocess
+
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            workflow = root / ".github/workflows/verify.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("safe: true\n", encoding="utf-8")
+            product = root / "Product.swift"
+            product.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+
+            workflow.write_text("unsafe: true\n", encoding="utf-8")
+            product.write_text("implemented\n", encoding="utf-8")
+            new_workflow = root / ".github/workflows/new.yml"
+            new_workflow.write_text("unsafe: true\n", encoding="utf-8")
+
+            preserved = _preserve_workflow_control_plane(root)
+
+            self.assertEqual(
+                preserved,
+                (".github/workflows/new.yml", ".github/workflows/verify.yml"),
+            )
+            self.assertEqual(workflow.read_text(encoding="utf-8"), "safe: true\n")
+            self.assertFalse(new_workflow.exists())
+            self.assertEqual(product.read_text(encoding="utf-8"), "implemented\n")
 
 
 if __name__ == "__main__":
