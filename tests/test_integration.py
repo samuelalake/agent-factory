@@ -11,12 +11,14 @@ from agent_factory.cli import default_config
 from agent_factory.config import parse_config
 from agent_factory.github_integration import (
     check_state,
+    close_delivered_issues,
+    ensure_followup_issue,
     format_integration,
     linked_issue_numbers,
     route_failure,
     run,
 )
-from agent_factory.protocol import decode_data
+from agent_factory.protocol import decode_data, encode_data
 
 
 class IntegrationTests(unittest.TestCase):
@@ -87,6 +89,107 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(data["head_sha"], "abc123")
         self.assertEqual(data["next_owner"], "landing")
 
+    @patch("agent_factory.github_integration._gh")
+    def test_steward_creates_one_traceable_followup_and_links_pr(self, gh) -> None:
+        review_body = "\n".join([
+            "<!-- reviewer:agent-factory -->",
+            encode_data({
+                "version": 1,
+                "head_sha": "abc123",
+                "verdict": "approve",
+                "findings": [{
+                    "severity": "P2",
+                    "key": "src/a.py:9",
+                    "title": "Cover the edge case",
+                    "reasoning": "The fallback is untested.",
+                    "suggestion": "Add a regression test.",
+                }],
+            }),
+        ])
+        gh.side_effect = [
+            json.dumps([[{"state": "APPROVED", "commit_id": "abc123", "body": review_body}]]),
+            "[]",
+            json.dumps({"number": 42}),
+            "",
+        ]
+        number = ensure_followup_issue(
+            "owner/repo",
+            "7",
+            "abc123",
+            "Closes #6",
+            "<!-- reviewer:agent-factory -->",
+            "actions",
+            "steward",
+        )
+        self.assertEqual(number, 42)
+        create_payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
+        self.assertIn("<!-- agent-factory:review-followup pr=7 -->", create_payload["body"])
+        self.assertIn("- [ ] **[P2] `src/a.py:9`", create_payload["body"])
+        self.assertIn("Why: The fallback is untested.", create_payload["body"])
+        self.assertIn("Suggested direction: Add a regression test.", create_payload["body"])
+        link_payload = json.loads(gh.call_args_list[3].kwargs["stdin"])
+        self.assertIn("Reviewer follow-up: #42", link_payload["body"])
+
+    @patch("agent_factory.github_integration._gh")
+    def test_steward_updates_existing_followup_instead_of_duplicating(self, gh) -> None:
+        review_body = "\n".join([
+            "<!-- reviewer:agent-factory -->",
+            encode_data({
+                "version": 1,
+                "head_sha": "newhead",
+                "verdict": "approve",
+                "findings": [{"severity": "P3", "key": "review-wide", "title": "Clarify docs"}],
+            }),
+        ])
+        gh.side_effect = [
+            json.dumps([{"state": "APPROVED", "commit_id": "newhead", "body": review_body}]),
+            json.dumps([{
+                "number": 42,
+                "body": "<!-- agent-factory:review-followup pr=7 -->\nold",
+            }]),
+            "",
+            "",
+        ]
+        number = ensure_followup_issue(
+            "owner/repo",
+            "7",
+            "newhead",
+            "body\n\n<!-- agent-factory:review-followup-link -->\nReviewer follow-up: #41",
+            "<!-- reviewer:agent-factory -->",
+            "actions",
+            "steward",
+        )
+        self.assertEqual(number, 42)
+        self.assertEqual(
+            gh.call_args_list[2].args[0][:3],
+            ["api", "repos/owner/repo/issues/42", "-X"],
+        )
+        link_payload = json.loads(gh.call_args_list[3].kwargs["stdin"])
+        self.assertIn("Reviewer follow-up: #42", link_payload["body"])
+        self.assertNotIn("Reviewer follow-up: #41", link_payload["body"])
+
+    @patch("agent_factory.github_integration._gh")
+    def test_landing_closes_source_issue_and_clears_agent_labels(self, gh) -> None:
+        config = parse_config(default_config("fixture"))
+        gh.side_effect = [
+            json.dumps({
+                "labels": [
+                    {"name": "P1"},
+                    {"name": "agent:builder"},
+                    {"name": "agent:retry"},
+                    {"name": "agent:steward"},
+                ]
+            }),
+            "",
+        ]
+        close_delivered_issues("owner/repo", "Closes #83", config, "steward")
+        payload = json.loads(gh.call_args_list[1].kwargs["stdin"])
+        self.assertEqual(payload, {
+            "state": "closed",
+            "state_reason": "completed",
+            "labels": ["P1"],
+        })
+
     @patch("agent_factory.github_integration._upsert_steward_comment")
     @patch("agent_factory.github_integration._set_status")
     @patch("agent_factory.github_integration.recompute_gate")
@@ -128,6 +231,7 @@ class IntegrationTests(unittest.TestCase):
             gh.call_args_list[-1].args[0],
             ["pr", "merge", "7", "--repo", "owner/repo", "--squash", "--delete-branch"],
         )
+        self.assertEqual(gh.call_args_list[-1].kwargs["token"], "steward")
 
 
 if __name__ == "__main__":

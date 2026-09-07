@@ -12,12 +12,13 @@ import time
 from typing import Any
 
 from .config import load_config
-from .github_gate import run as recompute_gate
-from .protocol import encode_data
+from .github_gate import evaluate_and_publish as recompute_gate
+from .protocol import decode_data, encode_data
 
 
 SUCCESS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILURE = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE"}
+FOLLOWUP_LINK_MARKER = "<!-- agent-factory:review-followup-link -->"
 
 
 def linked_issue_numbers(body: str) -> tuple[str, ...]:
@@ -56,6 +57,177 @@ def route_failure(repo: str, meta: dict[str, Any], config: Any, token: str) -> s
             token=token,
         )
     return route
+
+
+def _flatten_pages(text: str) -> list[dict[str, Any]]:
+    value = json.loads(text)
+    if not isinstance(value, list):
+        return []
+    if value and all(isinstance(page, list) for page in value):
+        return [item for page in value for item in page if isinstance(item, dict)]
+    return [item for item in value if isinstance(item, dict)]
+
+
+def current_followup_findings(
+    repo: str,
+    pr: str,
+    head: str,
+    review_marker: str,
+    token: str,
+) -> list[dict[str, str]]:
+    reviews = _flatten_pages(
+        _gh(
+            ["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate", "--slurp"],
+            token=token,
+        )
+    )
+    selected: dict[str, Any] | None = None
+    data: dict[str, Any] | None = None
+    for candidate in reviews:
+        body = str(candidate.get("body") or "")
+        decoded = decode_data(body)
+        if (
+            review_marker in body
+            and isinstance(decoded, dict)
+            and str(decoded.get("head_sha") or candidate.get("commit_id") or "") == head
+            and str(candidate.get("state") or "").upper() == "APPROVED"
+        ):
+            selected, data = candidate, decoded
+    if selected is None or data is None:
+        return []
+    findings: list[dict[str, str]] = []
+    for raw in data.get("findings") or []:
+        if not isinstance(raw, dict):
+            continue
+        severity = str(raw.get("severity") or "").upper()
+        if severity not in {"P2", "P3"}:
+            continue
+        findings.append({
+            "severity": severity,
+            "key": str(raw.get("key") or "review-wide"),
+            "title": str(raw.get("title") or "Reviewer follow-up").strip(),
+            "reasoning": str(raw.get("reasoning") or "").strip(),
+            "suggestion": str(raw.get("suggestion") or "").strip(),
+        })
+    return findings
+
+
+def _followup_marker(pr: str) -> str:
+    return f"<!-- agent-factory:review-followup pr={pr} -->"
+
+
+def _format_followup_issue(
+    repo: str,
+    pr: str,
+    head: str,
+    findings: list[dict[str, str]],
+) -> str:
+    lines = [
+        _followup_marker(pr),
+        "",
+        f"# Reviewer follow-up for PR #{pr}",
+        "",
+        f"Source: https://github.com/{repo}/pull/{pr}",
+        f"Reviewed head: `{head}`",
+        "",
+        "Steward consolidated the non-blocking Reviewer findings below so the delivery can remain traceable without expanding the current pull request.",
+        "",
+        "## Acceptance criteria",
+        "",
+    ]
+    for finding in findings:
+        lines.append(f"- [ ] **[{finding['severity']}] `{finding['key']}` — {finding['title']}")
+        if finding["reasoning"]:
+            lines.append(f"  - Why: {finding['reasoning']}")
+        if finding["suggestion"]:
+            lines.append(f"  - Suggested direction: {finding['suggestion']}")
+    lines.extend([
+        "",
+        "## Steward constraints",
+        "",
+        "- Re-evaluate scope and dependencies before marking this issue ready.",
+        "- Do not treat this issue as an approval of unrelated cleanup.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def ensure_followup_issue(
+    repo: str,
+    pr: str,
+    head: str,
+    pr_body: str,
+    review_marker: str,
+    github_token: str,
+    steward_token: str,
+) -> int:
+    findings = current_followup_findings(repo, pr, head, review_marker, github_token)
+    if not findings:
+        raise RuntimeError("orphan-findings gate had no current approved P2/P3 findings")
+    marker = _followup_marker(pr)
+    issues = json.loads(
+        _gh(
+            ["issue", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,body"],
+            token=steward_token,
+        )
+    )
+    existing = next(
+        (item for item in issues if marker in str(item.get("body") or "")), None
+    )
+    issue_body = _format_followup_issue(repo, pr, head, findings)
+    if existing and isinstance(existing.get("number"), int):
+        number = existing["number"]
+        payload = json.dumps({"title": f"Reviewer follow-up for PR #{pr}", "body": issue_body})
+        _gh(
+            ["api", f"repos/{repo}/issues/{number}", "-X", "PATCH", "--input", "-"],
+            token=steward_token,
+            stdin=payload,
+        )
+    else:
+        payload = json.dumps({"title": f"Reviewer follow-up for PR #{pr}", "body": issue_body})
+        created = json.loads(
+            _gh(
+                ["api", f"repos/{repo}/issues", "-X", "POST", "--input", "-"],
+                token=steward_token,
+                stdin=payload,
+            )
+        )
+        number = int(created["number"])
+    link_block = f"{FOLLOWUP_LINK_MARKER}\nReviewer follow-up: #{number}"
+    if FOLLOWUP_LINK_MARKER in pr_body:
+        updated_body = re.sub(
+            rf"{re.escape(FOLLOWUP_LINK_MARKER)}\nReviewer follow-up: #\d+",
+            link_block,
+            pr_body,
+        )
+    else:
+        updated_body = pr_body.rstrip() + "\n\n" + link_block + "\n"
+    if updated_body != pr_body:
+        _gh(
+            ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
+            token=steward_token,
+            stdin=json.dumps({"body": updated_body}),
+        )
+    return number
+
+
+def close_delivered_issues(repo: str, pr_body: str, config: Any, token: str) -> None:
+    agent_labels = {config.steward.dispatch_label, config.steward.retry_label, "agent:steward"}
+    for issue in linked_issue_numbers(pr_body):
+        raw = json.loads(
+            _gh(["issue", "view", issue, "--repo", repo, "--json", "labels"], token=token)
+        )
+        labels = [
+            str(item.get("name") or "")
+            for item in raw.get("labels") or []
+            if str(item.get("name") or "") not in agent_labels
+        ]
+        payload = json.dumps({"state": "closed", "state_reason": "completed", "labels": labels})
+        _gh(
+            ["api", f"repos/{repo}/issues/{issue}", "-X", "PATCH", "--input", "-"],
+            token=token,
+            stdin=payload,
+        )
 
 
 def _gh(args: list[str], *, token: str, stdin: str | None = None) -> str:
@@ -161,7 +333,7 @@ def run(
         # not depend on another webhook to refresh the protected Gate:
         # integration owns keeping that current-head decision fresh.
         os.environ["GH_TOKEN"] = github_token
-        recompute_gate(repo, pr, config_path)
+        decision = recompute_gate(repo, pr, config_path)
         meta = json.loads(
             _gh(
                 [
@@ -171,6 +343,26 @@ def run(
                 token=github_token,
             )
         )
+        if decision.code == "orphan-findings":
+            ensure_followup_issue(
+                repo,
+                pr,
+                str(meta.get("headRefOid") or ""),
+                str(meta.get("body") or ""),
+                config.review.marker,
+                github_token,
+                steward_token,
+            )
+            recompute_gate(repo, pr, config_path)
+            meta = json.loads(
+                _gh(
+                    [
+                        "pr", "view", pr, "--repo", repo, "--json",
+                        "headRefOid,mergeable,statusCheckRollup,url,body,commits",
+                    ],
+                    token=github_token,
+                )
+            )
         state, last_detail = check_state(required, meta.get("statusCheckRollup") or [])
         if str(meta.get("mergeable") or "UNKNOWN") == "CONFLICTING":
             state, last_detail = "failure", "pull request conflicts with the integration base"
@@ -195,8 +387,9 @@ def run(
         if config.integration.automatic_promotion:
             _gh(
                 ["pr", "merge", pr, "--repo", repo, "--squash", "--delete-branch"],
-                token=github_token,
+                token=steward_token,
             )
+            close_delivered_issues(repo, str(meta.get("body") or ""), config, steward_token)
         print("ready")
         return "ready"
 

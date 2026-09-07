@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from .config import load_config
-from .gate import Check, Finding, GateInput, Review, evaluate_gate
+from .gate import Check, Finding, GateDecision, GateInput, Review, evaluate_gate
 from .protocol import decode_data
 
 
@@ -39,7 +39,7 @@ def _issue_is_valid_followup(issue: dict) -> bool:
     return state == "OPEN" or (state == "CLOSED" and reason != "not_planned")
 
 
-def run(repo: str, pr: str, config_path: Path) -> str:
+def evaluate_and_publish(repo: str, pr: str, config_path: Path) -> GateDecision:
     config = load_config(config_path)
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json",
@@ -89,7 +89,11 @@ def run(repo: str, pr: str, config_path: Path) -> str:
     })
     _gh(["api", f"repos/{repo}/statuses/{head}", "-X", "POST", "--input", "-"], stdin=payload)
     print(f"{decision.state}: {decision.code}: {decision.description}")
-    return decision.state
+    return decision
+
+
+def run(repo: str, pr: str, config_path: Path) -> str:
+    return evaluate_and_publish(repo, pr, config_path).state
 
 
 def main() -> int:
