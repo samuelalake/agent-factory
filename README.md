@@ -134,9 +134,11 @@ The self-hosted Apps need these repository permissions:
 - **Builder:** Contents write, Issues write, and Pull requests write.
 - **Reviewer:** Contents read and Pull requests write.
 
-Reusable workflows request their exact subset while minting each token. A
-permission mismatch therefore fails at authentication instead of after a long
-build or verification wait.
+Reusable workflows request their exact subset while minting each token. Steward
+first receives only its communication permissions, then separately proves its
+landing authority. A mismatch therefore fails at authentication instead of
+after a long build or verification wait, while Steward can still replace stale
+status prose with an actionable failure record under its own identity.
 
 The alpha is self-hosted. Repositories controlled by one operator may share
 that operator's role Apps through centrally managed secrets. Independent

@@ -35,7 +35,7 @@ jobs:
       group: agent-factory-integration-${{ github.repository }}-${{ inputs.pr }}
       cancel-in-progress: true
     steps:
-      - name: Mint Steward installation token
+      - name: Mint Steward communication token
         id: steward-token
         uses: actions/create-github-app-token@v2
         with:
@@ -43,10 +43,7 @@ jobs:
           private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
-          # Ask for the exact landing permissions here. If the App is
-          # misconfigured, token minting fails before the integration job
-          # spends time waiting for repository verification.
-          permission-contents: write
+          permission-contents: read
           permission-issues: write
           permission-pull-requests: write
       - name: Checkout consumer
@@ -61,10 +58,37 @@ jobs:
           ref: ${{ inputs.factory_ref }}
           path: factory
           persist-credentials: false
-      - name: Validate integrated state and authorize landing
+      - name: Verify Steward landing permission
+        id: landing-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # Ask for the exact landing permissions before waiting for repository
+          # verification. The communication token above remains able to publish
+          # a Steward-owned failure state if this request is rejected.
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Report missing Steward landing permission
+        if: steps.landing-token.outcome == 'failure'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           STEWARD_TOKEN: ${{ steps.steward-token.outputs.token }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_integration
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --config consumer/.agent-factory/config.json
+          --report-permission-failure
+      - name: Validate integrated state and authorize landing
+        if: steps.landing-token.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_TOKEN: ${{ steps.landing-token.outputs.token }}
         run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.github_integration
           --repo "${{ github.repository }}"

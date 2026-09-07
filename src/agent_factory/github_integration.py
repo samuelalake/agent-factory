@@ -226,6 +226,35 @@ def queue_followup_for_steward(repo: str, issue: int, token: str) -> None:
     )
 
 
+def report_landing_permission_failure(repo: str, pr: str, config_path: Path) -> None:
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+    steward_token = os.environ.get("STEWARD_TOKEN", "")
+    if not github_token or not steward_token:
+        raise RuntimeError("GITHUB_TOKEN and STEWARD_TOKEN are required")
+    config = load_config(config_path)
+    meta = json.loads(
+        _gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid"], token=github_token)
+    )
+    head = str(meta.get("headRefOid") or "")
+    detail = (
+        "Steward cannot land this change because its GitHub App installation does not "
+        "grant Contents: write. Update and approve that permission; Issues: write and "
+        "Pull requests: write remain required for Steward's project record."
+    )
+    _set_status(
+        repo, head, config.integration.status_context, "error", detail, github_token
+    )
+    body = format_integration(
+        config.integration.marker,
+        head,
+        "failed",
+        detail,
+        config.integration.environment,
+        next_owner="Steward",
+    )
+    _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)
+
+
 def close_delivered_issues(repo: str, pr_body: str, config: Any, token: str) -> None:
     agent_labels = {config.steward.dispatch_label, config.steward.retry_label, "agent:steward"}
     for issue in linked_issue_numbers(pr_body):
@@ -478,7 +507,11 @@ def main() -> int:
     parser.add_argument("--pr", required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument("--report-permission-failure", action="store_true")
     args = parser.parse_args()
+    if args.report_permission_failure:
+        report_landing_permission_failure(args.repo, args.pr, args.config)
+        return 1
     run(args.repo, args.pr, args.config, timeout_seconds=args.timeout_seconds)
     return 0
 

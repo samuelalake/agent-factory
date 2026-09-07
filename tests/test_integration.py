@@ -16,6 +16,7 @@ from agent_factory.github_integration import (
     format_integration,
     linked_issue_numbers,
     queue_followup_for_steward,
+    report_landing_permission_failure,
     review_followup_issue_number,
     route_failure,
     run,
@@ -107,6 +108,24 @@ class IntegrationTests(unittest.TestCase):
             ["issue", "edit", "42", "--repo", "owner/repo", "--add-label", "agent:steward"],
             token="steward",
         )
+
+    @patch("agent_factory.github_integration._upsert_steward_comment")
+    @patch("agent_factory.github_integration._set_status")
+    @patch("agent_factory.github_integration._gh")
+    def test_permission_preflight_replaces_stale_ready_comment_as_steward(
+        self, gh, set_status, upsert
+    ) -> None:
+        gh.return_value = json.dumps({"headRefOid": "newhead"})
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(default_config("fixture")), encoding="utf-8")
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "actions", "STEWARD_TOKEN": "steward"}):
+                report_landing_permission_failure("owner/repo", "7", path)
+
+        set_status.assert_called_once()
+        self.assertEqual(set_status.call_args.args[3], "error")
+        self.assertIn("**Failed → Steward**", upsert.call_args.args[3])
+        self.assertIn("Contents: write", upsert.call_args.args[3])
 
     @patch("agent_factory.github_integration._gh")
     def test_steward_creates_one_traceable_followup_and_links_pr(self, gh) -> None:
