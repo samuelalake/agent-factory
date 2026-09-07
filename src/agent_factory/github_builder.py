@@ -156,6 +156,38 @@ def _builder_summary(response: str, issue_number: str) -> str:
     return summary[-3000:]
 
 
+def format_pr_body(
+    config: Config,
+    issue_number: str,
+    response: str,
+    harness: str,
+    model: str,
+    tool_calls: int,
+    estimated_cost: float | None,
+) -> str:
+    return "\n".join(
+        [
+            config.builder.marker,
+            "",
+            f"Closes #{issue_number}",
+            "",
+            "## Builder summary",
+            "",
+            _builder_summary(response, issue_number),
+            "",
+            "## Delivery",
+            "",
+            f"- Base: `{config.builder.base_branch}`",
+            f"- Harness: `{harness}`",
+            f"- Model: `{model}`",
+            f"- Repository tool calls: `{tool_calls}`",
+            f"- Estimated model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
+            "- Verification: repository workflows run on this pull request",
+            "",
+        ]
+    )
+
+
 def parse_gemini_stream(output: str) -> tuple[str, int]:
     messages: list[str] = []
     tool_calls = 0
@@ -366,6 +398,8 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     else:
         start_ref = f"origin/{config.builder.base_branch}"
     _run(["git", "checkout", "-B", branch, start_ref], cwd=root)
+    if existing:
+        _run(["git", "rebase", f"origin/{config.builder.base_branch}"], cwd=root)
     prompt = build_prompt(config, issue, root, feedback)
     harness = config.builder.harness
     model = config.builder.model
@@ -441,30 +475,27 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     _run(["gh", "auth", "setup-git"], cwd=root)
     _run(["git", "push", "--force-with-lease", "origin", branch], cwd=root)
 
+    pr_body = format_pr_body(
+        config,
+        issue_number,
+        response,
+        harness,
+        model,
+        tool_calls,
+        estimated_cost,
+    )
+
     if existing:
         pr_url = str(existing[0]["url"])
-    else:
-        pr_body = "\n".join(
+        _gh(
             [
-                config.builder.marker,
-                "",
-                f"Closes #{issue_number}",
-                "",
-                "## Builder summary",
-                "",
-                _builder_summary(response, issue_number),
-                "",
-                "## Delivery",
-                "",
-                f"- Base: `{config.builder.base_branch}`",
-                f"- Harness: `{harness}`",
-                f"- Model: `{model}`",
-                f"- Repository tool calls: `{tool_calls}`",
-                f"- Estimated model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
-                "- Verification: repository workflows run on this pull request",
-                "",
-            ]
+                "pr", "edit", str(existing[0]["number"]), "--repo", repo,
+                "--body-file", "-",
+            ],
+            cwd=root,
+            stdin=pr_body,
         )
+    else:
         pr_url = _gh(
             [
                 "pr", "create", "--repo", repo, "--base", config.builder.base_branch,
