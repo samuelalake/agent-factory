@@ -126,6 +126,24 @@ def _validate_candidate(root: Path) -> tuple[str, ...]:
     return preserved
 
 
+def _merge_current_base(root: Path, base_ref: str) -> str:
+    result = subprocess.run(
+        ["git", "merge", "--no-edit", base_ref],
+        cwd=root,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return ""
+    conflicts = _run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=root
+    ).strip()
+    if conflicts:
+        return conflicts
+    detail = (result.stderr.strip() or result.stdout.strip())[-4000:]
+    raise BuilderBlocked(f"could not integrate current base: {detail}")
+
+
 def _review_feedback(repo: str, pr: int, head: str, marker: str, *, root: Path) -> str:
     reviews = json.loads(
         _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"], cwd=root)
@@ -263,6 +281,7 @@ def build_prompt(
     issue: dict[str, Any],
     root: Path,
     review_feedback: str = "",
+    base_conflicts: str = "",
 ) -> str:
     task = f"{issue.get('title', '')}\n{issue.get('body', '')}"
     context = discover_context(root, config.project, task, role="builder")
@@ -281,6 +300,19 @@ describe it. Re-run relevant verification and keep unrelated valid work intact.
         if review_feedback
         else ""
     )
+    conflicts = (
+        f"""
+## Current-base merge conflicts
+
+Steward merged the latest `{config.builder.base_branch}` into this Builder-owned branch.
+Resolve every conflict below in favor of the issue's intended implementation and the
+current repository contracts. Remove all conflict markers; the harness will stage and commit.
+
+{base_conflicts}
+"""
+        if base_conflicts
+        else ""
+    )
     return f"""You are Builder for {config.project.name}.
 
 Implement GitHub issue #{issue['number']} completely in the current checkout.
@@ -295,6 +327,7 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 
 {documents or 'No configured briefing files were found. Discover the repository before acting.'}
 {feedback}
+{conflicts}
 
 ## Contract
 
@@ -398,9 +431,14 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     else:
         start_ref = f"origin/{config.builder.base_branch}"
     _run(["git", "checkout", "-B", branch, start_ref], cwd=root)
+    _run(["git", "config", "user.name", "Agent Factory Builder"], cwd=root)
+    _run(["git", "config", "user.email", "agent-factory-builder[bot]@users.noreply.github.com"], cwd=root)
+    base_conflicts = ""
     if existing:
-        _run(["git", "rebase", f"origin/{config.builder.base_branch}"], cwd=root)
-    prompt = build_prompt(config, issue, root, feedback)
+        base_conflicts = _merge_current_base(
+            root, f"origin/{config.builder.base_branch}"
+        )
+    prompt = build_prompt(config, issue, root, feedback, base_conflicts)
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
@@ -468,8 +506,6 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
 
     if "BUILDER_BLOCKED:" in response:
         raise BuilderBlocked(response.split("BUILDER_BLOCKED:", 1)[1].strip()[:2000])
-    _run(["git", "config", "user.name", "Agent Factory Builder"], cwd=root)
-    _run(["git", "config", "user.email", "agent-factory-builder[bot]@users.noreply.github.com"], cwd=root)
     _run(["git", "add", "--all"], cwd=root)
     _run(["git", "commit", "-m", f"feat: implement issue #{issue_number}"], cwd=root)
     _run(["gh", "auth", "setup-git"], cwd=root)
