@@ -39,7 +39,7 @@ class IntegrationTests(unittest.TestCase):
     @patch("agent_factory.github_integration._gh")
     def test_failed_revision_routes_linked_issue_back_to_builder(self, gh) -> None:
         config = parse_config(default_config("fixture"))
-        detail = route_failure(
+        detail, next_owner = route_failure(
             "owner/repo",
             {
                 "headRefOid": "head",
@@ -51,15 +51,16 @@ class IntegrationTests(unittest.TestCase):
             "steward",
         )
         self.assertIn("revision 2 of 3", detail)
+        self.assertEqual(next_owner, "Builder")
         gh.assert_called_once_with(
             ["issue", "edit", "83", "--repo", "owner/repo", "--add-label", "agent:retry"],
             token="steward",
         )
 
     @patch("agent_factory.github_integration._gh")
-    def test_revision_limit_routes_to_steward_without_another_retry(self, gh) -> None:
+    def test_revision_limit_holds_without_dispatching_steward_or_builder(self, gh) -> None:
         config = parse_config(default_config("fixture"))
-        detail = route_failure(
+        detail, next_owner = route_failure(
             "owner/repo",
             {
                 "headRefOid": "head",
@@ -76,17 +77,19 @@ class IntegrationTests(unittest.TestCase):
             "steward",
         )
         self.assertIn("configured limit of 3", detail)
-        self.assertEqual(gh.call_args.args[0][-1], "agent:steward")
+        self.assertIn("`agent:retry`", detail)
+        self.assertEqual(next_owner, "Steward")
+        gh.assert_not_called()
 
     @patch("agent_factory.github_integration._gh")
-    def test_reviewer_provider_failure_routes_to_steward_not_builder(self, gh) -> None:
+    def test_reviewer_provider_failure_holds_for_explicit_retry(self, gh) -> None:
         config = parse_config(default_config("fixture"))
         review_body = "\n".join([
             config.review.marker,
             config.review.failure_marker,
             encode_data({"version": 1, "head_sha": "head", "verdict": "request_changes"}),
         ])
-        detail = route_failure(
+        detail, next_owner = route_failure(
             "owner/repo",
             {
                 "headRefOid": "head",
@@ -98,7 +101,42 @@ class IntegrationTests(unittest.TestCase):
             "steward",
         )
         self.assertIn("Reviewer providers", detail)
-        self.assertEqual(gh.call_args.args[0][-1], "agent:steward")
+        self.assertIn("Rerun Reviewer", detail)
+        self.assertEqual(next_owner, "Reviewer")
+        gh.assert_not_called()
+
+    @patch("agent_factory.github_integration._gh")
+    def test_successful_review_rerun_supersedes_provider_failure_at_same_head(self, gh) -> None:
+        config = parse_config(default_config("fixture"))
+        failed = "\n".join([
+            config.review.marker,
+            config.review.failure_marker,
+            encode_data({"version": 1, "head_sha": "head", "verdict": "request_changes"}),
+        ])
+        succeeded = "\n".join([
+            config.review.marker,
+            encode_data({"version": 1, "head_sha": "head", "verdict": "approve"}),
+        ])
+        detail, next_owner = route_failure(
+            "owner/repo",
+            {
+                "headRefOid": "head",
+                "body": "Closes #83",
+                "commits": [{"messageHeadline": "feat: implement issue #83"}],
+                "reviews": [
+                    {"body": failed, "state": "CHANGES_REQUESTED"},
+                    {"body": succeeded, "state": "APPROVED"},
+                ],
+            },
+            config,
+            "steward",
+        )
+        self.assertIn("revision 2 of 3", detail)
+        self.assertEqual(next_owner, "Builder")
+        gh.assert_called_once_with(
+            ["issue", "edit", "83", "--repo", "owner/repo", "--add-label", "agent:retry"],
+            token="steward",
+        )
 
     def test_required_checks_all_pass(self) -> None:
         state, _ = check_state(
@@ -160,6 +198,41 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(set_status.call_args.args[3], "error")
         self.assertIn("**Failed → Steward**", upsert.call_args.args[3])
         self.assertIn("Contents: write", upsert.call_args.args[3])
+
+    @patch("agent_factory.github_integration._upsert_steward_comment")
+    @patch("agent_factory.github_integration._set_status")
+    @patch("agent_factory.github_integration.recompute_gate")
+    @patch("agent_factory.github_integration._gh")
+    def test_exhausted_run_publishes_steward_hold_with_explicit_recovery(
+        self, gh, gate, set_status, upsert
+    ) -> None:
+        gh.return_value = json.dumps({
+            "headRefOid": "abc123",
+            "baseRefName": "development",
+            "mergeable": "MERGEABLE",
+            "body": "Closes #83",
+            "commits": [{"messageHeadline": "feat: implement issue #83"}],
+            "reviews": [],
+            "statusCheckRollup": [{"name": "verify", "conclusion": "FAILURE"}],
+        })
+        config = default_config("fixture")
+        config["gate"]["required_checks"] = ["verify"]
+        config["builder"]["max_revision_attempts"] = 1
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            with patch.dict(
+                os.environ, {"GITHUB_TOKEN": "actions", "STEWARD_TOKEN": "steward"}
+            ):
+                with self.assertRaisesRegex(RuntimeError, "verify"):
+                    run("owner/repo", "7", path, timeout_seconds=1)
+
+        gate.assert_called_once_with("owner/repo", "7", path)
+        set_status.assert_called_once()
+        body = upsert.call_args.args[3]
+        self.assertIn("**Failed → Steward**", body)
+        self.assertIn("`agent:retry`", body)
+        self.assertEqual(decode_data(body)["next_owner"], "steward")
 
     @patch("agent_factory.github_integration._gh")
     def test_steward_creates_one_traceable_followup_and_links_pr(self, gh) -> None:

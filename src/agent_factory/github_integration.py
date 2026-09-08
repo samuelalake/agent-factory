@@ -39,17 +39,28 @@ def linked_issue_numbers(body: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(matches))
 
 
-def route_failure(repo: str, meta: dict[str, Any], config: Any, token: str) -> str:
+def route_failure(
+    repo: str, meta: dict[str, Any], config: Any, token: str
+) -> tuple[str, str]:
     issues = linked_issue_numbers(str(meta.get("body") or ""))
     if not issues:
-        return "No linked issue was available for automatic Builder routing."
-    reviewer_unavailable = any(
-        config.review.failure_marker in str(review.get("body") or "")
-        and (
-            (data := decode_data(str(review.get("body") or ""))) is not None
-            and data.get("head_sha") == str(meta.get("headRefOid") or "")
-        )
-        for review in meta.get("reviews") or []
+        return "No linked issue was available for automatic Builder routing.", "Steward"
+    latest_review: dict[str, Any] | None = None
+    latest_review_data: dict[str, Any] | None = None
+    for review in meta.get("reviews") or []:
+        body = str(review.get("body") or "")
+        data = decode_data(body)
+        if (
+            config.review.marker in body
+            and isinstance(data, dict)
+            and str(review.get("state") or "").upper() != "DISMISSED"
+        ):
+            latest_review, latest_review_data = review, data
+    reviewer_unavailable = bool(
+        latest_review
+        and latest_review_data
+        and latest_review_data.get("head_sha") == str(meta.get("headRefOid") or "")
+        and config.review.failure_marker in str(latest_review.get("body") or "")
     )
     attempts = sum(
         1
@@ -57,29 +68,35 @@ def route_failure(repo: str, meta: dict[str, Any], config: Any, token: str) -> s
         if str(commit.get("messageHeadline") or "").startswith("feat: implement issue #")
     )
     if reviewer_unavailable:
-        label = "agent:steward"
+        label = None
         route = (
             "Reviewer providers did not produce a valid current-head verdict; "
-            "Steward retained the blocker instead of assigning an unreviewable revision to Builder."
+            "Steward retained the blocker instead of assigning an unreviewable revision "
+            "to Builder. Rerun Reviewer after provider availability is restored."
         )
+        next_owner = "Reviewer"
     elif attempts >= config.builder.max_revision_attempts:
-        label = "agent:steward"
+        label = None
         route = (
             f"Automatic Builder revisions reached the configured limit of "
-            f"{config.builder.max_revision_attempts}; Steward retained the blocker for intervention."
+            f"{config.builder.max_revision_attempts}; Steward retained the blocker until an "
+            f"operator explicitly applies `{config.steward.retry_label}`."
         )
+        next_owner = "Steward"
     else:
         label = config.steward.retry_label
         route = (
             f"Steward routed the current-head failure back to Builder "
             f"(revision {attempts + 1} of {config.builder.max_revision_attempts})."
         )
-    for issue in issues:
-        _gh(
-            ["issue", "edit", issue, "--repo", repo, "--add-label", label],
-            token=token,
-        )
-    return route
+        next_owner = "Builder"
+    if label:
+        for issue in issues:
+            _gh(
+                ["issue", "edit", issue, "--repo", repo, "--add-label", label],
+                token=token,
+            )
+    return route, next_owner
 
 
 def _flatten_pages(text: str) -> list[dict[str, Any]]:
@@ -518,14 +535,16 @@ def run(
     final_state = "error" if state == "failure" else "pending"
     _set_status(repo, head, config.integration.status_context, final_state, last_detail, github_token)
     route_detail = ""
+    next_owner = None
     if state == "failure":
-        route_detail = route_failure(repo, meta, config, steward_token)
+        route_detail, next_owner = route_failure(repo, meta, config, steward_token)
     body = format_integration(
         config.integration.marker,
         head,
         "failed" if state == "failure" else "waiting",
         f"{last_detail}. {route_detail}" if route_detail else last_detail,
         environment,
+        next_owner=next_owner,
     )
     _upsert_steward_comment(repo, pr, config.integration.marker, body, steward_token)
     if state == "failure":
