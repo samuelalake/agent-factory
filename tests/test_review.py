@@ -6,6 +6,7 @@ from unittest import mock
 
 from agent_factory.cli import default_config
 from agent_factory.config import parse_config
+from agent_factory.github_builder import BuilderBlocked
 from agent_factory.github_review import (
     diff_right_lines,
     failed_review,
@@ -20,6 +21,143 @@ from agent_factory.protocol import decode_data
 
 
 class ReviewTests(unittest.TestCase):
+    def test_ready_delivery_without_trusted_images_cannot_be_approved(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        body = "\n".join([
+            config.builder.marker,
+            "<!-- agent-factory:builder-delivery:start -->",
+            f"<!-- agent-factory:builder-delivery-head:{head} -->",
+            "### Interaction_Drag",
+            "normalized SSIM 0.99 · catastrophic sanity **pass**",
+            "<!-- agent-factory:builder-delivery:end -->",
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[0] == "api":
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("ready", body)),
+            mock.patch("agent_factory.github_review._fetch_delivery_images") as fetch,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(normalize_review({"summary": "approve", "approve": True}), "openrouter", "visual"),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+        fetch.assert_not_called()
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        self.assertIn(config.review.failure_marker, posted[0]["body"])
+        self.assertIn("no trusted current-head visual evidence", posted[0]["body"])
+
+    def test_ready_delivery_images_are_sent_for_fidelity_review(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        evidence_commit = "b" * 40
+        body = "\n".join([
+            config.builder.marker,
+            "<!-- agent-factory:builder-delivery:start -->",
+            f"<!-- agent-factory:builder-delivery-head:{head} -->",
+            "### Interaction_Drag",
+            "normalized SSIM 0.99 · catastrophic sanity **pass**",
+            f"![Swami](https://github.com/acme/repo/raw/{evidence_commit}/pr-7/{head}/swami.png)",
+            "<!-- agent-factory:builder-delivery:end -->",
+        ])
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"] or args[0] == "api":
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("ready", body)),
+            mock.patch(
+                "agent_factory.github_review._fetch_delivery_images",
+                return_value=("data:image/png;base64,aGVsbG8=",),
+            ),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(normalize_review({"summary": "match", "approve": True}), "openrouter", "visual"),
+            ) as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+        self.assertEqual(request.call_args.kwargs["image_urls"], ("data:image/png;base64,aGVsbG8=",))
+
+    def test_unreadable_ready_visual_evidence_cannot_be_approved(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        body = "\n".join([
+            config.builder.marker,
+            "<!-- agent-factory:builder-delivery:start -->",
+            f"<!-- agent-factory:builder-delivery-head:{head} -->",
+            f"![Swami](https://github.com/acme/repo/raw/{'b' * 40}/pr-7/{head}/swami.png)",
+            "<!-- agent-factory:builder-delivery:end -->",
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[0] == "api":
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("ready", body)),
+            mock.patch(
+                "agent_factory.github_review._fetch_delivery_images",
+                side_effect=BuilderBlocked("private detail"),
+            ),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(normalize_review({"summary": "approve", "approve": True}), "openrouter", "visual"),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        self.assertIn(config.review.failure_marker, posted[0]["body"])
+        self.assertNotIn("private detail", posted[0]["body"])
+
     def test_failed_delivery_is_visually_reviewed_but_cannot_be_approved(self) -> None:
         raw_config = default_config("fixture")
         raw_config["review"].update({
