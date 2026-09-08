@@ -14,6 +14,7 @@ from agent_factory.github_review import (
     format_body,
     normalize_review,
     request_review,
+    repository_glob_match,
     review_payload,
     run,
 )
@@ -21,11 +22,19 @@ from agent_factory.protocol import decode_data
 
 
 class ReviewTests(unittest.TestCase):
+    def test_repository_glob_matches_root_and_nested_double_star_paths(self) -> None:
+        self.assertTrue(repository_glob_match("Demo.origami", "**/*.origami"))
+        self.assertTrue(repository_glob_match("fixtures/Demo.origami", "**/*.origami"))
+        self.assertTrue(repository_glob_match("foo/bar", "foo/**/bar"))
+        self.assertTrue(repository_glob_match("foo/one/two/bar", "foo/**/bar"))
+        self.assertFalse(repository_glob_match("Demo.swift", "**/*.origami"))
+
     def test_ready_delivery_without_trusted_images_cannot_be_approved(self) -> None:
         raw_config = default_config("fixture")
         raw_config["review"].update({
             "require_builder_delivery": True,
             "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
         })
         config = parse_config(raw_config)
         head = "a" * 40
@@ -72,6 +81,7 @@ class ReviewTests(unittest.TestCase):
         raw_config["review"].update({
             "require_builder_delivery": True,
             "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
         })
         config = parse_config(raw_config)
         head = "a" * 40
@@ -237,6 +247,171 @@ class ReviewTests(unittest.TestCase):
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
         request.assert_not_called()
+
+    def test_non_builder_control_plane_review_does_not_require_visual_artifacts(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Pin reviewed workflow runtime",
+                    "body": "Control-plane promotion with linked prior evidence.",
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[{"filename": ".github/workflows/review.yml"}]])
+            if args[:2] == ["pr", "diff"]:
+                return """diff --git a/.github/workflows/review.yml b/.github/workflows/review.yml
+--- a/.github/workflows/review.yml
++++ b/.github/workflows/review.yml
+@@ -1 +1 @@
+-uses: owner/factory@old
++uses: owner/factory@new
+"""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery") as wait,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Control plane is sound.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ) as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        wait.assert_not_called()
+        self.assertEqual(request.call_args.kwargs["image_urls"], ())
+        system = request.call_args.args[1]
+        user = request.call_args.args[2]
+        self.assertIn("do not request a screenshot triplet", system)
+        self.assertIn("absence of a triplet is not a finding", user)
+        self.assertEqual(posted[0]["event"], "APPROVE")
+
+    def test_non_builder_visual_change_without_evidence_is_deterministically_blocked(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**", "**/*.origami"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Change visual surface",
+                    "body": "Human-authored visual update without Builder evidence.",
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[{"filename": "app/Screen.swift"}]])
+            if args[:2] == ["pr", "diff"]:
+                return """diff --git a/app/Screen.swift b/app/Screen.swift
+--- a/app/Screen.swift
++++ b/app/Screen.swift
+@@ -1 +1 @@
+-let color = old
++let color = new
+"""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery") as wait,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Model approves.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        wait.assert_not_called()
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        machine = decode_data(posted[0]["body"])
+        self.assertEqual(machine["verdict"], "request_changes")
+        self.assertEqual(machine["findings"][0]["severity"], "P1")
+        self.assertIn("Visual change lacks current-head evidence", posted[0]["body"])
+
+    def test_visual_path_after_first_hundred_files_or_before_rename_is_blocked(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        posted: list[dict] = []
+        first_page = [{"filename": f"docs/note-{index}.md"} for index in range(100)]
+        second_page = [{
+            "filename": "archive/OldScreen.swift",
+            "previous_filename": "app/OldScreen.swift",
+        }]
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": "a" * 40,
+                    "title": "Large renamed visual change",
+                    "body": "No Builder delivery.",
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                self.assertIn("--paginate", args)
+                self.assertIn("--slurp", args)
+                return json.dumps([first_page, second_page])
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery") as wait,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(normalize_review({"summary": "Model approves.", "approve": True}), "openrouter", "visual"),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        wait.assert_not_called()
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        self.assertIn("app/OldScreen.swift", posted[0]["body"])
 
     def test_malformed_primary_reply_falls_back_to_structured_review(self) -> None:
         with (

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -27,6 +28,41 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
+
+
+def repository_glob_match(path: str, pattern: str) -> bool:
+    """Match repository paths while allowing ``**/`` to span zero directories."""
+    candidates = {pattern}
+    pending = [pattern]
+    while pending:
+        candidate = pending.pop()
+        start = candidate.find("**/")
+        if start < 0:
+            continue
+        collapsed = candidate[:start] + candidate[start + 3:]
+        if collapsed not in candidates:
+            candidates.add(collapsed)
+            pending.append(collapsed)
+    return any(fnmatch.fnmatchcase(path, candidate) for candidate in candidates)
+
+
+def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
+    """Fetch every current and previous PR file path through paginated REST."""
+    raw = json.loads(_gh([
+        "api", f"repos/{repo}/pulls/{pr}/files?per_page=100", "--paginate", "--slurp",
+    ]))
+    if not isinstance(raw, list) or any(not isinstance(page, list) for page in raw):
+        raise RuntimeError("GitHub returned an invalid paginated pull-file response")
+    paths: list[str] = []
+    for page in raw:
+        for item in page:
+            if not isinstance(item, dict):
+                raise RuntimeError("GitHub returned an invalid pull-file entry")
+            for key in ("filename", "previous_filename"):
+                value = item.get(key)
+                if isinstance(value, str) and value and value not in paths:
+                    paths.append(value)
+    return tuple(paths)
 
 
 def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
@@ -281,6 +317,27 @@ def failed_delivery_review(status: str, body: str = "") -> dict[str, Any]:
     })
 
 
+def missing_visual_delivery_review(paths: tuple[str, ...]) -> dict[str, Any]:
+    changed = ", ".join(f"`{path}`" for path in paths[:5])
+    if len(paths) > 5:
+        changed += f", and {len(paths) - 5} more"
+    return normalize_review({
+        "approve": False,
+        "summary": "A visual change has no canonical current-head Builder delivery.",
+        "findings": [{
+            "severity": "P1",
+            "title": "Visual change lacks current-head evidence",
+            "reasoning": (
+                f"The consumer classifies {changed} as visual evidence scope, but this pull "
+                "request has no canonical Builder delivery marker or exact-head images."
+            ),
+            "suggestion": (
+                "Route the change through Builder and publish the exact-head delivery before review."
+            ),
+        }],
+    })
+
+
 def request_review(
     candidates: list[tuple[str, str, bool]],
     system: str,
@@ -322,11 +379,24 @@ def run(
     # consumer pull request. Keep its short-lived token out of files and logs.
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
-    meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
+    meta = json.loads(_gh([
+        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body",
+    ]))
+    has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
+    changed_paths = (
+        changed_file_paths(repo, pr)
+        if not has_builder_delivery and config.review.visual_evidence_paths
+        else ()
+    )
+    visual_paths = tuple(
+        path
+        for path in changed_paths
+        if any(repository_glob_match(path, pattern) for pattern in config.review.visual_evidence_paths)
+    )
     delivery_gate: dict[str, Any] | None = None
     delivery_image_urls: tuple[str, ...] = ()
     delivery_image_failure = False
-    if config.review.require_builder_delivery and config.builder.marker in str(meta.get("body") or ""):
+    if config.review.require_builder_delivery and has_builder_delivery:
         status, refreshed_body = wait_for_delivery(
             repo,
             pr,
@@ -383,6 +453,8 @@ def run(
                         delivery_gate = evidence_failure
                     else:
                         delivery_gate["findings"].extend(evidence_failure["findings"])
+    elif visual_paths:
+        delivery_gate = missing_visual_delivery_review(visual_paths)
     diff = _gh(["pr", "diff", pr, "--repo", repo])
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
@@ -404,9 +476,27 @@ def run(
         "line that appears on the right side of the supplied diff; omit file and line only for a "
         "genuinely repository-wide finding. When current-head evidence images are supplied, compare "
         "the labeled Swami render, Origami reference, and diff in their PR-body order. Describe "
-        "specific visible differences and concrete corrections; never merely repeat the SSIM score."
+        "specific visible differences and concrete corrections; never merely repeat the SSIM score. "
+        "Visual evidence is scoped to Builder deliveries and visual/product changes. When a pull "
+        "request has no canonical Builder marker and no current-head images are supplied, do not "
+        "request a screenshot triplet, recording, or other unrelated visual artifact merely because "
+        "the consumer supports visual review. Review non-visual control-plane, documentation, and "
+        "policy changes from their diff, executable checks, and directly linked prior evidence."
+    )
+    evidence_scope = (
+        "Builder delivery: present. Apply the configured delivery and visual-evidence contract."
+        if has_builder_delivery
+        else (
+            "Builder delivery: absent. This diff matches configured visual-evidence paths, so the "
+            "deterministic current-head evidence gate blocks approval."
+            if visual_paths
+            else
+            "Builder delivery: absent. No current-head images are expected unless this diff itself "
+            "changes a visual/product surface; absence of a triplet is not a finding."
+        )
     )
     user = "\n\n".join(context + [
+        f"## Evidence scope\n\n{evidence_scope}",
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
         f"## Diff\n\n```diff\n{diff}\n```",
     ])

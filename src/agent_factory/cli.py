@@ -192,6 +192,7 @@ def default_config(project_name: str) -> dict:
             "fallback_model": "moonshotai/kimi-k3",
             "visual_evidence": False,
             "fallback_visual_evidence": False,
+            "visual_evidence_paths": [],
         },
         "integration": {
             "marker": "<!-- steward:agent-factory-integration -->",

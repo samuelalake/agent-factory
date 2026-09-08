@@ -28,6 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.review.fallback_provider, "nvidia")
         self.assertFalse(config.review.visual_evidence)
         self.assertFalse(config.review.fallback_visual_evidence)
+        self.assertEqual(config.review.visual_evidence_paths, ())
         self.assertFalse(config.review.require_builder_delivery)
         self.assertEqual(config.review.delivery_wait_seconds, 1800)
 
@@ -63,6 +64,23 @@ class ConfigTests(unittest.TestCase):
         raw["review"]["fallback_provider"] = None
         raw["review"]["fallback_model"] = None
         with self.assertRaisesRegex(ConfigError, "fallback provider"):
+            parse_config(raw)
+
+    def test_visual_evidence_paths_require_delivery_and_a_visual_route(self) -> None:
+        raw = default_config("demo")
+        raw["review"]["visual_evidence_paths"] = ["app/**"]
+        with self.assertRaisesRegex(ConfigError, "require_builder_delivery"):
+            parse_config(raw)
+
+        raw["review"]["require_builder_delivery"] = True
+        with self.assertRaisesRegex(ConfigError, "visual-capable"):
+            parse_config(raw)
+
+        raw["review"]["visual_evidence"] = True
+        self.assertEqual(parse_config(raw).review.visual_evidence_paths, ("app/**",))
+
+        raw["review"]["visual_evidence_paths"] = ["../outside/**"]
+        with self.assertRaisesRegex(ConfigError, "repository-relative"):
             parse_config(raw)
 
     def test_steward_fallback_pair_is_required(self) -> None:
