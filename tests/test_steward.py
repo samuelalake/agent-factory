@@ -48,6 +48,17 @@ class StewardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "title and outcome"):
             normalize_shape({"decision": "ready", "title": "", "outcome": ""}, 3)
 
+    def test_non_contract_already_split_decision_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported Steward decision"):
+            normalize_shape({
+                "decision": "already-split",
+                "title": "Proposed or existing children",
+                "outcome": "Do not silently create duplicate issues.",
+                "subtasks": [
+                    {"title": "A child", "outcome": "Deliver one bounded result."},
+                ],
+            }, 3)
+
     def test_repeated_shaping_preserves_original_intake(self) -> None:
         first = """<!-- agent-factory:steward-shaped -->
 
