@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,7 @@ from agent_factory.github_builder import (
     format_pr_body,
     parse_gemini_stream,
 )
+from agent_factory.workspace import _untracked_identity
 from agent_factory.protocol import decode_data
 
 
@@ -413,6 +415,19 @@ after"""
             untracked_baseline = _workspace_snapshot(root)
             untracked.write_text("agent revision\n", encoding="utf-8")
             _validate_candidate(root, baseline=untracked_baseline)
+
+    def test_untracked_snapshot_fails_closed_on_file_count_and_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "one.txt").write_text("one")
+            (root / "two.txt").write_text("two")
+            with mock.patch("agent_factory.workspace.MAX_UNTRACKED_FILES", 1):
+                with self.assertRaisesRegex(RuntimeError, "untracked files"):
+                    _untracked_identity(root)
+            with mock.patch("agent_factory.workspace.MAX_UNTRACKED_BYTES", 5):
+                with self.assertRaisesRegex(RuntimeError, "untracked bytes"):
+                    _untracked_identity(root)
 
     def test_builder_summary_drops_model_reasoning(self) -> None:
         response = "<think>private chain of thought</think>\nLet me inspect one more thing:"
