@@ -482,6 +482,12 @@ def run(
         "request a screenshot triplet, recording, or other unrelated visual artifact merely because "
         "the consumer supports visual review. Review non-visual control-plane, documentation, and "
         "policy changes from their diff, executable checks, and directly linked prior evidence."
+        " A finding must identify a concrete defect caused or preserved by the supplied diff. Do "
+        "not block on a hypothetical failure that the shown code explicitly guards against, and "
+        "do not require a consumer wrapper to duplicate enforcement implemented by an immutable "
+        "referenced reusable workflow. For dependency-pin changes, review the consumer wiring and "
+        "supplied dependency evidence; absence of dependency source code from the consumer diff is "
+        "not itself a defect."
     )
     evidence_scope = (
         "Builder delivery: present. Apply the configured delivery and visual-evidence contract."

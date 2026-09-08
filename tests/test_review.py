@@ -303,6 +303,9 @@ class ReviewTests(unittest.TestCase):
         system = request.call_args.args[1]
         user = request.call_args.args[2]
         self.assertIn("do not request a screenshot triplet", system)
+        self.assertIn("must identify a concrete defect", system)
+        self.assertIn("immutable referenced reusable workflow", system)
+        self.assertIn("absence of dependency source code", system)
         self.assertIn("absence of a triplet is not a finding", user)
         self.assertEqual(posted[0]["event"], "APPROVE")
 
