@@ -9,6 +9,7 @@ from unittest import mock
 from agent_factory.github_delivery import (
     DELIVERY_END,
     DELIVERY_START,
+    delivery_head,
     delivery_status,
     format_delivery,
     pending_delivery,
@@ -38,6 +39,18 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(gh.call_count, 1)
 
     @mock.patch("agent_factory.github_delivery._gh")
+    def test_publish_detects_head_change_after_body_patch(self, gh) -> None:
+        old_head = "a" * 40
+        new_head = "b" * 40
+        gh.side_effect = [
+            json.dumps({"headRefOid": old_head, "body": pending_delivery()}),
+            "{}",
+            json.dumps({"headRefOid": new_head, "body": pending_delivery()}),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "raced a new head"):
+            publish("owner/repo", "7", old_head, "ready", "Evidence")
+
+    @mock.patch("agent_factory.github_delivery._gh")
     @mock.patch("agent_factory.github_delivery._publish_attachments")
     def test_publish_embeds_durable_github_evidence_urls(self, upload, gh) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -46,10 +59,15 @@ class DeliveryTests(unittest.TestCase):
             image.write_bytes(b"png")
             video.write_bytes(b"mp4")
             body = pending_delivery()
+            head = "a" * 40
             gh.side_effect = [
-                json.dumps({"headRefOid": "abc", "body": body}),
-                json.dumps({"headRefOid": "abc", "body": body}),
+                json.dumps({"headRefOid": head, "body": body}),
+                json.dumps({"headRefOid": head, "body": body}),
                 "{}",
+                json.dumps({
+                    "headRefOid": head,
+                    "body": format_delivery("ready", "Evidence", head=head),
+                }),
             ]
             upload.return_value = {
                 str(image): "https://raw.githubusercontent.com/owner/repo/evidence/swami.png",
@@ -58,12 +76,12 @@ class DeliveryTests(unittest.TestCase):
             publish(
                 "owner/repo",
                 "7",
-                "abc",
+                head,
                 "ready",
                 f"![Swami]({image})\n\n![]({video})",
                 (image, video),
             )
-        upload.assert_called_once_with("owner/repo", "7", "abc", (image, video))
+        upload.assert_called_once_with("owner/repo", "7", head, (image, video))
         args = gh.call_args_list[2].args[0]
         self.assertEqual(args[:3], ["api", "repos/owner/repo/pulls/7", "-X"])
         payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
@@ -90,7 +108,7 @@ class DeliveryTests(unittest.TestCase):
             urls = _publish_attachments("owner/repo", "7", "abc123", (image,))
         self.assertEqual(
             urls[str(image)],
-            "https://raw.githubusercontent.com/owner/repo/agent-factory-evidence/pr-7/abc123/01-swami.png",
+            "https://raw.githubusercontent.com/owner/repo/evidence-commit/pr-7/abc123/01-swami.png",
         )
         tree_payload = api.call_args_list[3].kwargs["payload"]
         self.assertEqual(tree_payload["base_tree"], "base-tree")
@@ -100,12 +118,25 @@ class DeliveryTests(unittest.TestCase):
 
     @mock.patch("agent_factory.github_delivery._gh")
     def test_wait_returns_failed_delivery_without_sleeping(self, gh) -> None:
+        head = "a" * 40
         gh.return_value = json.dumps({
-            "headRefOid": "abc",
-            "body": format_delivery("failed", "Visual sanity failed."),
+            "headRefOid": head,
+            "body": format_delivery("failed", "Visual sanity failed.", head=head),
         })
         status, body = wait_for_delivery(
-            "owner/repo", "7", "abc", timeout_seconds=0, poll_seconds=0
+            "owner/repo", "7", head, timeout_seconds=0, poll_seconds=0
         )
         self.assertEqual(status, "failed")
         self.assertIn("Visual sanity failed", body)
+
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_wait_rejects_ready_delivery_for_another_head(self, gh) -> None:
+        old_head = "a" * 40
+        new_head = "b" * 40
+        body = format_delivery("ready", "Old evidence", head=old_head)
+        gh.return_value = json.dumps({"headRefOid": new_head, "body": body})
+        status, _ = wait_for_delivery(
+            "owner/repo", "7", new_head, timeout_seconds=0, poll_seconds=0
+        )
+        self.assertEqual(status, "stale")
+        self.assertEqual(delivery_head(body), old_head)

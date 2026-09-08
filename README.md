@@ -52,9 +52,10 @@ remain in the consumer.
 GitHub's user-attachment endpoint does not accept GitHub App installation
 tokens. The publisher therefore writes runner-generated images and videos with
 the Git Data API to the repository's `agent-factory-evidence` branch, keyed by
-pull request and source-head SHA, then places those durable URLs in the PR body.
-Evidence never changes the Builder's source head, and a final head check keeps
-an older runner from overwriting a newer delivery. Images remain inline; video
+pull request and source-head SHA, then places immutable evidence-commit URLs in
+the PR body. Evidence never changes the Builder's source head. The delivery
+protocol binds its machine-readable state to that exact source SHA, so an older
+runner cannot be accepted for a newer delivery. Images remain inline; video
 evidence is a direct recording link.
 
 The factory owns:

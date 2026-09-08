@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -13,6 +14,7 @@ from urllib.parse import quote
 DELIVERY_START = "<!-- agent-factory:builder-delivery:start -->"
 DELIVERY_END = "<!-- agent-factory:builder-delivery:end -->"
 DELIVERY_STATUS = "<!-- agent-factory:builder-delivery-status:{status} -->"
+DELIVERY_HEAD = "<!-- agent-factory:builder-delivery-head:{head} -->"
 VALID_STATUSES = {"pending", "ready", "failed"}
 EVIDENCE_BRANCH = "agent-factory-evidence"
 
@@ -128,23 +130,26 @@ def _publish_attachments(
             if attempt == 2 or "422" not in str(error):
                 raise
             ref = _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
-    branch = quote(EVIDENCE_BRANCH, safe="")
+    evidence_sha = quote(str(evidence_commit["sha"]), safe="")
     return {
         str(path): (
-            f"https://raw.githubusercontent.com/{repo}/{branch}/"
+            f"https://raw.githubusercontent.com/{repo}/{evidence_sha}/"
             f"{quote(remote_paths[path], safe='/')}"
         )
         for path, _ in blobs
     }
 
 
-def format_delivery(status: str, content: str) -> str:
+def format_delivery(status: str, content: str, *, head: str | None = None) -> str:
     if status not in VALID_STATUSES:
         raise ValueError(f"unsupported Builder delivery status: {status}")
     clean = content.strip()
+    markers = [DELIVERY_STATUS.format(status=status)]
+    if head:
+        markers.append(DELIVERY_HEAD.format(head=head))
     return "\n".join([
         DELIVERY_START,
-        DELIVERY_STATUS.format(status=status),
+        *markers,
         "",
         "## Delivery",
         "",
@@ -160,9 +165,16 @@ def pending_delivery() -> str:
     )
 
 
-def delivery_status(body: str) -> str | None:
+def delivery_head(body: str) -> str | None:
+    match = re.search(r"<!-- agent-factory:builder-delivery-head:([0-9a-f]{40}) -->", body)
+    return match.group(1) if match else None
+
+
+def delivery_status(body: str, *, expected_head: str | None = None) -> str | None:
     for status in VALID_STATUSES:
         if DELIVERY_STATUS.format(status=status) in body:
+            if status != "pending" and expected_head and delivery_head(body) != expected_head:
+                return "stale"
             return status
     return None
 
@@ -193,7 +205,7 @@ def wait_for_delivery(
         body = str(meta.get("body") or "")
         if current_head != head:
             return "stale", body
-        status = delivery_status(body)
+        status = delivery_status(body, expected_head=head)
         if status != "pending" or time.monotonic() >= deadline:
             return status or "missing", body
         time.sleep(poll_seconds)
@@ -237,12 +249,21 @@ def publish(
                 f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
             )
     updated = replace_delivery(
-        str(meta.get("body") or ""), format_delivery(status, content)
+        str(meta.get("body") or ""), format_delivery(status, content, head=head)
     )
     _gh(
         ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
         stdin=json.dumps({"body": updated}),
     )
+    published = json.loads(_gh([
+        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
+    ]))
+    published_head = str(published.get("headRefOid") or "")
+    if published_head != head or delivery_head(str(published.get("body") or "")) != head:
+        raise RuntimeError(
+            f"Builder evidence publication raced a new head; expected {head[:7]}, "
+            f"found {published_head[:7]}"
+        )
 
 
 def main() -> int:
