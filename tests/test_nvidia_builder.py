@@ -190,6 +190,17 @@ class NvidiaBuilderTests(unittest.TestCase):
         payload = json.loads(open_url.call_args.args[0].data)
         self.assertEqual(payload["max_tokens"], 2048)
 
+    def test_post_can_require_a_repository_tool_call(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch("agent_factory.nvidia_builder.urllib.request.urlopen", return_value=response) as open_url,
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+        ):
+            _post("model", [], "key", 30, tool_choice="required")
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertEqual(payload["tool_choice"], "required")
+
     def test_usage_stops_the_builder_at_configured_cost_limit(self) -> None:
         response = {
             "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0},
@@ -232,9 +243,11 @@ class NvidiaBuilderTests(unittest.TestCase):
             ],
         }
         histories: list[list[dict]] = []
+        choices: list[str] = []
 
         def respond(_model, messages, *_args, **_kwargs):
             histories.append(json.loads(json.dumps(messages)))
+            choices.append(_kwargs["tool_choice"])
             return response
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,6 +276,53 @@ class NvidiaBuilderTests(unittest.TestCase):
                 "image_url": {"url": "https://github.com/acme/evidence/raw/sha/drag.png"},
             },
         )
+        self.assertEqual(choices, ["required"])
+
+    def test_prepared_dirty_baseline_requires_tools_until_agent_edit(self) -> None:
+        for tracked in (False, True):
+            with self.subTest(tracked=tracked), tempfile.TemporaryDirectory() as tmp:
+                responses = [
+                    {
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                        "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                            {"id": "call-1", "function": {"name": "list_files", "arguments": '{"pattern":"*"}'}}
+                        ]}}],
+                    },
+                    {
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                        "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                            {"id": "call-2", "function": {"name": "write_file", "arguments": '{"path":"prepared.txt","content":"agent state"}'}}
+                        ]}}],
+                    },
+                    {
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                        "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    },
+                ]
+                choices: list[str] = []
+
+                def respond(*_args, **kwargs):
+                    choices.append(kwargs["tool_choice"])
+                    return responses.pop(0)
+
+                root = Path(tmp)
+                subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+                prepared = root / "prepared.txt"
+                if tracked:
+                    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+                    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+                    prepared.write_text("committed state")
+                    subprocess.run(["git", "add", "prepared.txt"], cwd=root, check=True)
+                    subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+                prepared.write_text("prepared dirty state")
+                with mock.patch("agent_factory.nvidia_builder._post", side_effect=respond):
+                    run_openai_builder(
+                        "task", root, provider="openrouter", model="model", api_key="key",
+                        max_requests=3, timeout_seconds=60, max_cost_usd=3,
+                        input_cost_per_million=0.1, output_cost_per_million=0.2,
+                    )
+                self.assertEqual(prepared.read_text(), "agent state")
+                self.assertEqual(choices, ["required", "required", "auto"])
 
     def test_priced_provider_must_report_usage(self) -> None:
         response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}

@@ -110,19 +110,42 @@ class ProviderSmokeTests(unittest.TestCase):
                 {
                     "message": {
                         "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-2",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": '{"path":".agent-factory-smoke","content":"ready"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        third = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
                         "content": "PROBE_COMPLETE agent-factory-smoke-v1",
                     }
                 }
             ]
         }
         with mock.patch(
-            "agent_factory.provider_smoke._request", side_effect=[first, second]
+            "agent_factory.provider_smoke._request", side_effect=[first, second, third]
         ) as request:
             probe_model(
                 "minimax", "model", "secret", builder_shape=True,
                 max_output_tokens=1024, prompt_bytes=4096,
             )
         payload = request.call_args.kwargs["payload"]
+        self.assertEqual(
+            [call.kwargs["payload"]["tool_choice"] for call in request.call_args_list],
+            ["required", "required", "auto"],
+        )
         self.assertEqual(payload["max_tokens"], 1024)
         self.assertIs(payload["reasoning_split"], True)
         self.assertEqual(len(payload["tools"]), 6)
@@ -145,7 +168,10 @@ class ProviderSmokeTests(unittest.TestCase):
             "agent_factory.provider_smoke._request", side_effect=[first, second]
         ) as request:
             probe_model("openrouter", "vision-model", "secret", visual_input=True)
-        content = request.call_args_list[0].kwargs["payload"]["messages"][0]["content"]
+        first_payload = request.call_args_list[0].kwargs["payload"]
+        self.assertEqual(first_payload["tool_choice"], "required")
+        self.assertEqual(request.call_args_list[1].kwargs["payload"]["tool_choice"], "auto")
+        content = first_payload["messages"][0]["content"]
         self.assertEqual(content[0]["type"], "text")
         self.assertEqual(content[1]["type"], "image_url")
         self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))

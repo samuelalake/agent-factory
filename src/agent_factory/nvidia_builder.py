@@ -12,6 +12,8 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from .workspace import workspace_snapshot as _workspace_snapshot
+
 
 ENDPOINTS = {
     "minimax": "https://api.minimax.io/v1/chat/completions",
@@ -52,18 +54,6 @@ def _inside(root: Path, relative: str) -> Path:
 def _tool_env() -> dict[str, str]:
     allowed = {"CI", "HOME", "LANG", "LC_ALL", "PATH", "RUNNER_ARCH", "RUNNER_OS", "TMPDIR"}
     return {key: value for key, value in os.environ.items() if key in allowed}
-
-
-def _workspace_changed(root: Path) -> bool:
-    return bool(
-        subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=root,
-            text=True,
-            capture_output=True,
-            timeout=30,
-        ).stdout.strip()
-    )
 
 
 def _execute_tool(root: Path, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -154,6 +144,7 @@ def _post(
     *,
     provider: str = "nvidia",
     max_output_tokens: int = 4096,
+    tool_choice: str = "auto",
 ) -> dict[str, Any]:
     endpoint = ENDPOINTS.get(provider)
     if endpoint is None:
@@ -162,7 +153,7 @@ def _post(
         "model": model,
         "messages": messages,
         "tools": _tools(),
-        "tool_choice": "auto",
+        "tool_choice": tool_choice,
         "max_tokens": max_output_tokens,
         "temperature": 0.2,
         "stream": False,
@@ -255,6 +246,7 @@ def run_openai_builder(
             for url in image_urls
         )
     messages: list[dict[str, Any]] = [{"role": "user", "content": initial_content}]
+    workspace_baseline = _workspace_snapshot(root)
     deadline = time.monotonic() + timeout_seconds
     tool_count = 0
     prompt_tokens = 0
@@ -270,6 +262,11 @@ def run_openai_builder(
             min(300, remaining),
             provider=provider,
             max_output_tokens=max_output_tokens,
+            tool_choice=(
+                "required"
+                if _workspace_snapshot(root) == workspace_baseline
+                else "auto"
+            ),
         )
         usage = response.get("usage") or {}
         if (input_cost_per_million or output_cost_per_million) and not usage:
@@ -297,7 +294,7 @@ def run_openai_builder(
                 raise NvidiaBuilderError(
                     f"{provider} Builder returned without using repository tools"
                 )
-            if not _workspace_changed(root):
+            if _workspace_snapshot(root) == workspace_baseline:
                 raise NvidiaBuilderError(
                     f"{provider} Builder returned without repository changes"
                 )
@@ -321,7 +318,7 @@ def run_openai_builder(
                     "content": json.dumps(result),
                 }
             )
-    if _workspace_changed(root):
+    if _workspace_snapshot(root) != workspace_baseline:
         return (
             f"Builder stopped at its {max_requests}-request boundary after producing "
             "a reviewable repository candidate. Deterministic verification and Reviewer "
