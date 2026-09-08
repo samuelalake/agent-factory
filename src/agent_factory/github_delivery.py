@@ -27,7 +27,10 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
 
 
 def _api(repo: str, endpoint: str, *, method: str = "GET", payload: dict | None = None) -> dict:
-    args = ["api", f"repos/{repo}/{endpoint}"]
+    path = f"repos/{repo}"
+    if endpoint:
+        path += f"/{endpoint.lstrip('/')}"
+    args = ["api", path]
     if method != "GET":
         args.extend(["-X", method])
     stdin = None
