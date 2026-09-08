@@ -240,13 +240,21 @@ def run_openai_builder(
     input_cost_per_million: float,
     output_cost_per_million: float,
     max_output_tokens: int = 4096,
+    image_urls: tuple[str, ...] = (),
 ) -> tuple[str, int, float]:
     secret_name = API_KEY_ENV.get(provider)
     if secret_name is None:
         raise NvidiaBuilderError(f"unsupported OpenAI-compatible provider: {provider}")
     if not api_key:
         raise NvidiaBuilderError(f"{secret_name} is unavailable")
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    initial_content: str | list[dict[str, Any]] = prompt
+    if image_urls:
+        initial_content = [{"type": "text", "text": prompt}]
+        initial_content.extend(
+            {"type": "image_url", "image_url": {"url": url}}
+            for url in image_urls
+        )
+    messages: list[dict[str, Any]] = [{"role": "user", "content": initial_content}]
     deadline = time.monotonic() + timeout_seconds
     tool_count = 0
     prompt_tokens = 0

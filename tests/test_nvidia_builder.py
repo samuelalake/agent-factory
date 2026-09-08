@@ -210,6 +210,60 @@ class NvidiaBuilderTests(unittest.TestCase):
                     output_cost_per_million=1.2,
                 )
 
+    def test_visual_revision_images_are_sent_with_the_initial_prompt(self) -> None:
+        response = {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": '{"path":"candidate.txt","content":"ready"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        histories: list[list[dict]] = []
+
+        def respond(_model, messages, *_args, **_kwargs):
+            histories.append(json.loads(json.dumps(messages)))
+            return response
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            with mock.patch("agent_factory.nvidia_builder._post", side_effect=respond):
+                run_openai_builder(
+                    "Compare the evidence.",
+                    root,
+                    provider="openrouter",
+                    model="vision-model",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=3,
+                    input_cost_per_million=0.1,
+                    output_cost_per_million=0.2,
+                    image_urls=("https://github.com/acme/evidence/raw/sha/drag.png",),
+                )
+        content = histories[0][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "Compare the evidence."})
+        self.assertEqual(
+            content[1],
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://github.com/acme/evidence/raw/sha/drag.png"},
+            },
+        )
+
     def test_priced_provider_must_report_usage(self) -> None:
         response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
         with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
