@@ -124,6 +124,82 @@ The user's rough report and product intent.
         self.assertIn("- [ ] #90", parent_payload["body"])
         self.assertIn("- [ ] #91", parent_payload["body"])
 
+    @mock.patch("agent_factory.github_steward._gh")
+    def test_split_reuses_semantically_identical_open_issue(self, gh) -> None:
+        outcome = "Define authenticated role-scoped agent mentions."
+        plan = normalize_shape({
+            "decision": "split",
+            "title": "Factory follow-ups",
+            "outcome": "Track one bounded planning slice.",
+            "subtasks": [{
+                "title": "Secure role-scoped mentions",
+                "outcome": outcome,
+            }],
+        }, 3)
+        inventory = [{
+            "number": 141,
+            "state": "OPEN",
+            "title": "Secure role-scoped mentions",
+            "body": f"## Outcome\n\n{outcome}\n",
+        }]
+        gh.return_value = ""
+
+        state, _, detail = apply_shape(
+            "owner/repo", "139", {"body": "rough intake"}, plan, inventory
+        )
+
+        self.assertEqual(state, "split")
+        self.assertIn("1 bounded delivery slices", detail)
+        self.assertEqual(len(gh.call_args_list), 1)
+        parent_payload = json.loads(gh.call_args_list[0].kwargs["stdin"])
+        self.assertIn("- [ ] #141", parent_payload["body"])
+
+    @mock.patch("agent_factory.github_steward._gh")
+    def test_split_never_reuses_parent_as_child(self, gh) -> None:
+        outcome = "Create the bounded child."
+        plan = normalize_shape({
+            "decision": "split",
+            "title": "Same title",
+            "outcome": outcome,
+            "subtasks": [{"title": "Same title", "outcome": outcome}],
+        }, 3)
+        gh.side_effect = [json.dumps({"number": 142}), ""]
+
+        apply_shape(
+            "owner/repo", "139", {"body": outcome}, plan, [{
+                "number": 139,
+                "state": "OPEN",
+                "title": "Same title",
+                "body": outcome,
+            }]
+        )
+
+        self.assertEqual(gh.call_args_list[0].args[0][1], "repos/owner/repo/issues")
+
+    @mock.patch("agent_factory.github_steward._gh")
+    def test_split_fails_closed_on_ambiguous_or_repeated_reuse(self, gh) -> None:
+        outcome = "Define the same bounded result."
+        subtask = {"title": "Same slice", "outcome": outcome}
+        one = {
+            "number": 141, "state": "OPEN", "title": "Same slice", "body": outcome,
+        }
+        plan = normalize_shape({
+            "decision": "split", "title": "Parent", "outcome": "Split safely.",
+            "subtasks": [subtask],
+        }, 3)
+        with self.assertRaisesRegex(ValueError, "multiple open issues"):
+            apply_shape("owner/repo", "139", {"body": "intake"}, plan, [
+                one, {**one, "number": 142},
+            ])
+
+        repeated = normalize_shape({
+            "decision": "split", "title": "Parent", "outcome": "Split safely.",
+            "subtasks": [subtask, subtask],
+        }, 3)
+        with self.assertRaisesRegex(ValueError, "matches multiple"):
+            apply_shape("owner/repo", "139", {"body": "intake"}, repeated, [one])
+        gh.assert_not_called()
+
     def test_unready_issue_is_shaped_then_dispatched(self) -> None:
         calls: list[tuple[list[str], str | None]] = []
         plan = normalize_shape({
@@ -144,7 +220,7 @@ The user's rough report and product intent.
                     "body": "rough intake",
                     "labels": [{"name": "agent:steward"}],
                 })
-            if args[:2] == ["issue", "list"]:
+            if args[:2] == ["api", "repos/owner/repo/issues?state=all&per_page=100"]:
                 return "[]"
             if "/comments" in args[1] and "--paginate" in args:
                 return "[]"
@@ -174,6 +250,11 @@ The user's rough report and product intent.
         )
         self.assertEqual(parent_patch["title"], "Deliver drag interaction")
         self.assertIn("## Acceptance criteria", parent_patch["body"])
+        self.assertTrue(any(
+            args[:2] == ["api", "repos/owner/repo/issues?state=all&per_page=100"]
+            and "--paginate" in args and "--slurp" in args
+            for args, _ in calls
+        ))
 
     def test_ready_issue_dispatches_builder_idempotently(self) -> None:
         calls: list[list[str]] = []

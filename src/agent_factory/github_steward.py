@@ -222,6 +222,60 @@ def _child_marker(parent: str, slot: int) -> str:
     return f"<!-- agent-factory:steward-subtask parent={parent} slot={slot} -->"
 
 
+def _matches_existing_slice(candidate: dict[str, Any], subtask: dict[str, Any]) -> bool:
+    """Recognize an already-open issue that describes the same delivery slice."""
+    if str(candidate.get("state") or "").upper() != "OPEN":
+        return False
+    title = str(candidate.get("title") or "").strip().casefold()
+    outcome = str(subtask.get("outcome") or "").strip()
+    return (
+        bool(title)
+        and title == str(subtask.get("title") or "").strip().casefold()
+        and bool(outcome)
+        and outcome in str(candidate.get("body") or "")
+    )
+
+
+def _resolve_existing_slices(
+    parent: str,
+    subtasks: list[dict[str, Any]],
+    issue_inventory: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any] | None, bool]]:
+    """Resolve every reusable child before making any issue mutations."""
+    parent_number = int(parent)
+    resolved: list[tuple[dict[str, Any] | None, bool]] = []
+    for index, subtask in enumerate(subtasks, start=1):
+        marker = _child_marker(parent, index)
+        managed_matches = [
+            candidate
+            for candidate in issue_inventory
+            if candidate.get("number") != parent_number
+            and isinstance(candidate.get("number"), int)
+            and marker in str(candidate.get("body") or "")
+        ]
+        if len(managed_matches) > 1:
+            raise ValueError(f"multiple issues carry Steward subtask marker for slot {index}")
+        if managed_matches:
+            resolved.append((managed_matches[0], True))
+            continue
+        semantic_matches = [
+            candidate
+            for candidate in issue_inventory
+            if candidate.get("number") != parent_number
+            and isinstance(candidate.get("number"), int)
+            and _matches_existing_slice(candidate, subtask)
+        ]
+        if len(semantic_matches) > 1:
+            raise ValueError(f"multiple open issues match Steward subtask {index}")
+        resolved.append((semantic_matches[0] if semantic_matches else None, False))
+    reused_numbers = [
+        candidate["number"] for candidate, _ in resolved if candidate is not None
+    ]
+    if len(reused_numbers) != len(set(reused_numbers)):
+        raise ValueError("one existing issue matches multiple Steward subtasks")
+    return resolved
+
+
 def apply_shape(
     repo: str,
     issue: str,
@@ -236,12 +290,12 @@ def apply_shape(
         shaped_body += f"\nDuplicate candidate: #{plan['duplicate_issue']}\n"
     child_numbers: list[int] = []
     if decision == "split":
-        for index, subtask in enumerate(plan["subtasks"], start=1):
+        existing_slices = _resolve_existing_slices(issue, plan["subtasks"], issue_inventory)
+        for index, (subtask, existing_slice) in enumerate(
+            zip(plan["subtasks"], existing_slices, strict=True), start=1
+        ):
             marker = _child_marker(issue, index)
-            existing = next(
-                (candidate for candidate in issue_inventory if marker in str(candidate.get("body") or "")),
-                None,
-            )
+            matching_existing, is_managed = existing_slice
             child_body = format_shaped_issue({
                 **plan,
                 **subtask,
@@ -255,9 +309,13 @@ def apply_shape(
             }, "")
             child_body = marker + "\n" + child_body
             payload = json.dumps({"title": subtask["title"], "body": child_body})
-            if existing and isinstance(existing.get("number"), int):
-                number = existing["number"]
+            if is_managed and matching_existing is not None:
+                number = matching_existing["number"]
                 _gh(["api", f"repos/{repo}/issues/{number}", "-X", "PATCH", "--input", "-"], stdin=payload)
+            elif matching_existing is not None:
+                # Link a semantically identical open issue without rewriting
+                # its ownership, history, or parent marker.
+                number = matching_existing["number"]
             else:
                 created = json.loads(
                     _gh(["api", f"repos/{repo}/issues", "-X", "POST", "--input", "-"], stdin=payload)
@@ -306,12 +364,16 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         state, next_owner = "closed", "Nobody"
         detail = "The issue is closed, so no implementation was dispatched."
     elif not labels.intersection(config.steward.ready_labels):
-        issue_inventory = json.loads(
-            _gh([
-                "issue", "list", "--repo", repo, "--state", "all", "--limit", "100",
-                "--json", "number,title,body,state,labels",
-            ])
-        )
+        issue_inventory = [
+            candidate
+            for candidate in _flatten_pages(
+                _gh([
+                    "api", f"repos/{repo}/issues?state=all&per_page=100",
+                    "--paginate", "--slurp",
+                ])
+            )
+            if "pull_request" not in candidate
+        ]
         try:
             plan, provider, model = shape_issue(root, config, item, issue_inventory)
             state, next_owner, detail = apply_shape(repo, issue, item, plan, issue_inventory)
