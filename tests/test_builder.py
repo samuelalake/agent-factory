@@ -134,12 +134,14 @@ Produce current-head evidence and publish a ready delivery section.
 
     def test_delivery_status_has_machine_contract(self) -> None:
         body = format_issue_status(
-            "<!-- builder:test -->", "83", "delivered", "Done.", "https://example.test/pr/1"
+            "<!-- builder:test -->", "83", "delivered", "Done.",
+            "https://example.test/pr/1", result_id="github-run:17:1",
         )
         data = decode_data(body)
         self.assertIn("## Builder", body)
         self.assertEqual(data["state"], "delivered")
         self.assertEqual(data["pull_request"], "https://example.test/pr/1")
+        self.assertEqual(data["result_id"], "github-run:17:1")
 
     def test_stream_requires_and_counts_repository_tools(self) -> None:
         output = "\n".join(

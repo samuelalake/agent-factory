@@ -632,13 +632,22 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 """
 
 
-def format_issue_status(marker: str, issue: str, state: str, detail: str, pr_url: str = "") -> str:
+def format_issue_status(
+    marker: str,
+    issue: str,
+    state: str,
+    detail: str,
+    pr_url: str = "",
+    *,
+    result_id: str = "",
+) -> str:
     machine = {
         "version": 1,
         "role": "builder",
         "issue": int(issue),
         "state": state,
         **({"pull_request": pr_url} if pr_url else {}),
+        **({"result_id": result_id} if result_id else {}),
     }
     headline = "Pull request delivered" if state == "delivered" else "Blocked"
     return "\n".join(
@@ -919,6 +928,11 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         "delivered",
         f"Builder opened or updated {pr_url}. Reviewer and repository verification own the next decision.",
         pr_url,
+        result_id=(
+            f"github-run:{os.environ['GITHUB_RUN_ID']}:{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
+            if os.environ.get("GITHUB_RUN_ID")
+            else ""
+        ),
     )
     _upsert_issue_comment(repo, issue_number, config.builder.marker, status, root=root)
     _gh(["issue", "edit", issue_number, "--repo", repo, "--remove-label", config.steward.dispatch_label], cwd=root)
@@ -940,7 +954,17 @@ def main() -> int:
         detail = _blocked_detail(
             str(exc), config.builder.provider, config.builder.fallback_provider
         )
-        body = format_issue_status(config.builder.marker, args.issue, "blocked", detail)
+        body = format_issue_status(
+            config.builder.marker,
+            args.issue,
+            "blocked",
+            detail,
+            result_id=(
+                f"github-run:{os.environ['GITHUB_RUN_ID']}:{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
+                if os.environ.get("GITHUB_RUN_ID")
+                else ""
+            ),
+        )
         _upsert_issue_comment(args.repo, args.issue, config.builder.marker, body, root=args.root)
         _gh(
             [

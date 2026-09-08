@@ -25,11 +25,27 @@ class StewardTests(unittest.TestCase):
         path.write_text(json.dumps(default_config("demo")))
         return path
 
+    def test_reusable_workflow_serializes_steward_per_issue(self) -> None:
+        workflow = (
+            Path(__file__).parents[1] / ".github/workflows/steward.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "group: agent-factory-steward-${{ github.repository }}-${{ inputs.issue }}",
+            workflow,
+        )
+        self.assertIn("cancel-in-progress: false", workflow)
+
     def test_status_has_human_and_machine_state(self) -> None:
-        body = format_status("<!-- steward:test -->", "83", "dispatched", "Builder", "Ready.")
+        body = format_status(
+            "<!-- steward:test -->", "83", "dispatched", "Builder", "Ready.",
+            dispatched_after_builder_result_id="github-run:17:1",
+        )
         self.assertIn("## Steward", body)
         self.assertIn("Dispatched → Builder", body)
         self.assertEqual(decode_data(body)["next_owner"], "builder")
+        self.assertEqual(
+            decode_data(body)["dispatched_after_builder_result_id"], "github-run:17:1"
+        )
 
     def test_shape_contract_rejects_issue_explosion(self) -> None:
         raw = {
@@ -278,6 +294,138 @@ The user's rough report and product intent.
         self.assertIn("agent:retry", created)
         self.assertIn("agent:builder", created)
         self.assertTrue(any("--add-label" in args and "agent:builder" in args for args in calls))
+
+    def test_retry_does_not_duplicate_an_active_builder_dispatch(self) -> None:
+        calls: list[list[str]] = []
+        builder_data = encode_data({
+            "version": 1, "role": "builder", "state": "complete",
+            "result_id": "github-run:17:1",
+        })
+
+        def fake_gh(args: list[str], *, stdin: str | None = None) -> str:
+            calls.append(args)
+            if args[:2] == ["issue", "view"]:
+                return json.dumps({
+                    "state": "OPEN",
+                    "labels": [
+                        {"name": "ready"},
+                        {"name": "agent:builder"},
+                        {"name": "agent:retry"},
+                    ],
+                })
+            if "/comments" in args[1] and "--paginate" in args:
+                return json.dumps([{"id": 7, "body": builder_data}])
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            "os.environ", {"GH_TOKEN": "steward-token"}, clear=True
+        ), mock.patch("agent_factory.github_steward._gh", side_effect=fake_gh):
+            state = run("owner/repo", "83", self._config(Path(tmp)))
+
+        self.assertEqual(state, "dispatched")
+        self.assertFalse(any(
+            "--remove-label" in args and "agent:builder" in args for args in calls
+        ))
+        self.assertFalse(any(
+            "--add-label" in args and "agent:builder" in args for args in calls
+        ))
+        self.assertTrue(any(
+            "--remove-label" in args and "agent:retry" in args for args in calls
+        ))
+
+    def test_second_retry_does_not_duplicate_a_blocked_builder_redispatch(self) -> None:
+        calls: list[list[str]] = []
+        builder_data = encode_data({
+            "version": 1, "role": "builder", "state": "blocked",
+            "result_id": "github-run:17:1",
+        })
+        steward_data = encode_data({
+            "version": 1,
+            "role": "steward",
+            "state": "dispatched",
+            "dispatched_after_builder_result_id": "github-run:17:1",
+        })
+
+        def fake_gh(args: list[str], *, stdin: str | None = None) -> str:
+            calls.append(args)
+            if args[:2] == ["issue", "view"]:
+                return json.dumps({
+                    "state": "OPEN",
+                    "labels": [
+                        {"name": "ready"},
+                        {"name": "agent:builder"},
+                        {"name": "agent:retry"},
+                    ],
+                })
+            if "/comments" in args[1] and "--paginate" in args:
+                return json.dumps([
+                    {"id": 7, "body": builder_data},
+                    {"id": 8, "body": steward_data},
+                ])
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            "os.environ", {"GH_TOKEN": "steward-token"}, clear=True
+        ), mock.patch("agent_factory.github_steward._gh", side_effect=fake_gh):
+            state = run("owner/repo", "83", self._config(Path(tmp)))
+
+        self.assertEqual(state, "dispatched")
+        self.assertFalse(any(
+            "--remove-label" in args and "agent:builder" in args for args in calls
+        ))
+        self.assertFalse(any(
+            "--add-label" in args and "agent:builder" in args for args in calls
+        ))
+        self.assertTrue(any(
+            "--remove-label" in args and "agent:retry" in args for args in calls
+        ))
+
+    def test_new_blocked_result_after_redispatch_can_be_retried(self) -> None:
+        calls: list[list[str]] = []
+        builder_data = encode_data({
+            "version": 1, "role": "builder", "state": "blocked",
+            "result_id": "github-run:18:1",
+        })
+        steward_data = encode_data({
+            "version": 1,
+            "role": "steward",
+            "state": "dispatched",
+            "dispatched_after_builder_result_id": "github-run:17:1",
+        })
+
+        def fake_gh(args: list[str], *, stdin: str | None = None) -> str:
+            calls.append(args)
+            if args[:2] == ["issue", "view"]:
+                return json.dumps({
+                    "state": "OPEN",
+                    "labels": [
+                        {"name": "ready"},
+                        {"name": "agent:builder"},
+                        {"name": "agent:retry"},
+                    ],
+                })
+            if "/comments" in args[1] and "--paginate" in args:
+                return json.dumps([
+                    {"id": 7, "body": builder_data},
+                    {"id": 8, "body": steward_data},
+                ])
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            "os.environ", {"GH_TOKEN": "steward-token"}, clear=True
+        ), mock.patch("agent_factory.github_steward._gh", side_effect=fake_gh):
+            state = run("owner/repo", "83", self._config(Path(tmp)))
+
+        self.assertEqual(state, "dispatched")
+        remove_index = next(
+            index for index, args in enumerate(calls)
+            if "--remove-label" in args and "agent:builder" in args
+        )
+        add_index = next(
+            index for index, args in enumerate(calls)
+            if "--add-label" in args and "agent:builder" in args
+        )
+        self.assertLess(remove_index, add_index)
 
     def test_blocked_builder_waits_until_retry_label(self) -> None:
         builder_data = encode_data({"version": 1, "role": "builder", "state": "blocked"})

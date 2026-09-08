@@ -56,7 +56,15 @@ def _upsert_issue_comment(repo: str, issue: str, marker: str, body: str) -> None
         _gh(["api", f"repos/{repo}/issues/{issue}/comments", "-X", "POST", "--input", "-"], stdin=payload)
 
 
-def format_status(marker: str, issue: str, state: str, next_owner: str, detail: str) -> str:
+def format_status(
+    marker: str,
+    issue: str,
+    state: str,
+    next_owner: str,
+    detail: str,
+    *,
+    dispatched_after_builder_result_id: str | None = None,
+) -> str:
     machine = {
         "version": 1,
         "role": "steward",
@@ -64,6 +72,8 @@ def format_status(marker: str, issue: str, state: str, next_owner: str, detail: 
         "state": state,
         "next_owner": next_owner.lower(),
     }
+    if dispatched_after_builder_result_id is not None:
+        machine["dispatched_after_builder_result_id"] = dispatched_after_builder_result_id
     return "\n".join(
         [
             marker,
@@ -360,6 +370,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         for label in item.get("labels") or []
         if isinstance(label, dict)
     }
+    dispatched_after_builder_result_id: str | None = None
     if str(item.get("state") or "").upper() != "OPEN":
         state, next_owner = "closed", "Nobody"
         detail = "The issue is closed, so no implementation was dispatched."
@@ -395,10 +406,14 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             _gh(["api", f"repos/{repo}/issues/{issue}/comments", "--paginate", "--slurp"])
         )
         latest_builder = None
+        latest_builder_result_id = ""
         for comment in comments:
             data = decode_data(str(comment.get("body") or ""))
             if data and data.get("role") == "builder":
                 latest_builder = data
+                latest_builder_result_id = str(
+                    data.get("result_id") or comment.get("updated_at") or ""
+                )
         state, next_owner = "dispatched", "Builder"
         detail = "Steward shaped and dispatched the issue from the configured base branch."
         _gh([
@@ -406,6 +421,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             "--color", "1D76DB", "--description", "Steward assigned this issue to Builder", "--force",
         ])
         _gh(["issue", "edit", issue, "--repo", repo, "--add-label", config.steward.dispatch_label])
+        dispatched_after_builder_result_id = latest_builder_result_id
         for stale_label in ("agent:steward", config.steward.retry_label):
             if stale_label in labels:
                 _gh(["issue", "edit", issue, "--repo", repo, "--remove-label", stale_label])
@@ -414,16 +430,43 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             _gh(["api", f"repos/{repo}/issues/{issue}/comments", "--paginate", "--slurp"])
         )
         latest_builder = None
+        latest_builder_result_id = ""
+        latest_steward = None
         for comment in comments:
             data = decode_data(str(comment.get("body") or ""))
             if data and data.get("role") == "builder":
                 latest_builder = data
-        if latest_builder and latest_builder.get("state") == "blocked" and config.steward.retry_label not in labels:
+                latest_builder_result_id = str(
+                    data.get("result_id") or comment.get("updated_at") or ""
+                )
+            elif data and data.get("role") == "steward":
+                latest_steward = data
+        builder_blocked = bool(
+            latest_builder and latest_builder.get("state") == "blocked"
+        )
+        active_dispatch = bool(
+            config.steward.dispatch_label in labels
+            and latest_steward
+            and latest_steward.get("state") == "dispatched"
+            and latest_steward.get("dispatched_after_builder_result_id")
+            == latest_builder_result_id
+        )
+        if builder_blocked and config.steward.retry_label not in labels:
             state, next_owner = "blocked", "Steward"
             detail = (
                 "Builder returned a blocked result. Steward is holding dispatch until the "
                 "issue context, task split, or repository capability is improved."
             )
+        elif config.steward.dispatch_label in labels and (active_dispatch or not builder_blocked):
+            state, next_owner = "dispatched", "Builder"
+            detail = (
+                "Builder is already assigned. Steward consumed the routing signal without "
+                "creating a duplicate Builder dispatch."
+            )
+            dispatched_after_builder_result_id = latest_builder_result_id
+            for stale_label in ("agent:steward", config.steward.retry_label):
+                if stale_label in labels:
+                    _gh(["issue", "edit", issue, "--repo", repo, "--remove-label", stale_label])
         else:
             state, next_owner = "dispatched", "Builder"
             detail = (
@@ -433,10 +476,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             # A failed Builder may leave its dispatch label attached. GitHub
             # emits no labeled event when an already-present label is added,
             # so a retry must remove that stale edge before re-adding it.
-            if (
-                config.steward.retry_label in labels
-                and config.steward.dispatch_label in labels
-            ):
+            if config.steward.retry_label in labels and config.steward.dispatch_label in labels:
                 _gh(
                     [
                         "issue", "edit", issue, "--repo", repo,
@@ -451,11 +491,19 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
                 ]
             )
             _gh(["issue", "edit", issue, "--repo", repo, "--add-label", config.steward.dispatch_label])
+            dispatched_after_builder_result_id = latest_builder_result_id
             for stale_label in ("agent:steward", config.steward.retry_label):
                 if stale_label in labels:
                     _gh(["issue", "edit", issue, "--repo", repo, "--remove-label", stale_label])
 
-    body = format_status(config.steward.marker, issue, state, next_owner, detail)
+    body = format_status(
+        config.steward.marker,
+        issue,
+        state,
+        next_owner,
+        detail,
+        dispatched_after_builder_result_id=dispatched_after_builder_result_id,
+    )
     _upsert_issue_comment(repo, issue, config.steward.marker, body)
     print(state)
     return state
