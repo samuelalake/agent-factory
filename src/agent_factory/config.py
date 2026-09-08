@@ -23,6 +23,7 @@ class ProjectConfig:
 class ReviewConfig:
     marker: str
     failure_marker: str
+    app_login: str
     required: bool
     max_diff_bytes: int
     provider: str
@@ -278,6 +279,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),
             failure_marker=_string(review.get("failure_marker"), "review.failure_marker"),
+            app_login=_string(review.get("app_login"), "review.app_login"),
             required=bool(review.get("required", True)),
             max_diff_bytes=max_diff,
             provider=provider,

@@ -144,7 +144,20 @@ def _preserve_workflow_control_plane(
     return tuple(sorted(changed | set(untracked)))
 
 
-def _validate_candidate(root: Path, protected_ref: str = "HEAD") -> tuple[str, ...]:
+def _workspace_snapshot(root: Path) -> tuple[str, str, str]:
+    """Capture repository state before or after a model tool loop."""
+    return (
+        _run(["git", "status", "--porcelain=v1", "-z"], cwd=root),
+        _run(["git", "diff", "--binary"], cwd=root),
+        _run(["git", "diff", "--cached", "--binary"], cwd=root),
+    )
+
+
+def _validate_candidate(
+    root: Path,
+    protected_ref: str = "HEAD",
+    baseline: tuple[str, str, str] | None = None,
+) -> tuple[str, ...]:
     preserved = _preserve_workflow_control_plane(root, protected_ref)
     if not _run(["git", "status", "--porcelain"], cwd=root).strip():
         if preserved:
@@ -152,7 +165,27 @@ def _validate_candidate(root: Path, protected_ref: str = "HEAD") -> tuple[str, .
                 "Builder changed only protected GitHub workflows; the control plane was preserved"
             )
         raise BuilderBlocked("Builder produced no repository changes")
+    if baseline is not None and _workspace_snapshot(root) == baseline:
+        raise BuilderBlocked("Builder produced no repository changes beyond prepared base state")
     return preserved
+
+
+def _delivery_gate_requires_current_head_evidence(feedback: str) -> bool:
+    """Recognize Factory's deterministic evidence gate, not model failures."""
+    return (
+        "Model: `deterministic/builder-delivery-gate`" in feedback
+        and "Builder delivery evidence is not ready" in feedback
+        and "Produce current-head evidence" in feedback
+    )
+
+
+def _base_sync_response(base_branch: str) -> str:
+    return (
+        "<builder_summary>Integrated the current "
+        f"{base_branch} branch into this existing Builder branch so repository-owned "
+        "verification can regenerate evidence for the current head. No model was invoked "
+        "and no additional working-tree edits were required.</builder_summary>"
+    )
 
 
 def _merge_current_base(root: Path, base_ref: str) -> str:
@@ -200,7 +233,15 @@ def _reconcile_workflow_control_plane(root: Path, base_ref: str) -> tuple[str, .
     return tuple(sorted(set(divergent) | set(unmerged)))
 
 
-def _review_feedback(repo: str, pr: int, head: str, marker: str, *, root: Path) -> str:
+def _review_feedback(
+    repo: str,
+    pr: int,
+    head: str,
+    marker: str,
+    reviewer_app_login: str,
+    *,
+    root: Path,
+) -> str:
     reviews = json.loads(
         _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"], cwd=root)
     )
@@ -210,6 +251,9 @@ def _review_feedback(repo: str, pr: int, head: str, marker: str, *, root: Path) 
         if str(item.get("commit_id") or "") == head
         and marker in str(item.get("body") or "")
         and str(item.get("state") or "").upper() == "CHANGES_REQUESTED"
+        and str((item.get("user") or {}).get("type") or "") == "Bot"
+        and str((item.get("user") or {}).get("login") or "")
+        == reviewer_app_login
     ]
     if not current:
         return ""
@@ -508,6 +552,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             int(existing[0]["number"]),
             str(existing[0].get("headRefOid") or ""),
             config.review.marker,
+            config.review.app_login,
             root=root,
         )
         _run(["gh", "auth", "setup-git"], cwd=root)
@@ -519,17 +564,23 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     _run(["git", "config", "user.name", "Agent Factory Builder"], cwd=root)
     _run(["git", "config", "user.email", "agent-factory-builder[bot]@users.noreply.github.com"], cwd=root)
     base_conflicts = ""
+    base_sync_changed = False
     if existing:
+        previous_head = _run(["git", "rev-parse", "HEAD"], cwd=root).strip()
         base_conflicts = _merge_current_base(
             root, f"origin/{config.builder.base_branch}"
         )
         _reconcile_workflow_control_plane(
             root, f"origin/{config.builder.base_branch}"
         )
+        base_sync_changed = (
+            _run(["git", "rev-parse", "HEAD"], cwd=root).strip() != previous_head
+        )
         base_conflicts = _run(
             ["git", "diff", "--name-only", "--diff-filter=U"], cwd=root
         ).strip()
     prompt = build_prompt(config, issue, root, feedback, base_conflicts)
+    agent_baseline = _workspace_snapshot(root)
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
@@ -552,54 +603,77 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             max_output_tokens=config.builder.max_output_tokens,
         )
 
-    try:
-        if config.builder.provider == "gemini":
-            if config.builder.harness != "gemini-cli":
-                raise RuntimeError(f"unsupported Gemini harness: {config.builder.harness}")
-            output = _run_gemini(
-                prompt,
-                root=root,
-                model=config.builder.model,
-                timeout_seconds=config.builder.timeout_seconds,
-            )
-            response, tool_calls = parse_gemini_stream(output)
-        else:
-            response, tool_calls, estimated_cost = run_compatible(
-                config.builder.provider, config.builder.model
-            )
-            harness = "openai-compatible-tool-loop"
-        _validate_candidate(root, f"origin/{config.builder.base_branch}")
-    except (
-        BuilderBlocked,
-        RuntimeError,
-        subprocess.TimeoutExpired,
-        json.JSONDecodeError,
-        NvidiaBuilderError,
-    ) as exc:
-        if not config.builder.fallback_provider or not config.builder.fallback_model:
-            raise BuilderBlocked(f"{config.builder.provider} Builder failed: {exc}") from exc
-        if _run(["git", "status", "--porcelain"], cwd=root).strip():
-            raise BuilderBlocked(
-                f"{config.builder.provider} Builder failed after modifying the workspace; "
-                f"fallback was not mixed into partial work: {exc}"
-            ) from exc
+    evidence_base_sync = (
+        base_sync_changed
+        and not base_conflicts
+        and _delivery_gate_requires_current_head_evidence(feedback)
+    )
+    if evidence_base_sync:
+        response = _base_sync_response(config.builder.base_branch)
+        tool_calls = 0
+        harness = "current-base-sync"
+        model = "not invoked"
+        estimated_cost = 0.0
+    else:
         try:
-            response, tool_calls, estimated_cost = run_compatible(
-                config.builder.fallback_provider, config.builder.fallback_model
+            if config.builder.provider == "gemini":
+                if config.builder.harness != "gemini-cli":
+                    raise RuntimeError(f"unsupported Gemini harness: {config.builder.harness}")
+                output = _run_gemini(
+                    prompt,
+                    root=root,
+                    model=config.builder.model,
+                    timeout_seconds=config.builder.timeout_seconds,
+                )
+                response, tool_calls = parse_gemini_stream(output)
+            else:
+                response, tool_calls, estimated_cost = run_compatible(
+                    config.builder.provider, config.builder.model
+                )
+                harness = "openai-compatible-tool-loop"
+            _validate_candidate(
+                root,
+                f"origin/{config.builder.base_branch}",
+                baseline=agent_baseline,
             )
-            harness = "openai-compatible-tool-loop"
-            model = config.builder.fallback_model
-            _validate_candidate(root, f"origin/{config.builder.base_branch}")
-        except (BuilderBlocked, NvidiaBuilderError) as fallback_exc:
-            raise BuilderBlocked(
-                f"{config.builder.provider} Builder failed: {exc}; "
-                f"{config.builder.fallback_provider} fallback failed: {fallback_exc}"
-            ) from fallback_exc
+        except (
+            BuilderBlocked,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            NvidiaBuilderError,
+        ) as exc:
+            if not config.builder.fallback_provider or not config.builder.fallback_model:
+                raise BuilderBlocked(f"{config.builder.provider} Builder failed: {exc}") from exc
+            if _workspace_snapshot(root) != agent_baseline:
+                raise BuilderBlocked(
+                    f"{config.builder.provider} Builder failed after modifying the workspace; "
+                    f"fallback was not mixed into partial work: {exc}"
+                ) from exc
+            try:
+                response, tool_calls, estimated_cost = run_compatible(
+                    config.builder.fallback_provider, config.builder.fallback_model
+                )
+                harness = "openai-compatible-tool-loop"
+                model = config.builder.fallback_model
+                _validate_candidate(
+                    root,
+                    f"origin/{config.builder.base_branch}",
+                    baseline=agent_baseline,
+                )
+            except (BuilderBlocked, NvidiaBuilderError) as fallback_exc:
+                raise BuilderBlocked(
+                    f"{config.builder.provider} Builder failed: {exc}; "
+                    f"{config.builder.fallback_provider} fallback failed: {fallback_exc}"
+                ) from fallback_exc
 
     if "BUILDER_BLOCKED:" in response:
         raise BuilderBlocked(response.split("BUILDER_BLOCKED:", 1)[1].strip()[:2000])
-    _run(["git", "add", "--all"], cwd=root)
-    _run(["git", "commit", "-m", f"feat: implement issue #{issue_number}"], cwd=root)
+    if _run(["git", "status", "--porcelain"], cwd=root).strip():
+        _run(["git", "add", "--all"], cwd=root)
+        _run(["git", "commit", "-m", f"feat: implement issue #{issue_number}"], cwd=root)
+    elif not base_sync_changed:
+        raise BuilderBlocked("Builder produced no publishable repository changes")
     _run(["gh", "auth", "setup-git"], cwd=root)
     _run(["git", "push", "--force-with-lease", "origin", branch], cwd=root)
     changed_paths = tuple(
