@@ -175,6 +175,10 @@ as `app/**` and `**/*.origami`. A matching change without a canonical Builder
 delivery is blocked deterministically, even when the model would approve it. A
 non-matching control-plane or documentation change is reviewed from its diff,
 checks, and linked evidence without manufacturing unrelated screenshots.
+Reviewer findings must describe concrete defects in the supplied change. A
+consumer that pins a reusable workflow is not expected to duplicate that
+workflow's enforcement logic locally; dependency-pin review instead evaluates
+the consumer wiring and the supplied upstream evidence.
 
 The self-hosted Apps need these repository permissions:
 
