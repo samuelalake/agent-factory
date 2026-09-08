@@ -30,6 +30,41 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
     return result.stdout
 
 
+def repository_glob_match(path: str, pattern: str) -> bool:
+    """Match repository paths while allowing ``**/`` to span zero directories."""
+    candidates = {pattern}
+    pending = [pattern]
+    while pending:
+        candidate = pending.pop()
+        start = candidate.find("**/")
+        if start < 0:
+            continue
+        collapsed = candidate[:start] + candidate[start + 3:]
+        if collapsed not in candidates:
+            candidates.add(collapsed)
+            pending.append(collapsed)
+    return any(fnmatch.fnmatchcase(path, candidate) for candidate in candidates)
+
+
+def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
+    """Fetch every current and previous PR file path through paginated REST."""
+    raw = json.loads(_gh([
+        "api", f"repos/{repo}/pulls/{pr}/files?per_page=100", "--paginate", "--slurp",
+    ]))
+    if not isinstance(raw, list) or any(not isinstance(page, list) for page in raw):
+        raise RuntimeError("GitHub returned an invalid paginated pull-file response")
+    paths: list[str] = []
+    for page in raw:
+        for item in page:
+            if not isinstance(item, dict):
+                raise RuntimeError("GitHub returned an invalid pull-file entry")
+            for key in ("filename", "previous_filename"):
+                value = item.get(key)
+                if isinstance(value, str) and value and value not in paths:
+                    paths.append(value)
+    return tuple(paths)
+
+
 def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     for item in raw.get("findings") or []:
@@ -345,18 +380,18 @@ def run(
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
     meta = json.loads(_gh([
-        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body,files",
+        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body",
     ]))
     has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
-    changed_paths = tuple(
-        str(item.get("path") or "")
-        for item in (meta.get("files") or [])
-        if isinstance(item, dict) and item.get("path")
+    changed_paths = (
+        changed_file_paths(repo, pr)
+        if not has_builder_delivery and config.review.visual_evidence_paths
+        else ()
     )
     visual_paths = tuple(
         path
         for path in changed_paths
-        if any(fnmatch.fnmatchcase(path, pattern) for pattern in config.review.visual_evidence_paths)
+        if any(repository_glob_match(path, pattern) for pattern in config.review.visual_evidence_paths)
     )
     delivery_gate: dict[str, Any] | None = None
     delivery_image_urls: tuple[str, ...] = ()
