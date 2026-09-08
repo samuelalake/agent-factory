@@ -113,6 +113,34 @@ def select_candidates(catalog: list[str], requested: list[str], limit: int) -> l
     return selected[:limit]
 
 
+def _required_tool_call(
+    response: dict[str, Any], expected_tool: str, expected_arguments: dict[str, str]
+) -> tuple[dict[str, Any], str]:
+    choices = response.get("choices") or []
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    assistant = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(assistant, dict):
+        raise ProviderSmokeError("provider returned an invalid chat response")
+    calls = assistant.get("tool_calls") or []
+    call = calls[0] if isinstance(calls, list) and len(calls) == 1 else None
+    function = call.get("function") if isinstance(call, dict) else None
+    if not isinstance(function, dict) or function.get("name") != expected_tool:
+        raise ProviderSmokeError("model did not produce the required tool call")
+    call_id = call.get("id")
+    if not isinstance(call_id, str) or not call_id:
+        raise ProviderSmokeError("model tool call did not include an id")
+    raw_arguments = function.get("arguments")
+    if not isinstance(raw_arguments, str):
+        raise ProviderSmokeError("model tool call arguments were invalid JSON")
+    try:
+        arguments = json.loads(raw_arguments)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProviderSmokeError("model tool call arguments were invalid JSON") from exc
+    if arguments != expected_arguments:
+        raise ProviderSmokeError("tool call arguments did not preserve the requested value")
+    return assistant, call_id
+
+
 def probe_model(
     provider: str,
     model: str,
@@ -148,20 +176,25 @@ def probe_model(
     expected_tool = "list_files" if builder_shape else "write_probe"
     if visual_input:
         requested_arguments = {"pattern": "red"} if builder_shape else {"value": "red"}
+        value = "red"
+    else:
+        requested_arguments = {"pattern": "*"} if builder_shape else {"value": "ready"}
+        value = "ready"
+    if builder_shape:
+        image_instruction = "Inspect the attached single-color image. " if visual_input else ""
         instruction = (
-            f"Inspect the attached single-color image. Call {expected_tool} exactly once "
-            "with its string argument equal to the lowercase color name visible in the image. "
-            "Do not answer in prose first. After the tool result, reply exactly "
+            f"{image_instruction}First call list_files exactly once with pattern "
+            f"{requested_arguments['pattern']}. After its tool result, call write_file "
+            f"exactly once with path .agent-factory-smoke and content {value}. Do not "
+            "answer in prose before both calls. After the write_file result, reply exactly "
             "PROBE_COMPLETE followed by its nonce."
         )
     else:
-        requested_arguments = {"pattern": "*"} if builder_shape else {"value": "ready"}
+        image_instruction = "Inspect the attached single-color image. " if visual_input else ""
         instruction = (
-            "Call list_files exactly once with pattern *. Do not answer in prose first. "
-            f"After the tool result, reply exactly PROBE_COMPLETE followed by its nonce."
-            if builder_shape
-            else "Call write_probe exactly once with value ready. Do not answer in prose first. "
-            f"After the tool result, reply exactly PROBE_COMPLETE followed by its nonce."
+            f"{image_instruction}Call write_probe exactly once with value {value}. "
+            "Do not answer in prose first. After the tool result, reply exactly "
+            "PROBE_COMPLETE followed by its nonce."
         )
     if prompt_bytes > len(instruction.encode()):
         instruction += "\nContext padding:\n" + ("x" * (prompt_bytes - len(instruction.encode())))
@@ -192,32 +225,7 @@ def probe_model(
         # remain clean enough for an exact acknowledgement.
         payload["reasoning_split"] = True
     first = _request(endpoint, api_key, payload=payload)
-    choices = first.get("choices") or []
-    first_choice = choices[0] if isinstance(choices, list) and choices else None
-    assistant = first_choice.get("message") if isinstance(first_choice, dict) else None
-    if not isinstance(assistant, dict):
-        raise ProviderSmokeError("provider returned an invalid chat response")
-    calls = assistant.get("tool_calls") or []
-    if not isinstance(calls, list):
-        raise ProviderSmokeError("provider returned an invalid chat response")
-    call = calls[0] if len(calls) == 1 else None
-    function = call.get("function") if isinstance(call, dict) else None
-    if not isinstance(function, dict):
-        raise ProviderSmokeError("model did not produce the required tool call")
-    if function.get("name") != expected_tool:
-        raise ProviderSmokeError("model did not produce the required tool call")
-    call_id = call.get("id")
-    if not isinstance(call_id, str) or not call_id:
-        raise ProviderSmokeError("model tool call did not include an id")
-    raw_arguments = function.get("arguments")
-    if not isinstance(raw_arguments, str):
-        raise ProviderSmokeError("model tool call arguments were invalid JSON")
-    try:
-        arguments = json.loads(raw_arguments)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ProviderSmokeError("model tool call arguments were invalid JSON") from exc
-    if arguments != requested_arguments:
-        raise ProviderSmokeError("tool call arguments did not preserve the requested value")
+    assistant, call_id = _required_tool_call(first, expected_tool, requested_arguments)
     messages.extend(
         [
             assistant,
@@ -231,9 +239,29 @@ def probe_model(
             },
         ]
     )
-    second_payload = {**payload, "messages": messages, "tool_choice": "auto"}
-    second = _request(endpoint, api_key, payload=second_payload)
-    second_choices = second.get("choices") or []
+    if builder_shape:
+        mutation_arguments = {"path": ".agent-factory-smoke", "content": value}
+        second_payload = {**payload, "messages": messages, "tool_choice": "required"}
+        second = _request(endpoint, api_key, payload=second_payload)
+        mutation_assistant, mutation_call_id = _required_tool_call(
+            second, "write_file", mutation_arguments
+        )
+        messages.extend(
+            [
+                mutation_assistant,
+                {
+                    "role": "tool",
+                    "tool_call_id": mutation_call_id,
+                    "name": "write_file",
+                    "content": json.dumps(
+                        {"ok": True, "result": mutation_arguments, "nonce": PROBE_NONCE}
+                    ),
+                },
+            ]
+        )
+    final_payload = {**payload, "messages": messages, "tool_choice": "auto"}
+    final = _request(endpoint, api_key, payload=final_payload)
+    second_choices = final.get("choices") or []
     second_choice = (
         second_choices[0]
         if isinstance(second_choices, list) and len(second_choices) == 1

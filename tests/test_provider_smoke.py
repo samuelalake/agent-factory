@@ -110,19 +110,42 @@ class ProviderSmokeTests(unittest.TestCase):
                 {
                     "message": {
                         "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-2",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": '{"path":".agent-factory-smoke","content":"ready"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        third = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
                         "content": "PROBE_COMPLETE agent-factory-smoke-v1",
                     }
                 }
             ]
         }
         with mock.patch(
-            "agent_factory.provider_smoke._request", side_effect=[first, second]
+            "agent_factory.provider_smoke._request", side_effect=[first, second, third]
         ) as request:
             probe_model(
                 "minimax", "model", "secret", builder_shape=True,
                 max_output_tokens=1024, prompt_bytes=4096,
             )
         payload = request.call_args.kwargs["payload"]
+        self.assertEqual(
+            [call.kwargs["payload"]["tool_choice"] for call in request.call_args_list],
+            ["required", "required", "auto"],
+        )
         self.assertEqual(payload["max_tokens"], 1024)
         self.assertIs(payload["reasoning_split"], True)
         self.assertEqual(len(payload["tools"]), 6)

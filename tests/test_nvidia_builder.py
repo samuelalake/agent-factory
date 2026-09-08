@@ -278,6 +278,51 @@ class NvidiaBuilderTests(unittest.TestCase):
         )
         self.assertEqual(choices, ["required"])
 
+    def test_prepared_dirty_baseline_requires_tools_until_agent_edit(self) -> None:
+        responses = [
+            {
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call-1", "function": {"name": "list_files", "arguments": '{"pattern":"*"}'}}
+                ]}}],
+            },
+            {
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call-2", "function": {"name": "write_file", "arguments": '{"path":"candidate.txt","content":"ready"}'}}
+                ]}}],
+            },
+            {
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            },
+        ]
+        choices: list[str] = []
+
+        def respond(*_args, **kwargs):
+            choices.append(kwargs["tool_choice"])
+            return responses.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "prepared.txt").write_text("base state")
+            with mock.patch("agent_factory.nvidia_builder._post", side_effect=respond):
+                run_openai_builder(
+                    "task",
+                    root,
+                    provider="openrouter",
+                    model="model",
+                    api_key="key",
+                    max_requests=3,
+                    timeout_seconds=60,
+                    max_cost_usd=3,
+                    input_cost_per_million=0.1,
+                    output_cost_per_million=0.2,
+                )
+            self.assertEqual((root / "candidate.txt").read_text(), "ready")
+        self.assertEqual(choices, ["required", "required", "auto"])
+
     def test_priced_provider_must_report_usage(self) -> None:
         response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
         with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
