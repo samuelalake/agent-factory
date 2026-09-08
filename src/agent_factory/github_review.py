@@ -325,6 +325,7 @@ def run(
     meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
     delivery_gate: dict[str, Any] | None = None
     delivery_image_urls: tuple[str, ...] = ()
+    delivery_image_failure = False
     if config.review.require_builder_delivery and config.builder.marker in str(meta.get("body") or ""):
         status, refreshed_body = wait_for_delivery(
             repo,
@@ -347,11 +348,21 @@ def run(
             return
         if status == "failed":
             delivery_gate = failed_delivery_review(status, refreshed_body)
+        if config.review.visual_evidence or config.review.fallback_visual_evidence:
             images, _ = _current_delivery_media(
                 refreshed_body,
                 str(meta["headRefOid"]),
             )
-            if images:
+            if not images:
+                delivery_image_failure = True
+                evidence_failure = failed_review(
+                    "Reviewer found no trusted current-head visual evidence."
+                )
+                if delivery_gate is None:
+                    delivery_gate = evidence_failure
+                else:
+                    delivery_gate["findings"].extend(evidence_failure["findings"])
+            else:
                 try:
                     delivery_image_urls = _fetch_delivery_images(
                         repo,
@@ -361,10 +372,17 @@ def run(
                         os.environ["GH_TOKEN"],
                     )
                 except BuilderBlocked:
-                    # The deterministic failure remains merge-blocking. Reviewer can
-                    # still inspect the diff and textual evidence without reflecting
-                    # fetch details or accepting an untrusted URL.
+                    # Never let a text-only review approve after the consumer opted
+                    # into visual review but its authenticated evidence was unreadable.
                     delivery_image_urls = ()
+                    delivery_image_failure = True
+                    evidence_failure = failed_review(
+                        "Reviewer could not fetch authenticated current-head visual evidence."
+                    )
+                    if delivery_gate is None:
+                        delivery_gate = evidence_failure
+                    else:
+                        delivery_gate["findings"].extend(evidence_failure["findings"])
     diff = _gh(["pr", "diff", pr, "--repo", repo])
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
@@ -402,6 +420,8 @@ def run(
             config.review.fallback_visual_evidence,
         ))
     marker = config.review.marker
+    if delivery_image_failure:
+        marker = f"{config.review.marker}\n{config.review.failure_marker}"
     try:
         raw, provider, model = request_review(
             candidates,
