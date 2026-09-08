@@ -13,6 +13,11 @@ from .app_auth import get_installation_token
 from .config import load_config
 from .context import discover_context
 from .github_delivery import delivery_status, wait_for_delivery
+from .github_builder import (
+    BuilderBlocked,
+    _current_delivery_media,
+    _fetch_delivery_images,
+)
 from .model import ModelError, complete
 from .protocol import encode_data, extract_json_reply
 
@@ -277,14 +282,28 @@ def failed_delivery_review(status: str, body: str = "") -> dict[str, Any]:
 
 
 def request_review(
-    candidates: list[tuple[str, str]], system: str, user: str
+    candidates: list[tuple[str, str, bool]],
+    system: str,
+    user: str,
+    *,
+    image_urls: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], str, str]:
     failures: list[str] = []
-    for provider, model in candidates:
+    for provider, model, supports_images in candidates:
+        if image_urls and not supports_images:
+            failures.append(f"{provider}/{model}: visual evidence is not enabled for this route")
+            continue
         env_name = f"{provider.upper()}_API_KEY"
         api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
         try:
-            reply = complete(provider, model, system, user, api_key)
+            reply = complete(
+                provider,
+                model,
+                system,
+                user,
+                api_key,
+                image_urls=image_urls,
+            )
             return normalize_review(extract_json_reply(reply)), provider, model
         except (ModelError, ValueError) as exc:
             failures.append(f"{provider}/{model}: {type(exc).__name__}: {exc}")
@@ -304,6 +323,8 @@ def run(
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
     meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
+    delivery_gate: dict[str, Any] | None = None
+    delivery_image_urls: tuple[str, ...] = ()
     if config.review.require_builder_delivery and config.builder.marker in str(meta.get("body") or ""):
         status, refreshed_body = wait_for_delivery(
             repo,
@@ -312,7 +333,7 @@ def run(
             timeout_seconds=config.review.delivery_wait_seconds,
         )
         meta["body"] = refreshed_body
-        if status != "ready":
+        if status not in {"ready", "failed"}:
             raw = failed_delivery_review(status, refreshed_body)
             payload = json.dumps(review_payload(
                 config.review.marker,
@@ -324,6 +345,26 @@ def run(
             ))
             _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)
             return
+        if status == "failed":
+            delivery_gate = failed_delivery_review(status, refreshed_body)
+            images, _ = _current_delivery_media(
+                refreshed_body,
+                str(meta["headRefOid"]),
+            )
+            if images:
+                try:
+                    delivery_image_urls = _fetch_delivery_images(
+                        repo,
+                        int(pr),
+                        str(meta["headRefOid"]),
+                        images,
+                        os.environ["GH_TOKEN"],
+                    )
+                except BuilderBlocked:
+                    # The deterministic failure remains merge-blocking. Reviewer can
+                    # still inspect the diff and textual evidence without reflecting
+                    # fetch details or accepting an untrusted URL.
+                    delivery_image_urls = ()
     diff = _gh(["pr", "diff", pr, "--repo", repo])
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
@@ -343,7 +384,9 @@ def run(
         "material visual, behavioral, framing, documentation, or current-head mismatches. The "
         "existence of a URL is not proof. For every file-specific finding, cite an exact integer "
         "line that appears on the right side of the supplied diff; omit file and line only for a "
-        "genuinely repository-wide finding."
+        "genuinely repository-wide finding. When current-head evidence images are supplied, compare "
+        "the labeled Swami render, Origami reference, and diff in their PR-body order. Describe "
+        "specific visible differences and concrete corrections; never merely repeat the SSIM score."
     )
     user = "\n\n".join(context + [
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
@@ -351,16 +394,31 @@ def run(
     ])
     provider = provider_override or config.review.provider
     model = model_override or config.review.model
-    candidates = [(provider, model)]
+    candidates = [(provider, model, config.review.visual_evidence)]
     if config.review.fallback_provider and config.review.fallback_model:
-        candidates.append((config.review.fallback_provider, config.review.fallback_model))
+        candidates.append((
+            config.review.fallback_provider,
+            config.review.fallback_model,
+            config.review.fallback_visual_evidence,
+        ))
     marker = config.review.marker
     try:
-        raw, provider, model = request_review(candidates, system, user)
+        raw, provider, model = request_review(
+            candidates,
+            system,
+            user,
+            image_urls=delivery_image_urls,
+        )
     except ModelError as exc:
         raw = failed_review(str(exc))
         provider, model = "unavailable", "configured providers exhausted"
         marker = f"{config.review.marker}\n{config.review.failure_marker}"
+    if delivery_gate is not None:
+        raw["approve"] = False
+        raw["summary"] = " ".join(
+            value for value in (delivery_gate["summary"], raw.get("summary", "")) if value
+        )
+        raw["findings"] = delivery_gate["findings"] + raw["findings"]
     if omitted:
         raw["approve"] = False
         raw["findings"].insert(0, {

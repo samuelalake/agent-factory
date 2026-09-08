@@ -348,7 +348,12 @@ def _fetch_delivery_image(
         raise BuilderBlocked("Builder evidence URL is not a supported GitHub permalink")
     source_repo, evidence_sha, path = match.groups()
     expected_prefix = f"pr-{pr}/{head}/"
-    if source_repo.lower() != repo.lower() or not path.startswith(expected_prefix):
+    path_segments = path.split("/")
+    if (
+        source_repo.lower() != repo.lower()
+        or not path.startswith(expected_prefix)
+        or any(segment in {"", ".", ".."} for segment in path_segments)
+    ):
         raise BuilderBlocked("Builder evidence is not from this pull request and exact head")
     api_url = (
         f"https://api.github.com/repos/{repo}/contents/{quote(path, safe='/')}"

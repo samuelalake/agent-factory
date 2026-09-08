@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest import mock
 
+from agent_factory.cli import default_config
+from agent_factory.config import parse_config
 from agent_factory.github_review import (
     diff_right_lines,
     failed_review,
@@ -11,11 +14,92 @@ from agent_factory.github_review import (
     normalize_review,
     request_review,
     review_payload,
+    run,
 )
 from agent_factory.protocol import decode_data
 
 
 class ReviewTests(unittest.TestCase):
+    def test_failed_delivery_is_visually_reviewed_but_cannot_be_approved(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        evidence_commit = "b" * 40
+        body = "\n".join([
+            config.builder.marker,
+            "<!-- agent-factory:builder-delivery:start -->",
+            f"<!-- agent-factory:builder-delivery-head:{head} -->",
+            "### Interaction_Drag",
+            "normalized SSIM 0.01 · catastrophic sanity **fail**",
+            f"![Swami](https://github.com/acme/repo/raw/{evidence_commit}/pr-7/{head}/swami.png)",
+            "<!-- agent-factory:builder-delivery:end -->",
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("failed", body)),
+            mock.patch(
+                "agent_factory.github_review._fetch_delivery_images",
+                return_value=("data:image/png;base64,aGVsbG8=",),
+            ),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Model approves.", "approve": True, "findings": []}),
+                    "openrouter",
+                    "visual",
+                ),
+            ) as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        self.assertEqual(request.call_args.kwargs["image_urls"], ("data:image/png;base64,aGVsbG8=",))
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        machine = decode_data(posted[0]["body"])
+        self.assertEqual(machine["verdict"], "request_changes")
+        self.assertEqual(machine["findings"][0]["severity"], "P1")
+
+    def test_pending_delivery_never_invokes_model(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"]["require_builder_delivery"] = True
+        config = parse_config(raw_config)
+        body = config.builder.marker
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": "a" * 40, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"] or args[0] == "api":
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("pending", body)),
+            mock.patch("agent_factory.github_review.request_review") as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+        request.assert_not_called()
+
     def test_malformed_primary_reply_falls_back_to_structured_review(self) -> None:
         with (
             mock.patch(
@@ -29,11 +113,51 @@ class ReviewTests(unittest.TestCase):
             ),
         ):
             review, provider, model = request_review(
-                [("openrouter", "free"), ("nvidia", "kimi")], "system", "user"
+                [("openrouter", "free", False), ("nvidia", "kimi", False)], "system", "user"
             )
         self.assertFalse(review["approve"])
         self.assertEqual((provider, model), ("nvidia", "kimi"))
         self.assertEqual(complete.call_count, 2)
+        self.assertEqual(complete.call_args.kwargs["image_urls"], ())
+
+    def test_review_passes_current_head_images_to_provider(self) -> None:
+        with (
+            mock.patch(
+                "agent_factory.github_review.complete",
+                return_value='{"summary":"visible mismatch","approve":false,"findings":[]}',
+            ) as complete,
+            mock.patch.dict("os.environ", {"OPENROUTER_API_KEY": "one"}, clear=True),
+        ):
+            request_review(
+                [("openrouter", "visual", True)],
+                "system",
+                "user",
+                image_urls=("data:image/png;base64,aGVsbG8=",),
+            )
+        self.assertEqual(
+            complete.call_args.kwargs["image_urls"],
+            ("data:image/png;base64,aGVsbG8=",),
+        )
+
+    def test_review_skips_text_only_route_when_images_are_present(self) -> None:
+        with (
+            mock.patch(
+                "agent_factory.github_review.complete",
+                return_value='{"summary":"seen","approve":false,"findings":[]}',
+            ) as complete,
+            mock.patch.dict("os.environ", {"OPENROUTER_API_KEY": "one"}, clear=True),
+        ):
+            _, provider, _ = request_review(
+                [
+                    ("minimax", "text-only", False),
+                    ("openrouter", "visual", True),
+                ],
+                "system",
+                "user",
+                image_urls=("data:image/png;base64,aGVsbG8=",),
+            )
+        self.assertEqual(provider, "openrouter")
+        self.assertEqual(complete.call_count, 1)
 
     def test_exhausted_providers_become_a_structured_blocking_review(self) -> None:
         review = failed_review("invalid JSON")

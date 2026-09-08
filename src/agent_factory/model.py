@@ -13,6 +13,17 @@ class ModelError(RuntimeError):
     pass
 
 
+def _split_data_url(value: str) -> tuple[str, str]:
+    """Return a validated base64 media type and payload for provider adapters."""
+    prefix, separator, data = value.partition(",")
+    if not separator or not prefix.startswith("data:image/") or ";base64" not in prefix:
+        raise ModelError("visual evidence must be a base64 image data URL")
+    media_type = prefix[5:].split(";", 1)[0]
+    if media_type not in {"image/png", "image/jpeg", "image/webp"} or not data:
+        raise ModelError("visual evidence uses an unsupported image type")
+    return media_type, data
+
+
 def _post(url: str, payload: dict, headers: dict[str, str]) -> dict:
     request = urllib.request.Request(
         url,
@@ -60,18 +71,38 @@ def _post(url: str, payload: dict, headers: dict[str, str]) -> dict:
     raise ModelError("model request exhausted retries")
 
 
-def complete(provider: str, model: str, system: str, user: str, api_key: str) -> str:
+def complete(
+    provider: str,
+    model: str,
+    system: str,
+    user: str,
+    api_key: str,
+    *,
+    image_urls: tuple[str, ...] = (),
+) -> str:
     """Return model text while keeping the role contract provider-independent."""
     if not api_key:
         raise ModelError("MODEL_API_KEY is required")
     if provider == "anthropic":
+        content: list[dict] = [{"type": "text", "text": user}]
+        content.extend(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                },
+            }
+            for media_type, data in map(_split_data_url, image_urls)
+        )
         response = _post(
             "https://api.anthropic.com/v1/messages",
             {
                 "model": model,
                 "max_tokens": 8000,
                 "system": system,
-                "messages": [{"role": "user", "content": user}],
+                "messages": [{"role": "user", "content": content}],
             },
             {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
         )
@@ -81,12 +112,17 @@ def complete(provider: str, model: str, system: str, user: str, api_key: str) ->
             if block.get("type") == "text"
         )
     if provider == "gemini":
+        parts: list[dict] = [{"text": user}]
+        parts.extend(
+            {"inline_data": {"mime_type": media_type, "data": data}}
+            for media_type, data in map(_split_data_url, image_urls)
+        )
         encoded_model = urllib.parse.quote(model, safe="-._")
         response = _post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{encoded_model}:generateContent",
             {
                 "systemInstruction": {"parts": [{"text": system}]},
-                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {
                     "maxOutputTokens": 8000,
                     "responseMimeType": "application/json",
@@ -103,12 +139,25 @@ def complete(provider: str, model: str, system: str, user: str, api_key: str) ->
             "openrouter": "https://openrouter.ai/api/v1/chat/completions",
             "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
         }
+        user_content: str | list[dict] = user
+        if image_urls:
+            # OpenAI-compatible providers accept the original data URL directly.
+            # Validate it first so malformed or non-image input never crosses the boundary.
+            for image_url in image_urls:
+                _split_data_url(image_url)
+            user_content = [
+                {"type": "text", "text": user},
+                *(
+                    {"type": "image_url", "image_url": {"url": image_url}}
+                    for image_url in image_urls
+                ),
+            ]
         payload = {
             "model": model,
             "max_tokens": 8000,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
         }
         if provider == "minimax":

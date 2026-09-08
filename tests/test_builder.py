@@ -306,6 +306,22 @@ after"""
                 )
         open_url.assert_not_called()
 
+    def test_delivery_image_rejects_path_traversal_before_network(self) -> None:
+        url = (
+            "https://github.com/acme/repo/raw/0123456789012345678901234567890123456789/"
+            "pr-7/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/../../private.png"
+        )
+        with mock.patch("agent_factory.github_builder.urllib.request.urlopen") as open_url:
+            with self.assertRaisesRegex(BuilderBlocked, "exact head"):
+                _fetch_delivery_image(
+                    "acme/repo",
+                    7,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    url,
+                    "app-token",
+                )
+        open_url.assert_not_called()
+
     def test_revision_prompt_assigns_base_conflicts_to_builder(self) -> None:
         config = parse_config(default_config("demo"))
         issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}
