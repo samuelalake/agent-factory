@@ -49,10 +49,15 @@ that section with Builder's App token. Reviewer waits for the section and fails
 closed on missing, stale, or failed evidence; a link or green workflow by itself
 is never treated as proof. Repository-specific rendering and interaction logic
 remain in the consumer.
-The publisher can pass runner-generated images and videos through the official
-`gh pr edit --attach` path, which rewrites local Markdown references into
-durable GitHub-hosted media without adding a late evidence comment or a media
-branch.
+GitHub's user-attachment endpoint does not accept GitHub App installation
+tokens. The publisher therefore writes runner-generated images and videos with
+the Git Data API to the repository's `agent-factory-evidence` branch, keyed by
+pull request and source-head SHA, then places immutable evidence-commit URLs in
+the PR body. Evidence never changes the Builder's source head. The delivery
+protocol binds its machine-readable state to that exact source SHA, so an older
+runner cannot be accepted for a newer delivery. Images remain inline; video
+evidence is a direct recording link. Same-origin GitHub permalinks preserve
+normal repository authorization for private consumers.
 
 The factory owns:
 
