@@ -12,6 +12,8 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from .workspace import workspace_snapshot as _workspace_snapshot
+
 
 ENDPOINTS = {
     "minimax": "https://api.minimax.io/v1/chat/completions",
@@ -52,17 +54,6 @@ def _inside(root: Path, relative: str) -> Path:
 def _tool_env() -> dict[str, str]:
     allowed = {"CI", "HOME", "LANG", "LC_ALL", "PATH", "RUNNER_ARCH", "RUNNER_OS", "TMPDIR"}
     return {key: value for key, value in os.environ.items() if key in allowed}
-
-
-def _workspace_snapshot(root: Path) -> str:
-    return subprocess.run(
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        timeout=30,
-        check=True,
-    ).stdout
 
 
 def _execute_tool(root: Path, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

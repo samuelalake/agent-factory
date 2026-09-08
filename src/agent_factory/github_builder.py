@@ -20,6 +20,7 @@ from .github_delivery import pending_delivery
 from .context import discover_context
 from .protocol import encode_data
 from .nvidia_builder import API_KEY_ENV, NvidiaBuilderError, run_openai_builder
+from .workspace import WorkspaceSnapshot, workspace_snapshot as _workspace_snapshot
 
 
 class BuilderBlocked(RuntimeError):
@@ -157,19 +158,10 @@ def _preserve_workflow_control_plane(
     return tuple(sorted(changed | set(untracked)))
 
 
-def _workspace_snapshot(root: Path) -> tuple[str, str, str]:
-    """Capture repository state before or after a model tool loop."""
-    return (
-        _run(["git", "status", "--porcelain=v1", "-z"], cwd=root),
-        _run(["git", "diff", "--binary"], cwd=root),
-        _run(["git", "diff", "--cached", "--binary"], cwd=root),
-    )
-
-
 def _validate_candidate(
     root: Path,
     protected_ref: str = "HEAD",
-    baseline: tuple[str, str, str] | None = None,
+    baseline: WorkspaceSnapshot | None = None,
 ) -> tuple[str, ...]:
     preserved = _preserve_workflow_control_plane(root, protected_ref)
     if not _run(["git", "status", "--porcelain"], cwd=root).strip():

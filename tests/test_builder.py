@@ -408,6 +408,12 @@ after"""
             product.write_text("agent revision\n", encoding="utf-8")
             _validate_candidate(root, baseline=baseline)
 
+            untracked = root / "Prepared.txt"
+            untracked.write_text("prepared\n", encoding="utf-8")
+            untracked_baseline = _workspace_snapshot(root)
+            untracked.write_text("agent revision\n", encoding="utf-8")
+            _validate_candidate(root, baseline=untracked_baseline)
+
     def test_builder_summary_drops_model_reasoning(self) -> None:
         response = "<think>private chain of thought</think>\nLet me inspect one more thing:"
         summary = _builder_summary(response, "83", "Build the thing")
