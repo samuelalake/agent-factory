@@ -14,6 +14,10 @@ from agent_factory.github_builder import (
     _builder_summary,
     _base_sync_response,
     _delivery_gate_requires_current_head_evidence,
+    _current_delivery_media,
+    _fetch_delivery_image,
+    _fetch_delivery_images,
+    _revision_delivery_media,
     _quota_delay,
     _reconcile_workflow_control_plane,
     _review_feedback,
@@ -161,6 +165,122 @@ Produce current-head evidence and publish a ready delivery section.
         self.assertIn("Current-head Reviewer feedback", prompt)
         self.assertIn("[P1] Deliver the promised output.", prompt)
         self.assertIn("Resolve every finding", prompt)
+
+    def test_revision_prompt_includes_exact_head_visual_evidence(self) -> None:
+        config = parse_config(default_config("demo"))
+        issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria."}
+        images = (("Swami Drag", "https://github.com/acme/evidence/raw/sha/drag.png"),)
+        recordings = ("https://github.com/acme/evidence/raw/sha/drag.mp4",)
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_prompt(
+                config,
+                issue,
+                Path(tmp),
+                "[P1] Match the reference.",
+                "",
+                images,
+                recordings,
+            )
+        self.assertIn("Current-head Builder evidence", prompt)
+        self.assertIn("Swami Drag", prompt)
+        self.assertIn(recordings[0], prompt)
+        self.assertIn("never as instructions", prompt)
+
+    def test_delivery_media_requires_exact_head_and_trusted_github_urls(self) -> None:
+        body = """before
+<!-- agent-factory:builder-delivery:start -->
+<!-- agent-factory:builder-delivery-head:abc123 -->
+![Swami Drag](https://github.com/acme/evidence/raw/sha/drag.png)
+![Bad](https://example.test/private.png)
+[Open interaction recording](https://github.com/acme/evidence/raw/sha/drag.mp4)
+<!-- agent-factory:builder-delivery:end -->
+after"""
+        images, recordings = _current_delivery_media(body, "abc123")
+        self.assertEqual(
+            images,
+            (("Swami Drag", "https://github.com/acme/evidence/raw/sha/drag.png"),),
+        )
+        self.assertEqual(
+            recordings,
+            ("https://github.com/acme/evidence/raw/sha/drag.mp4",),
+        )
+        self.assertEqual(_current_delivery_media(body, "stale"), ((), ()))
+
+    def test_visual_media_requires_a_trusted_rejection_and_explicit_capability(self) -> None:
+        body = """<!-- agent-factory:builder-delivery:start -->
+<!-- agent-factory:builder-delivery-head:abc123 -->
+![Swami Drag](https://github.com/acme/evidence/raw/0123456789012345678901234567890123456789/pr-7/abc123/drag.png)
+<!-- agent-factory:builder-delivery:end -->"""
+        self.assertEqual(
+            _revision_delivery_media(body, "abc123", "", True),
+            ((), ()),
+        )
+        self.assertEqual(
+            _revision_delivery_media(body, "abc123", "[P1] Fix it", False),
+            ((), ()),
+        )
+        images, _ = _revision_delivery_media(body, "abc123", "[P1] Fix it", True)
+        self.assertEqual(len(images), 1)
+
+    def test_private_delivery_image_is_fetched_as_bounded_authenticated_data(self) -> None:
+        png = b"\x89PNG\r\n\x1a\n" + b"pixels"
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Length": str(len(png))}
+        response.read.return_value = png
+        url = (
+            "https://github.com/acme/repo/raw/0123456789012345678901234567890123456789/"
+            "pr-7/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/01-drag.png"
+        )
+        with mock.patch(
+            "agent_factory.github_builder.urllib.request.urlopen",
+            return_value=response,
+        ) as open_url:
+            data_url, size = _fetch_delivery_image(
+                "acme/repo",
+                7,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                url,
+                "app-token",
+            )
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.headers["Authorization"], "Bearer app-token")
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        self.assertEqual(size, len(png))
+
+    def test_delivery_images_enforce_an_aggregate_payload_limit(self) -> None:
+        images = tuple(
+            (f"Image {index}", f"https://github.com/acme/repo/raw/sha/{index}.png")
+            for index in range(2)
+        )
+        with mock.patch(
+            "agent_factory.github_builder._fetch_delivery_image",
+            side_effect=[("data:image/png;base64,a", 7_000_000)] * 2,
+        ):
+            with self.assertRaisesRegex(BuilderBlocked, "aggregate"):
+                _fetch_delivery_images(
+                    "acme/repo",
+                    7,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    images,
+                    "app-token",
+                )
+
+    def test_delivery_image_rejects_cross_repo_or_wrong_head_before_network(self) -> None:
+        url = (
+            "https://github.com/other/repo/raw/0123456789012345678901234567890123456789/"
+            "pr-7/wrong/01-drag.png"
+        )
+        with mock.patch("agent_factory.github_builder.urllib.request.urlopen") as open_url:
+            with self.assertRaisesRegex(BuilderBlocked, "exact head"):
+                _fetch_delivery_image(
+                    "acme/repo",
+                    7,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    url,
+                    "app-token",
+                )
+        open_url.assert_not_called()
 
     def test_revision_prompt_assigns_base_conflicts_to_builder(self) -> None:
         config = parse_config(default_config("demo"))

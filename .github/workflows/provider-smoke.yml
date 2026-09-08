@@ -30,6 +30,10 @@ on:
         required: false
         type: number
         default: 0
+      visual_input:
+        required: false
+        type: boolean
+        default: false
     secrets:
       MINIMAX_API_KEY:
         required: false
@@ -61,6 +65,7 @@ jobs:
           BUILDER_SHAPE: ${{ inputs.builder_shape }}
           MAX_OUTPUT_TOKENS: ${{ inputs.max_output_tokens }}
           PROMPT_BYTES: ${{ inputs.prompt_bytes }}
+          VISUAL_INPUT: ${{ inputs.visual_input }}
           PROVIDER_API_KEY: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY || inputs.provider == 'minimax' && secrets.MINIMAX_API_KEY || inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
         run: |
           args=(
@@ -73,5 +78,8 @@ jobs:
           )
           if [[ "$BUILDER_SHAPE" == "true" ]]; then
             args+=(--builder-shape)
+          fi
+          if [[ "$VISUAL_INPUT" == "true" ]]; then
+            args+=(--visual-input)
           fi
           PYTHONPATH=factory/src python3 -m agent_factory.provider_smoke "${args[@]}"

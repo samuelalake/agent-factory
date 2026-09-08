@@ -136,6 +136,16 @@ hard stop because a response is billed before its usage can be evaluated.
 `max_revision_attempts` bounds the Steward-managed Builder → Reviewer repair
 loop. On each clean revision, Builder receives the current-head review findings;
 after the limit, Steward retains the blocker instead of creating an infinite loop.
+For visual consumers, `visual_revision_context: true` also gives an
+OpenAI-compatible Builder the exact rejected-head screenshots. Factory fetches
+those images with Builder App authentication, validates their repository,
+head-keyed path, format, per-image size, and aggregate size, then sends bounded
+data URLs to the model.
+Enable this only for models whose exact provider route passes the reusable
+provider smoke with `visual_input: true`; the default remains text-only.
+Fallback routes fail closed during a visual revision unless
+`fallback_visual_revision_context: true` is separately configured after the
+fallback's exact route passes the same smoke.
 
 Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
 `MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`

@@ -132,6 +132,24 @@ class ProviderSmokeTests(unittest.TestCase):
             "private reasoning",
         )
 
+    def test_visual_smoke_uses_the_production_multimodal_shape(self) -> None:
+        first = {
+            "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call-1", "function": {"name": "write_probe", "arguments": '{"value":"red"}'}}
+            ]}}]
+        }
+        second = {
+            "choices": [{"message": {"role": "assistant", "content": "PROBE_COMPLETE agent-factory-smoke-v1"}}]
+        }
+        with mock.patch(
+            "agent_factory.provider_smoke._request", side_effect=[first, second]
+        ) as request:
+            probe_model("openrouter", "vision-model", "secret", visual_input=True)
+        content = request.call_args_list[0].kwargs["payload"]["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "text")
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
     def test_http_error_reports_only_safe_rate_metadata(self) -> None:
         error = urllib.error.HTTPError(
             "https://example.test",
