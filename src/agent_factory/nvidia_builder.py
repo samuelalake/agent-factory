@@ -154,6 +154,7 @@ def _post(
     *,
     provider: str = "nvidia",
     max_output_tokens: int = 4096,
+    tool_choice: str = "auto",
 ) -> dict[str, Any]:
     endpoint = ENDPOINTS.get(provider)
     if endpoint is None:
@@ -162,7 +163,7 @@ def _post(
         "model": model,
         "messages": messages,
         "tools": _tools(),
-        "tool_choice": "auto",
+        "tool_choice": tool_choice,
         "max_tokens": max_output_tokens,
         "temperature": 0.2,
         "stream": False,
@@ -270,6 +271,7 @@ def run_openai_builder(
             min(300, remaining),
             provider=provider,
             max_output_tokens=max_output_tokens,
+            tool_choice="required" if not _workspace_changed(root) else "auto",
         )
         usage = response.get("usage") or {}
         if (input_cost_per_million or output_cost_per_million) and not usage:

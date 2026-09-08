@@ -190,6 +190,17 @@ class NvidiaBuilderTests(unittest.TestCase):
         payload = json.loads(open_url.call_args.args[0].data)
         self.assertEqual(payload["max_tokens"], 2048)
 
+    def test_post_can_require_a_repository_tool_call(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch("agent_factory.nvidia_builder.urllib.request.urlopen", return_value=response) as open_url,
+            mock.patch("agent_factory.nvidia_builder.json.load", return_value={"choices": []}),
+        ):
+            _post("model", [], "key", 30, tool_choice="required")
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertEqual(payload["tool_choice"], "required")
+
     def test_usage_stops_the_builder_at_configured_cost_limit(self) -> None:
         response = {
             "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0},
@@ -232,9 +243,11 @@ class NvidiaBuilderTests(unittest.TestCase):
             ],
         }
         histories: list[list[dict]] = []
+        choices: list[str] = []
 
         def respond(_model, messages, *_args, **_kwargs):
             histories.append(json.loads(json.dumps(messages)))
+            choices.append(_kwargs["tool_choice"])
             return response
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,6 +276,7 @@ class NvidiaBuilderTests(unittest.TestCase):
                 "image_url": {"url": "https://github.com/acme/evidence/raw/sha/drag.png"},
             },
         )
+        self.assertEqual(choices, ["required"])
 
     def test_priced_provider_must_report_usage(self) -> None:
         response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}

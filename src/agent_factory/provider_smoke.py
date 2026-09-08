@@ -181,7 +181,7 @@ def probe_model(
         "model": model,
         "messages": messages,
         "tools": tools,
-        "tool_choice": "auto",
+        "tool_choice": "required",
         "max_tokens": max_output_tokens,
         "temperature": 0,
         "stream": False,
@@ -231,8 +231,8 @@ def probe_model(
             },
         ]
     )
-    payload["messages"] = messages
-    second = _request(endpoint, api_key, payload=payload)
+    second_payload = {**payload, "messages": messages, "tool_choice": "auto"}
+    second = _request(endpoint, api_key, payload=second_payload)
     second_choices = second.get("choices") or []
     second_choice = (
         second_choices[0]

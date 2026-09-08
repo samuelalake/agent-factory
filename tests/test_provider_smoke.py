@@ -145,7 +145,10 @@ class ProviderSmokeTests(unittest.TestCase):
             "agent_factory.provider_smoke._request", side_effect=[first, second]
         ) as request:
             probe_model("openrouter", "vision-model", "secret", visual_input=True)
-        content = request.call_args_list[0].kwargs["payload"]["messages"][0]["content"]
+        first_payload = request.call_args_list[0].kwargs["payload"]
+        self.assertEqual(first_payload["tool_choice"], "required")
+        self.assertEqual(request.call_args_list[1].kwargs["payload"]["tool_choice"], "auto")
+        content = first_payload["messages"][0]["content"]
         self.assertEqual(content[0]["type"], "text")
         self.assertEqual(content[1]["type"], "image_url")
         self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
