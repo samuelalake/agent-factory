@@ -21,6 +21,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.builder.max_output_tokens, 4096)
         self.assertEqual(config.builder.max_revision_attempts, 3)
         self.assertFalse(config.builder.visual_revision_context)
+        self.assertFalse(config.builder.fallback_visual_revision_context)
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.app_login, "agent-factory-reviewer[bot]")
@@ -106,6 +107,14 @@ class ConfigTests(unittest.TestCase):
             }
         )
         self.assertTrue(parse_config(raw).builder.visual_revision_context)
+        raw["builder"]["fallback_visual_revision_context"] = True
+        self.assertTrue(parse_config(raw).builder.fallback_visual_revision_context)
+
+    def test_visual_fallback_cannot_be_enabled_without_visual_primary(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["fallback_visual_revision_context"] = True
+        with self.assertRaisesRegex(ConfigError, "requires visual_revision_context"):
+            parse_config(raw)
 
     def test_builder_cost_limit_must_be_positive(self) -> None:
         raw = default_config("demo")

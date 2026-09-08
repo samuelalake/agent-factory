@@ -16,6 +16,7 @@ from agent_factory.github_builder import (
     _delivery_gate_requires_current_head_evidence,
     _current_delivery_media,
     _fetch_delivery_image,
+    _fetch_delivery_images,
     _revision_delivery_media,
     _quota_delay,
     _reconcile_workflow_control_plane,
@@ -235,7 +236,7 @@ after"""
             "agent_factory.github_builder.urllib.request.urlopen",
             return_value=response,
         ) as open_url:
-            data_url = _fetch_delivery_image(
+            data_url, size = _fetch_delivery_image(
                 "acme/repo",
                 7,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -245,6 +246,25 @@ after"""
         request = open_url.call_args.args[0]
         self.assertEqual(request.headers["Authorization"], "Bearer app-token")
         self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        self.assertEqual(size, len(png))
+
+    def test_delivery_images_enforce_an_aggregate_payload_limit(self) -> None:
+        images = tuple(
+            (f"Image {index}", f"https://github.com/acme/repo/raw/sha/{index}.png")
+            for index in range(2)
+        )
+        with mock.patch(
+            "agent_factory.github_builder._fetch_delivery_image",
+            side_effect=[("data:image/png;base64,a", 7_000_000)] * 2,
+        ):
+            with self.assertRaisesRegex(BuilderBlocked, "aggregate"):
+                _fetch_delivery_images(
+                    "acme/repo",
+                    7,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    images,
+                    "app-token",
+                )
 
     def test_delivery_image_rejects_cross_repo_or_wrong_head_before_network(self) -> None:
         url = (

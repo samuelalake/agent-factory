@@ -29,7 +29,7 @@ PROBE_NONCE = "agent-factory-smoke-v1"
 PROBE_ACK = f"PROBE_COMPLETE {PROBE_NONCE}"
 PROBE_IMAGE = (
     "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
 )
 
 
@@ -146,14 +146,23 @@ def probe_model(
     }
     tools = _tools() if builder_shape else [minimal_tool]
     expected_tool = "list_files" if builder_shape else "write_probe"
-    requested_arguments = {"pattern": "*"} if builder_shape else {"value": "ready"}
-    instruction = (
-        "Call list_files exactly once with pattern *. Do not answer in prose first. "
-        f"After the tool result, reply exactly PROBE_COMPLETE followed by its nonce."
-        if builder_shape
-        else "Call write_probe exactly once with value ready. Do not answer in prose first. "
-        f"After the tool result, reply exactly PROBE_COMPLETE followed by its nonce."
-    )
+    if visual_input:
+        requested_arguments = {"pattern": "red"} if builder_shape else {"value": "red"}
+        instruction = (
+            f"Inspect the attached single-color image. Call {expected_tool} exactly once "
+            "with its string argument equal to the lowercase color name visible in the image. "
+            "Do not answer in prose first. After the tool result, reply exactly "
+            "PROBE_COMPLETE followed by its nonce."
+        )
+    else:
+        requested_arguments = {"pattern": "*"} if builder_shape else {"value": "ready"}
+        instruction = (
+            "Call list_files exactly once with pattern *. Do not answer in prose first. "
+            f"After the tool result, reply exactly PROBE_COMPLETE followed by its nonce."
+            if builder_shape
+            else "Call write_probe exactly once with value ready. Do not answer in prose first. "
+            f"After the tool result, reply exactly PROBE_COMPLETE followed by its nonce."
+        )
     if prompt_bytes > len(instruction.encode()):
         instruction += "\nContext padding:\n" + ("x" * (prompt_bytes - len(instruction.encode())))
     content: str | list[dict[str, Any]] = instruction

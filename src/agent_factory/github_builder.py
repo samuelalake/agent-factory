@@ -294,7 +294,7 @@ def _current_delivery_media(
             continue
         label = re.sub(r"[^A-Za-z0-9 _.-]", "", alt).strip()[:80]
         images.append((label or f"Evidence image {len(images) + 1}", url))
-        if len(images) == 12:
+        if len(images) == 6:
             break
 
     recordings: list[str] = []
@@ -317,7 +317,8 @@ def _revision_delivery_media(
     return _current_delivery_media(pr_body, head)
 
 
-_MAX_EVIDENCE_IMAGE_BYTES = 5_000_000
+_MAX_EVIDENCE_IMAGE_BYTES = 4_000_000
+_MAX_EVIDENCE_TOTAL_BYTES = 12_000_000
 
 
 def _image_mime(data: bytes) -> str | None:
@@ -336,7 +337,7 @@ def _fetch_delivery_image(
     head: str,
     url: str,
     token: str,
-) -> str:
+) -> tuple[str, int]:
     """Fetch one exact-head evidence image with Builder App authentication."""
     parsed = urlparse(url)
     match = re.fullmatch(
@@ -364,16 +365,16 @@ def _fetch_delivery_image(
         with urllib.request.urlopen(request, timeout=60) as response:
             length = response.headers.get("Content-Length")
             if length and int(length) > _MAX_EVIDENCE_IMAGE_BYTES:
-                raise BuilderBlocked("Builder evidence image exceeds the 5 MB limit")
+                raise BuilderBlocked("Builder evidence image exceeds the 4 MB limit")
             data = response.read(_MAX_EVIDENCE_IMAGE_BYTES + 1)
     except (urllib.error.URLError, ValueError) as exc:
         raise BuilderBlocked("Builder could not fetch authenticated visual evidence") from exc
     if len(data) > _MAX_EVIDENCE_IMAGE_BYTES:
-        raise BuilderBlocked("Builder evidence image exceeds the 5 MB limit")
+        raise BuilderBlocked("Builder evidence image exceeds the 4 MB limit")
     mime = _image_mime(data)
     if mime is None:
         raise BuilderBlocked("Builder evidence is not a supported PNG, JPEG, or WebP image")
-    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}", len(data)
 
 
 def _fetch_delivery_images(
@@ -383,9 +384,15 @@ def _fetch_delivery_images(
     images: tuple[tuple[str, str], ...],
     token: str,
 ) -> tuple[str, ...]:
-    return tuple(
-        _fetch_delivery_image(repo, pr, head, url, token) for _, url in images
-    )
+    encoded: list[str] = []
+    total = 0
+    for _, url in images:
+        data_url, size = _fetch_delivery_image(repo, pr, head, url, token)
+        total += size
+        if total > _MAX_EVIDENCE_TOTAL_BYTES:
+            raise BuilderBlocked("Builder visual evidence exceeds the 12 MB aggregate limit")
+        encoded.append(data_url)
+    return tuple(encoded)
 
 
 def _builder_summary(response: str, issue_number: str, issue_title: str = "") -> str:
@@ -749,15 +756,10 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
-    delivery_image_data = _fetch_delivery_images(
-        repo,
-        int(existing[0]["number"]),
-        existing_head,
-        delivery_images,
-        token,
-    ) if delivery_images and existing else ()
 
-    def run_compatible(provider: str, selected_model: str) -> tuple[str, int, float]:
+    def run_compatible(
+        provider: str, selected_model: str, *, visual_input: bool
+    ) -> tuple[str, int, float]:
         secret_name = API_KEY_ENV.get(provider)
         if secret_name is None:
             raise NvidiaBuilderError(f"unsupported Builder provider: {provider}")
@@ -773,7 +775,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             input_cost_per_million=config.builder.input_cost_per_million,
             output_cost_per_million=config.builder.output_cost_per_million,
             max_output_tokens=config.builder.max_output_tokens,
-            image_urls=delivery_image_data,
+            image_urls=delivery_image_data if visual_input else (),
         )
 
     evidence_base_sync = (
@@ -788,6 +790,13 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         model = "not invoked"
         estimated_cost = 0.0
     else:
+        delivery_image_data = _fetch_delivery_images(
+            repo,
+            int(existing[0]["number"]),
+            existing_head,
+            delivery_images,
+            token,
+        ) if delivery_images and existing else ()
         try:
             if config.builder.provider == "gemini":
                 if config.builder.harness != "gemini-cli":
@@ -801,7 +810,9 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 response, tool_calls = parse_gemini_stream(output)
             else:
                 response, tool_calls, estimated_cost = run_compatible(
-                    config.builder.provider, config.builder.model
+                    config.builder.provider,
+                    config.builder.model,
+                    visual_input=config.builder.visual_revision_context,
                 )
                 harness = "openai-compatible-tool-loop"
             _validate_candidate(
@@ -823,9 +834,16 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                     f"{config.builder.provider} Builder failed after modifying the workspace; "
                     f"fallback was not mixed into partial work: {exc}"
                 ) from exc
+            if delivery_image_data and not config.builder.fallback_visual_revision_context:
+                raise BuilderBlocked(
+                    f"{config.builder.provider} visual Builder failed and the fallback "
+                    "route is not declared visual-capable"
+                ) from exc
             try:
                 response, tool_calls, estimated_cost = run_compatible(
-                    config.builder.fallback_provider, config.builder.fallback_model
+                    config.builder.fallback_provider,
+                    config.builder.fallback_model,
+                    visual_input=config.builder.fallback_visual_revision_context,
                 )
                 harness = "openai-compatible-tool-loop"
                 model = config.builder.fallback_model

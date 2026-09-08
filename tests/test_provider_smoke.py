@@ -135,7 +135,7 @@ class ProviderSmokeTests(unittest.TestCase):
     def test_visual_smoke_uses_the_production_multimodal_shape(self) -> None:
         first = {
             "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "call-1", "function": {"name": "write_probe", "arguments": '{"value":"ready"}'}}
+                {"id": "call-1", "function": {"name": "write_probe", "arguments": '{"value":"red"}'}}
             ]}}]
         }
         second = {

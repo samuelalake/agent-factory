@@ -67,6 +67,7 @@ class BuilderConfig:
     output_cost_per_million: float
     max_revision_attempts: int
     visual_revision_context: bool
+    fallback_visual_revision_context: bool
 
 
 @dataclass(frozen=True)
@@ -221,6 +222,15 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError(
             "builder.visual_revision_context requires the openai-compatible harness"
         )
+    fallback_visual_revision_context = builder.get(
+        "fallback_visual_revision_context", False
+    )
+    if not isinstance(fallback_visual_revision_context, bool):
+        raise ConfigError("builder.fallback_visual_revision_context must be a boolean")
+    if fallback_visual_revision_context and not visual_revision_context:
+        raise ConfigError(
+            "builder.fallback_visual_revision_context requires visual_revision_context"
+        )
     builder_fallback_provider = builder.get("fallback_provider", "nvidia")
     builder_fallback_model = builder.get("fallback_model", "moonshotai/kimi-k3")
     if (builder_fallback_provider is None) != (builder_fallback_model is None):
@@ -284,6 +294,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             output_cost_per_million=float(output_cost_per_million),
             max_revision_attempts=max_revision_attempts,
             visual_revision_context=visual_revision_context,
+            fallback_visual_revision_context=fallback_visual_revision_context,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),
