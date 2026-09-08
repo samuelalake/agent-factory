@@ -97,6 +97,13 @@ def _blocked_detail(value: str, primary: str, fallback: str | None) -> str:
     return _clean_detail(value)
 
 
+def _safe_provider_failure(exc: BaseException) -> str:
+    """Expose the sanitized provider failure without leaking arbitrary command output."""
+    if isinstance(exc, NvidiaBuilderError):
+        return _clean_detail(str(exc))
+    return type(exc).__name__
+
+
 def _preserve_workflow_control_plane(
     root: Path, source_ref: str = "HEAD"
 ) -> tuple[str, ...]:
@@ -837,7 +844,8 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             if delivery_image_data and not config.builder.fallback_visual_revision_context:
                 raise BuilderBlocked(
                     f"{config.builder.provider} visual Builder failed and the fallback "
-                    "route is not declared visual-capable"
+                    "route is not declared visual-capable; primary failure: "
+                    f"{_safe_provider_failure(exc)}"
                 ) from exc
             try:
                 response, tool_calls, estimated_cost = run_compatible(
