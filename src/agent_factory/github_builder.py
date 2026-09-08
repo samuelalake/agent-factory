@@ -77,6 +77,8 @@ def _clean_detail(value: str) -> str:
 def _blocked_detail(value: str, primary: str, fallback: str | None) -> str:
     """Turn provider/terminal failures into a short Steward-facing handoff."""
     lower = value.lower()
+    if "fallback route is not declared visual-capable" in lower:
+        return _clean_detail(value)
     capacity_markers = ("http 429", "code: 429", "quota exceeded", "rate limit exceeded")
     if any(marker in lower for marker in capacity_markers):
         names = [primary]

@@ -90,6 +90,15 @@ Produce current-head evidence and publish a ready delivery section.
             "RuntimeError",
         )
 
+    def test_visual_primary_capacity_failure_does_not_claim_fallback_ran(self) -> None:
+        raw = (
+            "openrouter visual Builder failed and the fallback route is not declared "
+            "visual-capable; primary failure: openrouter HTTP 429"
+        )
+        detail = _blocked_detail(raw, "openrouter", "openrouter")
+        self.assertEqual(detail, raw)
+        self.assertNotIn("fallback returned", detail)
+
     def test_prompt_briefs_agent_without_hardcoding_consumer(self) -> None:
         config = parse_config(default_config("demo"))
         issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}
