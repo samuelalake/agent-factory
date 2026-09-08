@@ -32,6 +32,7 @@ class ReviewConfig:
     fallback_model: str | None
     visual_evidence: bool
     fallback_visual_evidence: bool
+    visual_evidence_paths: tuple[str, ...]
     require_builder_delivery: bool
     delivery_wait_seconds: int
 
@@ -158,6 +159,9 @@ def parse_config(raw: dict[str, Any]) -> Config:
         fallback_model = _string(fallback_model_value, "review.fallback_model")
     visual_evidence = review.get("visual_evidence", False)
     fallback_visual_evidence = review.get("fallback_visual_evidence", False)
+    visual_evidence_paths = _strings(
+        review.get("visual_evidence_paths", []), "review.visual_evidence_paths"
+    )
     if not isinstance(visual_evidence, bool):
         raise ConfigError("review.visual_evidence must be a boolean")
     if not isinstance(fallback_visual_evidence, bool):
@@ -165,6 +169,19 @@ def parse_config(raw: dict[str, Any]) -> Config:
     if fallback_visual_evidence and fallback_provider is None:
         raise ConfigError(
             "review.fallback_visual_evidence requires a configured fallback provider"
+        )
+    for pattern in visual_evidence_paths:
+        if pattern.startswith("/") or ".." in pattern.split("/"):
+            raise ConfigError(
+                "review.visual_evidence_paths entries must be repository-relative globs"
+            )
+    if visual_evidence_paths and not require_builder_delivery:
+        raise ConfigError(
+            "review.visual_evidence_paths requires review.require_builder_delivery"
+        )
+    if visual_evidence_paths and not (visual_evidence or fallback_visual_evidence):
+        raise ConfigError(
+            "review.visual_evidence_paths requires a visual-capable review route"
         )
     steward_provider = _string(steward.get("provider", "gemini"), "steward.provider").lower()
     if steward_provider not in supported_providers:
@@ -320,6 +337,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             fallback_model=fallback_model,
             visual_evidence=visual_evidence,
             fallback_visual_evidence=fallback_visual_evidence,
+            visual_evidence_paths=visual_evidence_paths,
             require_builder_delivery=require_builder_delivery,
             delivery_wait_seconds=delivery_wait_seconds,
         ),

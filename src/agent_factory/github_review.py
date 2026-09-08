@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -281,6 +282,27 @@ def failed_delivery_review(status: str, body: str = "") -> dict[str, Any]:
     })
 
 
+def missing_visual_delivery_review(paths: tuple[str, ...]) -> dict[str, Any]:
+    changed = ", ".join(f"`{path}`" for path in paths[:5])
+    if len(paths) > 5:
+        changed += f", and {len(paths) - 5} more"
+    return normalize_review({
+        "approve": False,
+        "summary": "A visual change has no canonical current-head Builder delivery.",
+        "findings": [{
+            "severity": "P1",
+            "title": "Visual change lacks current-head evidence",
+            "reasoning": (
+                f"The consumer classifies {changed} as visual evidence scope, but this pull "
+                "request has no canonical Builder delivery marker or exact-head images."
+            ),
+            "suggestion": (
+                "Route the change through Builder and publish the exact-head delivery before review."
+            ),
+        }],
+    })
+
+
 def request_review(
     candidates: list[tuple[str, str, bool]],
     system: str,
@@ -322,8 +344,20 @@ def run(
     # consumer pull request. Keep its short-lived token out of files and logs.
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
-    meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
+    meta = json.loads(_gh([
+        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body,files",
+    ]))
     has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
+    changed_paths = tuple(
+        str(item.get("path") or "")
+        for item in (meta.get("files") or [])
+        if isinstance(item, dict) and item.get("path")
+    )
+    visual_paths = tuple(
+        path
+        for path in changed_paths
+        if any(fnmatch.fnmatchcase(path, pattern) for pattern in config.review.visual_evidence_paths)
+    )
     delivery_gate: dict[str, Any] | None = None
     delivery_image_urls: tuple[str, ...] = ()
     delivery_image_failure = False
@@ -384,6 +418,8 @@ def run(
                         delivery_gate = evidence_failure
                     else:
                         delivery_gate["findings"].extend(evidence_failure["findings"])
+    elif visual_paths:
+        delivery_gate = missing_visual_delivery_review(visual_paths)
     diff = _gh(["pr", "diff", pr, "--repo", repo])
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
@@ -416,6 +452,10 @@ def run(
         "Builder delivery: present. Apply the configured delivery and visual-evidence contract."
         if has_builder_delivery
         else (
+            "Builder delivery: absent. This diff matches configured visual-evidence paths, so the "
+            "deterministic current-head evidence gate blocks approval."
+            if visual_paths
+            else
             "Builder delivery: absent. No current-head images are expected unless this diff itself "
             "changes a visual/product surface; absence of a triplet is not a finding."
         )

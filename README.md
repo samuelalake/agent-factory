@@ -170,6 +170,12 @@ Reviewer keeps that P1 blocker and uses authenticated evidence images to provide
 specific visual corrections. Pending or missing evidence still fails closed without
 calling a model.
 
+Consumers can set `review.visual_evidence_paths` to repository-relative globs such
+as `app/**` and `**/*.origami`. A matching change without a canonical Builder
+delivery is blocked deterministically, even when the model would approve it. A
+non-matching control-plane or documentation change is reviewed from its diff,
+checks, and linked evidence without manufacturing unrelated screenshots.
+
 The self-hosted Apps need these repository permissions:
 
 - **Steward:** Contents write, Issues write, and Pull requests write. Contents

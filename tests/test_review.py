@@ -26,6 +26,7 @@ class ReviewTests(unittest.TestCase):
         raw_config["review"].update({
             "require_builder_delivery": True,
             "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
         })
         config = parse_config(raw_config)
         head = "a" * 40
@@ -254,6 +255,7 @@ class ReviewTests(unittest.TestCase):
                     "headRefOid": head,
                     "title": "Pin reviewed workflow runtime",
                     "body": "Control-plane promotion with linked prior evidence.",
+                    "files": [{"path": ".github/workflows/review.yml"}],
                 })
             if args[:2] == ["pr", "diff"]:
                 return """diff --git a/.github/workflows/review.yml b/.github/workflows/review.yml
@@ -292,6 +294,62 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("do not request a screenshot triplet", system)
         self.assertIn("absence of a triplet is not a finding", user)
         self.assertEqual(posted[0]["event"], "APPROVE")
+
+    def test_non_builder_visual_change_without_evidence_is_deterministically_blocked(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**", "**/*.origami"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Change visual surface",
+                    "body": "Human-authored visual update without Builder evidence.",
+                    "files": [{"path": "app/Screen.swift"}],
+                })
+            if args[:2] == ["pr", "diff"]:
+                return """diff --git a/app/Screen.swift b/app/Screen.swift
+--- a/app/Screen.swift
++++ b/app/Screen.swift
+@@ -1 +1 @@
+-let color = old
++let color = new
+"""
+            if args[0] == "api":
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery") as wait,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Model approves.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        wait.assert_not_called()
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        machine = decode_data(posted[0]["body"])
+        self.assertEqual(machine["verdict"], "request_changes")
+        self.assertEqual(machine["findings"][0]["severity"], "P1")
+        self.assertIn("Visual change lacks current-head evidence", posted[0]["body"])
 
     def test_malformed_primary_reply_falls_back_to_structured_review(self) -> None:
         with (
