@@ -323,10 +323,11 @@ def run(
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
     meta = json.loads(_gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body"]))
+    has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
     delivery_gate: dict[str, Any] | None = None
     delivery_image_urls: tuple[str, ...] = ()
     delivery_image_failure = False
-    if config.review.require_builder_delivery and config.builder.marker in str(meta.get("body") or ""):
+    if config.review.require_builder_delivery and has_builder_delivery:
         status, refreshed_body = wait_for_delivery(
             repo,
             pr,
@@ -404,9 +405,23 @@ def run(
         "line that appears on the right side of the supplied diff; omit file and line only for a "
         "genuinely repository-wide finding. When current-head evidence images are supplied, compare "
         "the labeled Swami render, Origami reference, and diff in their PR-body order. Describe "
-        "specific visible differences and concrete corrections; never merely repeat the SSIM score."
+        "specific visible differences and concrete corrections; never merely repeat the SSIM score. "
+        "Visual evidence is scoped to Builder deliveries and visual/product changes. When a pull "
+        "request has no canonical Builder marker and no current-head images are supplied, do not "
+        "request a screenshot triplet, recording, or other unrelated visual artifact merely because "
+        "the consumer supports visual review. Review non-visual control-plane, documentation, and "
+        "policy changes from their diff, executable checks, and directly linked prior evidence."
+    )
+    evidence_scope = (
+        "Builder delivery: present. Apply the configured delivery and visual-evidence contract."
+        if has_builder_delivery
+        else (
+            "Builder delivery: absent. No current-head images are expected unless this diff itself "
+            "changes a visual/product surface; absence of a triplet is not a finding."
+        )
     )
     user = "\n\n".join(context + [
+        f"## Evidence scope\n\n{evidence_scope}",
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
         f"## Diff\n\n```diff\n{diff}\n```",
     ])

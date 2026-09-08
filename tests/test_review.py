@@ -238,6 +238,61 @@ class ReviewTests(unittest.TestCase):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
         request.assert_not_called()
 
+    def test_non_builder_control_plane_review_does_not_require_visual_artifacts(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Pin reviewed workflow runtime",
+                    "body": "Control-plane promotion with linked prior evidence.",
+                })
+            if args[:2] == ["pr", "diff"]:
+                return """diff --git a/.github/workflows/review.yml b/.github/workflows/review.yml
+--- a/.github/workflows/review.yml
++++ b/.github/workflows/review.yml
+@@ -1 +1 @@
+-uses: owner/factory@old
++uses: owner/factory@new
+"""
+            if args[0] == "api":
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery") as wait,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Control plane is sound.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ) as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        wait.assert_not_called()
+        self.assertEqual(request.call_args.kwargs["image_urls"], ())
+        system = request.call_args.args[1]
+        user = request.call_args.args[2]
+        self.assertIn("do not request a screenshot triplet", system)
+        self.assertIn("absence of a triplet is not a finding", user)
+        self.assertEqual(posted[0]["event"], "APPROVE")
+
     def test_malformed_primary_reply_falls_back_to_structured_review(self) -> None:
         with (
             mock.patch(
