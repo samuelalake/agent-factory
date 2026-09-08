@@ -83,7 +83,10 @@ The current distribution is self-hosted. One operator may reuse its Steward,
 Builder, and Reviewer Apps across repositories it controls and place their credentials
 in organization or repository secrets. An independent adopter creates its own
 role Apps (for example, `Acme Builder` and `Acme Reviewer`) from the Factory's
-permission contract and owns the corresponding private keys.
+permission contract and owns the corresponding private keys. The consumer pins
+the Reviewer App's bot login (for example, `acme-reviewer[bot]`) in
+`review.app_login`; Builder accepts current-head review feedback only from that
+configured Bot identity.
 
 Making an App publicly installable does not make its private key distributable.
 A globally shared Builder or Reviewer therefore requires a hosted Factory

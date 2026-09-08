@@ -181,6 +181,7 @@ def default_config(project_name: str) -> dict:
         "review": {
             "marker": "<!-- reviewer:agent-factory -->",
             "failure_marker": "<!-- reviewer:agent-factory-failure -->",
+            "app_login": "agent-factory-reviewer[bot]",
             "required": True,
             "max_diff_bytes": 200_000,
             "provider": "gemini",

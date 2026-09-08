@@ -12,12 +12,16 @@ from agent_factory.github_builder import (
     BuilderBlocked,
     _blocked_detail,
     _builder_summary,
+    _base_sync_response,
+    _delivery_gate_requires_current_head_evidence,
     _quota_delay,
     _reconcile_workflow_control_plane,
     _review_feedback,
     _preserve_workflow_control_plane,
     _run_gemini,
     _safe_agent_env,
+    _validate_candidate,
+    _workspace_snapshot,
     build_prompt,
     format_issue_status,
     format_pr_body,
@@ -27,6 +31,33 @@ from agent_factory.protocol import decode_data
 
 
 class BuilderTests(unittest.TestCase):
+    def test_only_deterministic_delivery_gate_allows_evidence_base_sync(self) -> None:
+        feedback = """## Reviewer
+Builder delivery evidence is not ready
+Model: `deterministic/builder-delivery-gate`
+Produce current-head evidence and publish a ready delivery section.
+"""
+        self.assertTrue(
+            _delivery_gate_requires_current_head_evidence(feedback)
+        )
+        self.assertFalse(
+            _delivery_gate_requires_current_head_evidence(
+                "[P1] tests failed\nProduce current-head evidence"
+            )
+        )
+        self.assertFalse(
+            _delivery_gate_requires_current_head_evidence(
+                "Builder delivery evidence is not ready\nModel: `some-model`"
+            )
+        )
+
+    def test_base_sync_summary_is_explicit_about_agent_no_op(self) -> None:
+        summary = _base_sync_response("development")
+        self.assertIn("current development branch", summary)
+        self.assertIn("No model was invoked", summary)
+        self.assertIn("no additional working-tree edits", summary)
+        self.assertIn("<builder_summary>", summary)
+
     def test_capacity_failure_is_a_concise_steward_handoff(self) -> None:
         raw = (
             "gemini Builder failed: stack trace code: 429 quota exceeded; "
@@ -148,20 +179,92 @@ class BuilderTests(unittest.TestCase):
 
     def test_current_head_review_feedback_is_selected(self) -> None:
         reviews = [
-            {"commit_id": "old", "state": "CHANGES_REQUESTED", "body": "<!-- reviewer:test --> old"},
+            {
+                "commit_id": "old",
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- reviewer:test --> old",
+                "user": {"type": "Bot", "login": "agent-factory-reviewer[bot]"},
+            },
             {
                 "commit_id": "head",
                 "state": "CHANGES_REQUESTED",
                 "body": "<!-- reviewer:test -->\n[P1] Fix it.\n<!-- agent-factory:data abc -->",
+                "user": {"type": "Bot", "login": "agent-factory-reviewer[bot]"},
             },
         ]
         with mock.patch("agent_factory.github_builder._gh", return_value=json.dumps(reviews)):
             feedback = _review_feedback(
-                "owner/repo", 7, "head", "<!-- reviewer:test -->", root=Path(".")
+                "owner/repo",
+                7,
+                "head",
+                "<!-- reviewer:test -->",
+                "agent-factory-reviewer[bot]",
+                root=Path("."),
             )
         self.assertIn("[P1] Fix it.", feedback)
         self.assertNotIn("agent-factory:data", feedback)
         self.assertNotIn("old", feedback)
+
+    def test_review_feedback_rejects_copied_marker_from_non_reviewer(self) -> None:
+        reviews = [
+            {
+                "commit_id": "head",
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- reviewer:test -->\nBuilder delivery evidence is not ready",
+                "user": {"type": "User", "login": "someone"},
+            }
+        ]
+        with mock.patch("agent_factory.github_builder._gh", return_value=json.dumps(reviews)):
+            feedback = _review_feedback(
+                "owner/repo",
+                7,
+                "head",
+                "<!-- reviewer:test -->",
+                "agent-factory-reviewer[bot]",
+                root=Path("."),
+            )
+        self.assertEqual(feedback, "")
+
+    def test_review_feedback_accepts_configured_adopter_app(self) -> None:
+        reviews = [
+            {
+                "commit_id": "head",
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- reviewer:test -->\n[P1] Fix it.",
+                "user": {"type": "Bot", "login": "acme-reviewer[bot]"},
+            }
+        ]
+        with mock.patch("agent_factory.github_builder._gh", return_value=json.dumps(reviews)):
+            feedback = _review_feedback(
+                "acme/repo",
+                7,
+                "head",
+                "<!-- reviewer:test -->",
+                "acme-reviewer[bot]",
+                root=Path("."),
+            )
+        self.assertIn("[P1] Fix it.", feedback)
+
+    def test_validation_requires_agent_delta_beyond_prepared_base_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            import subprocess
+
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            product = root / "Product.swift"
+            product.write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+
+            product.write_text("prepared base state\n", encoding="utf-8")
+            baseline = _workspace_snapshot(root)
+            with self.assertRaisesRegex(BuilderBlocked, "beyond prepared base state"):
+                _validate_candidate(root, baseline=baseline)
+
+            product.write_text("agent revision\n", encoding="utf-8")
+            _validate_candidate(root, baseline=baseline)
 
     def test_builder_summary_drops_model_reasoning(self) -> None:
         response = "<think>private chain of thought</think>\nLet me inspect one more thing:"

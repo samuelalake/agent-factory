@@ -22,6 +22,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.builder.max_revision_attempts, 3)
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
+        self.assertEqual(config.review.app_login, "agent-factory-reviewer[bot]")
         self.assertEqual(config.review.fallback_provider, "nvidia")
         self.assertFalse(config.review.require_builder_delivery)
         self.assertEqual(config.review.delivery_wait_seconds, 1800)
@@ -32,6 +33,14 @@ class ConfigTests(unittest.TestCase):
         raw["review"]["model"] = "gemini-3.5-flash"
         config = parse_config(raw)
         self.assertEqual((config.review.provider, config.review.model), ("gemini", "gemini-3.5-flash"))
+
+    def test_reviewer_app_login_is_configurable_and_required(self) -> None:
+        raw = default_config("demo")
+        raw["review"]["app_login"] = "acme-reviewer[bot]"
+        self.assertEqual(parse_config(raw).review.app_login, "acme-reviewer[bot]")
+        raw["review"].pop("app_login")
+        with self.assertRaisesRegex(ConfigError, "review.app_login"):
+            parse_config(raw)
 
     def test_fallback_pair_is_required(self) -> None:
         raw = default_config("demo")
