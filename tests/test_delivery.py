@@ -14,6 +14,7 @@ from agent_factory.github_delivery import (
     format_delivery,
     pending_delivery,
     publish,
+    _api,
     _publish_attachments,
     replace_delivery,
     wait_for_delivery,
@@ -21,6 +22,14 @@ from agent_factory.github_delivery import (
 
 
 class DeliveryTests(unittest.TestCase):
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_repository_api_root_has_no_trailing_slash(self, gh) -> None:
+        gh.return_value = json.dumps({"default_branch": "main"})
+
+        self.assertEqual(_api("owner/repo", ""), {"default_branch": "main"})
+
+        gh.assert_called_once_with(["api", "repos/owner/repo"], stdin=None)
+
     def test_pending_section_is_replaced_without_touching_builder_summary(self) -> None:
         body = "Builder summary\n\n" + pending_delivery() + "\n\nExecution details"
         ready = format_delivery("ready", "Current head: `abc1234`\n\nScreenshots here.")
