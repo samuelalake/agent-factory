@@ -50,6 +50,24 @@ class ModelAdapterTests(unittest.TestCase):
         })):
             self.assertEqual(complete("anthropic", "model", "system", "user", "key"), '{"approve":true}')
 
+    def test_anthropic_visual_content_uses_native_image_blocks(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=_response({
+            "content": [{"type": "text", "text": "{}"}]
+        })) as urlopen:
+            complete(
+                "anthropic", "model", "system", "user", "key",
+                image_urls=("data:image/jpeg;base64,aGVsbG8=",),
+            )
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(payload["messages"][0]["content"][1], {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": "aGVsbG8=",
+            },
+        })
+
     def test_gemini_text_and_endpoint(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
             "candidates": [{"content": {"parts": [{"text": "{\"approve\":true}"}]}}]
@@ -59,11 +77,56 @@ class ModelAdapterTests(unittest.TestCase):
         self.assertIn("gemini-3.5-flash:generateContent", urlopen.call_args.args[0].full_url)
         self.assertEqual(urlopen.call_args.args[0].get_header("X-goog-api-key"), "key")
 
+    def test_gemini_visual_content_uses_inline_data(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=_response({
+            "candidates": [{"content": {"parts": [{"text": "{}"}]}}]
+        })) as urlopen:
+            complete(
+                "gemini", "model", "system", "user", "key",
+                image_urls=("data:image/webp;base64,aGVsbG8=",),
+            )
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(payload["contents"][0]["parts"][1], {
+            "inline_data": {"mime_type": "image/webp", "data": "aGVsbG8="}
+        })
+
     def test_openrouter_text(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
             "choices": [{"message": {"content": "{\"approve\":true}"}}]
         })):
             self.assertEqual(complete("openrouter", "free/model", "system", "user", "key"), '{"approve":true}')
+
+    def test_openrouter_visual_content_uses_validated_data_urls(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=_response({
+            "choices": [{"message": {"content": "{\"approve\":false}"}}]
+        })) as urlopen:
+            complete(
+                "openrouter",
+                "visual/model",
+                "system",
+                "compare these",
+                "key",
+                image_urls=("data:image/png;base64,aGVsbG8=",),
+            )
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(payload["messages"][1]["content"], [
+            {"type": "text", "text": "compare these"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+            },
+        ])
+
+    def test_visual_content_rejects_non_image_data(self) -> None:
+        with self.assertRaisesRegex(ModelError, "base64 image data URL"):
+            complete(
+                "openrouter",
+                "visual/model",
+                "system",
+                "user",
+                "key",
+                image_urls=("https://example.test/image.png",),
+            )
 
     def test_minimax_text_and_endpoint(self) -> None:
         with mock.patch("urllib.request.urlopen", return_value=_response({
@@ -109,6 +172,20 @@ class ModelAdapterTests(unittest.TestCase):
         self.assertEqual(text, '{"approve":true}')
         self.assertEqual(urlopen.call_args.args[0].full_url, "https://integrate.api.nvidia.com/v1/chat/completions")
         self.assertEqual(urlopen.call_args.args[0].get_header("Authorization"), "Bearer key")
+
+    def test_nvidia_visual_content_uses_openai_shape(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=_response({
+            "choices": [{"message": {"content": "{}"}}]
+        })) as urlopen:
+            complete(
+                "nvidia", "visual/model", "system", "user", "key",
+                image_urls=("data:image/png;base64,aGVsbG8=",),
+            )
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(
+            payload["messages"][1]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8=",
+        )
 
     def test_unknown_provider_fails(self) -> None:
         with self.assertRaisesRegex(ModelError, "unsupported"):

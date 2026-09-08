@@ -26,6 +26,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.app_login, "agent-factory-reviewer[bot]")
         self.assertEqual(config.review.fallback_provider, "nvidia")
+        self.assertFalse(config.review.visual_evidence)
+        self.assertFalse(config.review.fallback_visual_evidence)
         self.assertFalse(config.review.require_builder_delivery)
         self.assertEqual(config.review.delivery_wait_seconds, 1800)
 
@@ -48,6 +50,19 @@ class ConfigTests(unittest.TestCase):
         raw = default_config("demo")
         raw["review"].pop("fallback_model")
         with self.assertRaisesRegex(ConfigError, "must be set together"):
+            parse_config(raw)
+
+    def test_reviewer_visual_capability_is_explicit_per_route(self) -> None:
+        raw = default_config("demo")
+        raw["review"]["visual_evidence"] = True
+        raw["review"]["fallback_visual_evidence"] = True
+        config = parse_config(raw)
+        self.assertTrue(config.review.visual_evidence)
+        self.assertTrue(config.review.fallback_visual_evidence)
+
+        raw["review"]["fallback_provider"] = None
+        raw["review"]["fallback_model"] = None
+        with self.assertRaisesRegex(ConfigError, "fallback provider"):
             parse_config(raw)
 
     def test_steward_fallback_pair_is_required(self) -> None:

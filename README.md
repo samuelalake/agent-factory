@@ -163,6 +163,13 @@ Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
 consumer evidence. Keep it at least as long as the consumer's slowest required
 verification job.
 
+Set `review.visual_evidence: true` only when the configured Reviewer model accepts
+image input. Configure `review.fallback_visual_evidence` independently for the
+fallback route. When exact-head Builder evidence reports a deterministic failure,
+Reviewer keeps that P1 blocker and uses authenticated evidence images to provide
+specific visual corrections. Pending or missing evidence still fails closed without
+calling a model.
+
 The self-hosted Apps need these repository permissions:
 
 - **Steward:** Contents write, Issues write, and Pull requests write. Contents

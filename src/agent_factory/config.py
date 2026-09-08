@@ -30,6 +30,8 @@ class ReviewConfig:
     model: str
     fallback_provider: str | None
     fallback_model: str | None
+    visual_evidence: bool
+    fallback_visual_evidence: bool
     require_builder_delivery: bool
     delivery_wait_seconds: int
 
@@ -154,6 +156,16 @@ def parse_config(raw: dict[str, Any]) -> Config:
         if fallback_provider not in supported_providers:
             raise ConfigError(f"unsupported review.fallback_provider: {fallback_provider}")
         fallback_model = _string(fallback_model_value, "review.fallback_model")
+    visual_evidence = review.get("visual_evidence", False)
+    fallback_visual_evidence = review.get("fallback_visual_evidence", False)
+    if not isinstance(visual_evidence, bool):
+        raise ConfigError("review.visual_evidence must be a boolean")
+    if not isinstance(fallback_visual_evidence, bool):
+        raise ConfigError("review.fallback_visual_evidence must be a boolean")
+    if fallback_visual_evidence and fallback_provider is None:
+        raise ConfigError(
+            "review.fallback_visual_evidence requires a configured fallback provider"
+        )
     steward_provider = _string(steward.get("provider", "gemini"), "steward.provider").lower()
     if steward_provider not in supported_providers:
         raise ConfigError(f"unsupported steward.provider: {steward_provider}")
@@ -306,6 +318,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
             model=_string(review.get("model", "claude-opus-5"), "review.model"),
             fallback_provider=fallback_provider,
             fallback_model=fallback_model,
+            visual_evidence=visual_evidence,
+            fallback_visual_evidence=fallback_visual_evidence,
             require_builder_delivery=require_builder_delivery,
             delivery_wait_seconds=delivery_wait_seconds,
         ),

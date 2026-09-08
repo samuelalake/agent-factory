@@ -190,6 +190,8 @@ def default_config(project_name: str) -> dict:
             "model": "gemini-3.6-flash",
             "fallback_provider": "nvidia",
             "fallback_model": "moonshotai/kimi-k3",
+            "visual_evidence": False,
+            "fallback_visual_evidence": False,
         },
         "integration": {
             "marker": "<!-- steward:agent-factory-integration -->",
