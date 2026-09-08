@@ -77,6 +77,28 @@ Produce current-head evidence and publish a ready delivery section.
         self.assertNotIn("stack", detail)
         self.assertNotIn("payload", detail)
 
+    def test_visual_fail_closed_detail_preserves_only_sanitized_provider_reason(self) -> None:
+        from agent_factory.github_builder import _safe_provider_failure
+        from agent_factory.nvidia_builder import NvidiaBuilderError
+
+        self.assertEqual(
+            _safe_provider_failure(NvidiaBuilderError("openrouter HTTP 400\x1b[31m")),
+            "openrouter HTTP 400",
+        )
+        self.assertEqual(
+            _safe_provider_failure(RuntimeError("secret-bearing command output")),
+            "RuntimeError",
+        )
+
+    def test_visual_primary_capacity_failure_does_not_claim_fallback_ran(self) -> None:
+        raw = (
+            "openrouter visual Builder failed and the fallback route is not declared "
+            "visual-capable; primary failure: openrouter HTTP 429"
+        )
+        detail = _blocked_detail(raw, "openrouter", "openrouter")
+        self.assertEqual(detail, raw)
+        self.assertNotIn("fallback returned", detail)
+
     def test_prompt_briefs_agent_without_hardcoding_consumer(self) -> None:
         config = parse_config(default_config("demo"))
         issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria here."}
