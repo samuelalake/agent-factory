@@ -2,17 +2,19 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import subprocess
-import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 
 DELIVERY_START = "<!-- agent-factory:builder-delivery:start -->"
 DELIVERY_END = "<!-- agent-factory:builder-delivery:end -->"
 DELIVERY_STATUS = "<!-- agent-factory:builder-delivery-status:{status} -->"
 VALID_STATUSES = {"pending", "ready", "failed"}
+EVIDENCE_BRANCH = "agent-factory-evidence"
 
 
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
@@ -20,6 +22,120 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
+
+
+def _api(repo: str, endpoint: str, *, method: str = "GET", payload: dict | None = None) -> dict:
+    args = ["api", f"repos/{repo}/{endpoint}"]
+    if method != "GET":
+        args.extend(["-X", method])
+    stdin = None
+    if payload is not None:
+        args.extend(["--input", "-"])
+        stdin = json.dumps(payload)
+    output = _gh(args, stdin=stdin)
+    return json.loads(output) if output.strip() else {}
+
+
+def _evidence_ref(repo: str) -> dict:
+    try:
+        return _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
+    except RuntimeError as error:
+        if "404" not in str(error):
+            raise
+    repository = _api(repo, "")
+    default_branch = str(repository["default_branch"])
+    base = _api(repo, f"git/ref/heads/{default_branch}")
+    try:
+        return _api(
+            repo,
+            "git/refs",
+            method="POST",
+            payload={
+                "ref": f"refs/heads/{EVIDENCE_BRANCH}",
+                "sha": base["object"]["sha"],
+            },
+        )
+    except RuntimeError as error:
+        # Another delivery may have created the shared ref concurrently.
+        if "422" not in str(error):
+            raise
+        return _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
+
+
+def _publish_attachments(
+    repo: str,
+    pr: str,
+    head: str,
+    attachments: tuple[Path, ...],
+) -> dict[str, str]:
+    blobs: list[tuple[Path, str]] = []
+    for path in attachments:
+        blob = _api(
+            repo,
+            "git/blobs",
+            method="POST",
+            payload={
+                "content": base64.b64encode(path.read_bytes()).decode("ascii"),
+                "encoding": "base64",
+            },
+        )
+        blobs.append((path, str(blob["sha"])))
+
+    remote_paths = {
+        path: f"pr-{pr}/{head}/{index:02d}-{path.name}"
+        for index, (path, _) in enumerate(blobs, start=1)
+    }
+    ref = _evidence_ref(repo)
+    for attempt in range(3):
+        parent = str(ref["object"]["sha"])
+        commit = _api(repo, f"git/commits/{parent}")
+        tree = _api(
+            repo,
+            "git/trees",
+            method="POST",
+            payload={
+                "base_tree": commit["tree"]["sha"],
+                "tree": [
+                    {
+                        "path": remote_paths[path],
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": blob_sha,
+                    }
+                    for path, blob_sha in blobs
+                ],
+            },
+        )
+        evidence_commit = _api(
+            repo,
+            "git/commits",
+            method="POST",
+            payload={
+                "message": f"evidence: PR #{pr} at {head[:12]}",
+                "tree": tree["sha"],
+                "parents": [parent],
+            },
+        )
+        try:
+            _api(
+                repo,
+                f"git/refs/heads/{EVIDENCE_BRANCH}",
+                method="PATCH",
+                payload={"sha": evidence_commit["sha"], "force": False},
+            )
+            break
+        except RuntimeError as error:
+            if attempt == 2 or "422" not in str(error):
+                raise
+            ref = _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
+    branch = quote(EVIDENCE_BRANCH, safe="")
+    return {
+        str(path): (
+            f"https://raw.githubusercontent.com/{repo}/{branch}/"
+            f"{quote(remote_paths[path], safe='/')}"
+        )
+        for path, _ in blobs
+    }
 
 
 def format_delivery(status: str, content: str) -> str:
@@ -99,25 +215,34 @@ def publish(
         raise RuntimeError(
             f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
         )
-    updated = replace_delivery(
-        str(meta.get("body") or ""), format_delivery(status, content)
-    )
     if attachments:
         missing = [str(path) for path in attachments if not path.is_file()]
         if missing:
             raise ValueError(f"Builder delivery attachments do not exist: {', '.join(missing)}")
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".md") as body_file:
-            body_file.write(updated)
-            body_file.flush()
-            args = ["pr", "edit", pr, "--repo", repo, "--body-file", body_file.name]
-            for path in attachments:
-                args.extend(["--attach", str(path)])
-            _gh(args)
-    else:
-        _gh(
-            ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
-            stdin=json.dumps({"body": updated}),
-        )
+        urls = _publish_attachments(repo, pr, head, attachments)
+        for local_path, url in urls.items():
+            if Path(local_path).suffix.lower() in {".mp4", ".mov", ".webm"}:
+                content = content.replace(
+                    f"![]({local_path})", f"[Open interaction recording]({url})"
+                )
+            content = content.replace(local_path, url)
+        # Uploading may take long enough for a new Builder revision to arrive.
+        # Re-read both the head and body so stale media can never overwrite it.
+        meta = json.loads(_gh([
+            "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
+        ]))
+        current_head = str(meta.get("headRefOid") or "")
+        if current_head != head:
+            raise RuntimeError(
+                f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
+            )
+    updated = replace_delivery(
+        str(meta.get("body") or ""), format_delivery(status, content)
+    )
+    _gh(
+        ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
+        stdin=json.dumps({"body": updated}),
+    )
 
 
 def main() -> int:
