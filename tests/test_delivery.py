@@ -70,8 +70,8 @@ class DeliveryTests(unittest.TestCase):
                 }),
             ]
             upload.return_value = {
-                str(image): "https://raw.githubusercontent.com/owner/repo/evidence/swami.png",
-                str(video): "https://raw.githubusercontent.com/owner/repo/evidence/drag.mp4",
+                str(image): "https://github.com/owner/repo/raw/evidence/swami.png",
+                str(video): "https://github.com/owner/repo/raw/evidence/drag.mp4",
             }
             publish(
                 "owner/repo",
@@ -85,9 +85,9 @@ class DeliveryTests(unittest.TestCase):
         args = gh.call_args_list[2].args[0]
         self.assertEqual(args[:3], ["api", "repos/owner/repo/pulls/7", "-X"])
         payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
-        self.assertIn("raw.githubusercontent.com/owner/repo/evidence/swami.png", payload["body"])
+        self.assertIn("github.com/owner/repo/raw/evidence/swami.png", payload["body"])
         self.assertIn(
-            "[Open interaction recording](https://raw.githubusercontent.com/owner/repo/evidence/drag.mp4)",
+            "[Open interaction recording](https://github.com/owner/repo/raw/evidence/drag.mp4)",
             payload["body"],
         )
         self.assertNotIn(str(image), payload["body"])
@@ -108,7 +108,7 @@ class DeliveryTests(unittest.TestCase):
             urls = _publish_attachments("owner/repo", "7", "abc123", (image,))
         self.assertEqual(
             urls[str(image)],
-            "https://raw.githubusercontent.com/owner/repo/evidence-commit/pr-7/abc123/01-swami.png",
+            "https://github.com/owner/repo/raw/evidence-commit/pr-7/abc123/01-swami.png",
         )
         tree_payload = api.call_args_list[3].kwargs["payload"]
         self.assertEqual(tree_payload["base_tree"], "base-tree")

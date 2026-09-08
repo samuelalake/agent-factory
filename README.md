@@ -56,7 +56,8 @@ pull request and source-head SHA, then places immutable evidence-commit URLs in
 the PR body. Evidence never changes the Builder's source head. The delivery
 protocol binds its machine-readable state to that exact source SHA, so an older
 runner cannot be accepted for a newer delivery. Images remain inline; video
-evidence is a direct recording link.
+evidence is a direct recording link. Same-origin GitHub permalinks preserve
+normal repository authorization for private consumers.
 
 The factory owns:
 

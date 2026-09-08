@@ -133,7 +133,7 @@ def _publish_attachments(
     evidence_sha = quote(str(evidence_commit["sha"]), safe="")
     return {
         str(path): (
-            f"https://raw.githubusercontent.com/{repo}/{evidence_sha}/"
+            f"https://github.com/{repo}/raw/{evidence_sha}/"
             f"{quote(remote_paths[path], safe='/')}"
         )
         for path, _ in blobs
