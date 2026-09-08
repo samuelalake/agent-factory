@@ -225,7 +225,42 @@ def failed_review(detail: str) -> dict[str, Any]:
     })
 
 
-def failed_delivery_review(status: str) -> dict[str, Any]:
+def failed_delivery_review(status: str, body: str = "") -> dict[str, Any]:
+    failures: list[str] = []
+    if status == "failed":
+        sections = re.finditer(
+            r"^### (?!#)([^\n]+)\n([\s\S]*?)(?=^### (?!#)|\Z)",
+            body,
+            re.MULTILINE,
+        )
+        for section in sections:
+            detail = section.group(2)
+            if "catastrophic sanity **fail**" not in detail:
+                continue
+            score_match = re.search(r"normalized SSIM ([^\s·]+)", detail)
+            score = score_match.group(1) if score_match else "unavailable"
+            failures.append(
+                f"{section.group(1).strip()} mismatches its Origami reference "
+                f"(normalized SSIM {score})"
+            )
+        if "DocC: **failed**" in body:
+            failures.append("the current-head DocC preview is unavailable")
+        if "Interaction recording: **missing**" in body:
+            failures.append("the required interaction recording is missing")
+    if failures:
+        return normalize_review({
+            "approve": False,
+            "summary": "Builder's current-head evidence reports material delivery failures.",
+            "findings": [{
+                "severity": "P1",
+                "title": "Current-head evidence fails fidelity requirements",
+                "reasoning": "; ".join(failures) + ".",
+                "suggestion": (
+                    "Use the current-head Swami, Origami, and diff evidence plus the interaction "
+                    "recording to correct the implementation, then regenerate every artifact."
+                ),
+            }],
+        })
     return normalize_review({
         "approve": False,
         "summary": "Builder's current-head delivery evidence is not reviewable.",
@@ -278,7 +313,7 @@ def run(
         )
         meta["body"] = refreshed_body
         if status != "ready":
-            raw = failed_delivery_review(status)
+            raw = failed_delivery_review(status, refreshed_body)
             payload = json.dumps(review_payload(
                 config.review.marker,
                 meta["headRefOid"],

@@ -43,10 +43,41 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("invalid JSON", review["findings"][0]["reasoning"])
 
     def test_failed_builder_delivery_is_a_deterministic_p1(self) -> None:
-        review = failed_delivery_review("failed")
+        review = failed_delivery_review(
+            "failed",
+            """### Interaction_Drag
+
+Changed: `Interaction_Drag.swift` · normalized SSIM 0.0194488 · catastrophic sanity **fail**
+""",
+        )
         self.assertFalse(review["approve"])
         self.assertEqual(review["findings"][0]["severity"], "P1")
+        self.assertIn("Interaction_Drag", review["findings"][0]["reasoning"])
+        self.assertIn("0.0194488", review["findings"][0]["reasoning"])
+
+    def test_nonfailed_delivery_state_keeps_generic_gate_message(self) -> None:
+        review = failed_delivery_review("pending")
         self.assertIn("not proof", review["findings"][0]["reasoning"])
+
+    def test_failed_delivery_attributes_each_pattern_section_accurately(self) -> None:
+        review = failed_delivery_review(
+            "failed",
+            """### First
+normalized SSIM 0.95 · catastrophic sanity **pass**
+
+### Second
+normalized SSIM 0.12 · catastrophic sanity **fail**
+
+### Third
+normalized SSIM unavailable · catastrophic sanity **fail**
+""",
+        )
+        reasoning = review["findings"][0]["reasoning"]
+        self.assertNotIn("First mismatches", reasoning)
+        self.assertIn("Second mismatches its Origami reference (normalized SSIM 0.12)", reasoning)
+        self.assertIn(
+            "Third mismatches its Origami reference (normalized SSIM unavailable)", reasoning
+        )
 
     def test_p1_overrides_model_approval(self) -> None:
         review = normalize_review({
