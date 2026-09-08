@@ -15,6 +15,8 @@ from agent_factory.github_builder import (
     _base_sync_response,
     _delivery_gate_requires_current_head_evidence,
     _current_delivery_media,
+    _fetch_delivery_image,
+    _revision_delivery_media,
     _quota_delay,
     _reconcile_workflow_control_plane,
     _review_feedback,
@@ -202,6 +204,63 @@ after"""
             ("https://github.com/acme/evidence/raw/sha/drag.mp4",),
         )
         self.assertEqual(_current_delivery_media(body, "stale"), ((), ()))
+
+    def test_visual_media_requires_a_trusted_rejection_and_explicit_capability(self) -> None:
+        body = """<!-- agent-factory:builder-delivery:start -->
+<!-- agent-factory:builder-delivery-head:abc123 -->
+![Swami Drag](https://github.com/acme/evidence/raw/0123456789012345678901234567890123456789/pr-7/abc123/drag.png)
+<!-- agent-factory:builder-delivery:end -->"""
+        self.assertEqual(
+            _revision_delivery_media(body, "abc123", "", True),
+            ((), ()),
+        )
+        self.assertEqual(
+            _revision_delivery_media(body, "abc123", "[P1] Fix it", False),
+            ((), ()),
+        )
+        images, _ = _revision_delivery_media(body, "abc123", "[P1] Fix it", True)
+        self.assertEqual(len(images), 1)
+
+    def test_private_delivery_image_is_fetched_as_bounded_authenticated_data(self) -> None:
+        png = b"\x89PNG\r\n\x1a\n" + b"pixels"
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Length": str(len(png))}
+        response.read.return_value = png
+        url = (
+            "https://github.com/acme/repo/raw/0123456789012345678901234567890123456789/"
+            "pr-7/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/01-drag.png"
+        )
+        with mock.patch(
+            "agent_factory.github_builder.urllib.request.urlopen",
+            return_value=response,
+        ) as open_url:
+            data_url = _fetch_delivery_image(
+                "acme/repo",
+                7,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                url,
+                "app-token",
+            )
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.headers["Authorization"], "Bearer app-token")
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+
+    def test_delivery_image_rejects_cross_repo_or_wrong_head_before_network(self) -> None:
+        url = (
+            "https://github.com/other/repo/raw/0123456789012345678901234567890123456789/"
+            "pr-7/wrong/01-drag.png"
+        )
+        with mock.patch("agent_factory.github_builder.urllib.request.urlopen") as open_url:
+            with self.assertRaisesRegex(BuilderBlocked, "exact head"):
+                _fetch_delivery_image(
+                    "acme/repo",
+                    7,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    url,
+                    "app-token",
+                )
+        open_url.assert_not_called()
 
     def test_revision_prompt_assigns_base_conflicts_to_builder(self) -> None:
         config = parse_config(default_config("demo"))

@@ -27,6 +27,10 @@ MAX_SMOKE_OUTPUT_TOKENS = 8_192
 MAX_SMOKE_PROMPT_BYTES = 200_000
 PROBE_NONCE = "agent-factory-smoke-v1"
 PROBE_ACK = f"PROBE_COMPLETE {PROBE_NONCE}"
+PROBE_IMAGE = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class ProviderSmokeError(RuntimeError):
@@ -117,6 +121,7 @@ def probe_model(
     builder_shape: bool = False,
     max_output_tokens: int = 128,
     prompt_bytes: int = 0,
+    visual_input: bool = False,
 ) -> None:
     if not 1 <= max_output_tokens <= MAX_SMOKE_OUTPUT_TOKENS:
         raise ProviderSmokeError(
@@ -151,10 +156,16 @@ def probe_model(
     )
     if prompt_bytes > len(instruction.encode()):
         instruction += "\nContext padding:\n" + ("x" * (prompt_bytes - len(instruction.encode())))
+    content: str | list[dict[str, Any]] = instruction
+    if visual_input:
+        content = [
+            {"type": "text", "text": instruction},
+            {"type": "image_url", "image_url": {"url": PROBE_IMAGE}},
+        ]
     messages: list[dict[str, Any]] = [
         {
             "role": "user",
-            "content": instruction,
+            "content": content,
         }
     ]
     payload = {
@@ -239,6 +250,7 @@ def run(
     builder_shape: bool = False,
     max_output_tokens: int = 128,
     prompt_bytes: int = 0,
+    visual_input: bool = False,
 ) -> str:
     if not 1 <= limit <= MAX_SMOKE_CANDIDATES:
         raise ProviderSmokeError(
@@ -277,8 +289,9 @@ def run(
                 builder_shape=builder_shape,
                 max_output_tokens=max_output_tokens,
                 prompt_bytes=prompt_bytes,
+                visual_input=visual_input,
             )
-            print(json.dumps({"provider": provider, "model": model, "tool_loop": "pass", "builder_shape": builder_shape, "max_output_tokens": max_output_tokens, "prompt_bytes": prompt_bytes}))
+            print(json.dumps({"provider": provider, "model": model, "tool_loop": "pass", "builder_shape": builder_shape, "visual_input": visual_input, "max_output_tokens": max_output_tokens, "prompt_bytes": prompt_bytes}))
             return model
         except (ProviderSmokeError, json.JSONDecodeError) as exc:
             safe_error = str(exc).replace(api_key, "[redacted]")
@@ -296,6 +309,7 @@ def main() -> None:
     parser.add_argument("--builder-shape", action="store_true")
     parser.add_argument("--max-output-tokens", type=int, default=128)
     parser.add_argument("--prompt-bytes", type=int, default=0)
+    parser.add_argument("--visual-input", action="store_true")
     args = parser.parse_args()
     requested = [item.strip() for item in args.models_csv.split(",") if item.strip()]
     run(
@@ -306,6 +320,7 @@ def main() -> None:
         builder_shape=args.builder_shape,
         max_output_tokens=args.max_output_tokens,
         prompt_bytes=args.prompt_bytes,
+        visual_input=args.visual_input,
     )
 
 

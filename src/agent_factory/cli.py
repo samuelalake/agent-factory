@@ -174,6 +174,7 @@ def default_config(project_name: str) -> dict:
             "max_model_requests": 40,
             "max_output_tokens": 4096,
             "max_revision_attempts": 3,
+            "visual_revision_context": False,
             "max_model_cost_usd": 3.0,
             "input_cost_per_million": 0.0,
             "output_cost_per_million": 0.0,

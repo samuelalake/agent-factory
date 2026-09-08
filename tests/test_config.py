@@ -20,6 +20,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.builder.max_model_cost_usd, 3.0)
         self.assertEqual(config.builder.max_output_tokens, 4096)
         self.assertEqual(config.builder.max_revision_attempts, 3)
+        self.assertFalse(config.builder.visual_revision_context)
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.app_login, "agent-factory-reviewer[bot]")
@@ -91,6 +92,20 @@ class ConfigTests(unittest.TestCase):
         config = parse_config(raw)
         self.assertEqual(config.builder.provider, "minimax")
         self.assertEqual(config.builder.input_cost_per_million, 0.3)
+
+    def test_visual_revision_context_requires_compatible_harness(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["visual_revision_context"] = True
+        with self.assertRaisesRegex(ConfigError, "openai-compatible"):
+            parse_config(raw)
+        raw["builder"].update(
+            {
+                "provider": "openrouter",
+                "harness": "openai-compatible",
+                "model": "vision-tool-model",
+            }
+        )
+        self.assertTrue(parse_config(raw).builder.visual_revision_context)
 
     def test_builder_cost_limit_must_be_positive(self) -> None:
         raw = default_config("demo")

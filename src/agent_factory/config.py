@@ -66,6 +66,7 @@ class BuilderConfig:
     input_cost_per_million: float
     output_cost_per_million: float
     max_revision_attempts: int
+    visual_revision_context: bool
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,13 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError(
             f"builder.harness must be {expected_harness!r} for provider {builder_provider!r}"
         )
+    visual_revision_context = builder.get("visual_revision_context", False)
+    if not isinstance(visual_revision_context, bool):
+        raise ConfigError("builder.visual_revision_context must be a boolean")
+    if visual_revision_context and builder_provider == "gemini":
+        raise ConfigError(
+            "builder.visual_revision_context requires the openai-compatible harness"
+        )
     builder_fallback_provider = builder.get("fallback_provider", "nvidia")
     builder_fallback_model = builder.get("fallback_model", "moonshotai/kimi-k3")
     if (builder_fallback_provider is None) != (builder_fallback_model is None):
@@ -275,6 +283,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             input_cost_per_million=float(input_cost_per_million),
             output_cost_per_million=float(output_cost_per_million),
             max_revision_attempts=max_revision_attempts,
+            visual_revision_context=visual_revision_context,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),
