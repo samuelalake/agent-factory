@@ -367,6 +367,56 @@ after"""
         self.assertNotIn("agent-factory:data", feedback)
         self.assertNotIn("old", feedback)
 
+    def test_current_head_inline_review_findings_are_included(self) -> None:
+        reviews = [
+            {
+                "id": 91,
+                "commit_id": "head",
+                "state": "CHANGES_REQUESTED",
+                "body": "<!-- reviewer:test -->\n4 findings are attached inline.",
+                "user": {"type": "Bot", "login": "agent-factory-reviewer[bot]"},
+            }
+        ]
+        comments = [[
+            {
+                "commit_id": "head",
+                "path": "src/View.swift",
+                "line": 17,
+                "body": "**[P1] Fix the rendered hierarchy.**",
+                "user": {"type": "Bot", "login": "agent-factory-reviewer[bot]"},
+            },
+            {
+                "commit_id": "old",
+                "path": "src/Stale.swift",
+                "body": "stale finding",
+                "user": {"type": "Bot", "login": "agent-factory-reviewer[bot]"},
+            },
+            {
+                "commit_id": "head",
+                "path": "src/Copied.swift",
+                "body": "copied finding",
+                "user": {"type": "User", "login": "someone"},
+            },
+        ]]
+        with mock.patch(
+            "agent_factory.github_builder._gh",
+            side_effect=[json.dumps(reviews), json.dumps(comments)],
+        ) as gh:
+            feedback = _review_feedback(
+                "owner/repo",
+                7,
+                "head",
+                "<!-- reviewer:test -->",
+                "agent-factory-reviewer[bot]",
+                root=Path("."),
+            )
+        self.assertIn("Authenticated inline findings", feedback)
+        self.assertIn("src/View.swift:17", feedback)
+        self.assertIn("[P1] Fix the rendered hierarchy.", feedback)
+        self.assertNotIn("stale finding", feedback)
+        self.assertNotIn("copied finding", feedback)
+        self.assertIn("reviews/91/comments", gh.call_args_list[1].args[0][1])
+
     def test_review_feedback_rejects_copied_marker_from_non_reviewer(self) -> None:
         reviews = [
             {
