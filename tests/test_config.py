@@ -17,6 +17,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.steward.app_login, "agent-factory-steward[bot]")
         self.assertEqual(config.steward.trusted_operator_logins, ())
         self.assertEqual(config.builder.harness, "gemini-cli")
+        self.assertEqual(config.builder.app_login, "agent-factory-builder[bot]")
         self.assertEqual(config.builder.provider, "gemini")
         self.assertEqual(config.builder.cli_version, "0.55.1")
         self.assertEqual(config.builder.max_model_cost_usd, 3.0)

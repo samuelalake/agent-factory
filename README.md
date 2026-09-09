@@ -57,12 +57,16 @@ GitHub App installation token for attachment uploads, so Factory uses the
 separate `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` only to create a uniquely marked
 staging comment, capture the durable URLs, and delete that comment. Factory then
 re-reads the exact head and latest pull-request body before the Builder App makes
-the sole visible canonical write, so a slow or partial upload cannot overwrite a
-newer Builder or human revision. No evidence branch is required. Factory
-preflights all media, rejects duplicates, and uses GitHub's portable 10 MB limit
-per image or video. The delivery protocol then verifies that every local
-reference was rewritten and that the published delivery remains bound to the
-exact source-head SHA.
+the canonical delivery write, so a slow or partial upload cannot overwrite a
+newer Builder or human revision. The Builder App also maintains collapsible
+provenance records per source head. Per-head records prevent a slow stale
+publisher from overwriting newer proof; the canonical body selects its exact
+matching record, so overlapping same-head runs cannot deadlock. Each manifest binds the
+repository, pull request, exact head, ordered native URLs, media types, and
+SHA-256 digests; Reviewer and revising Builder reject copied, conflicting, or
+byte-mismatched evidence. No evidence branch is required. Factory preflights all
+media, rejects duplicates, and uses GitHub's portable 10 MB limit per image or
+video.
 
 The factory owns:
 
@@ -172,9 +176,12 @@ review contract.
 
 Consumer evidence publishers that attach media must provide GitHub CLI 2.99 or
 newer plus `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN`. Prefer a fine-grained personal
-access token limited to the consumer repository with Issues read/write; GitHub
-CLI uses it only for the disposable staging comment and media bytes. The Builder
-App token remains `GH_TOKEN` and performs the final pull-request body patch.
+access token limited to the consumer repository with Issues and Pull requests
+read/write; GitHub CLI uses it only for the disposable staging comment and media
+bytes. The Builder App token remains `GH_TOKEN`; it performs the final
+pull-request body patch and upserts the authenticated provenance comment.
+Configure `builder.app_login` to that App's bot login (the scaffold defaults to
+`agent-factory-builder[bot]`).
 GitHub-hosted runners can install or pin a current CLI release before calling
 `agent-factory publish-delivery`.
 

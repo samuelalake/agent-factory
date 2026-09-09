@@ -163,6 +163,7 @@ def default_config(project_name: str) -> dict:
         },
         "builder": {
             "marker": "<!-- builder:agent-factory -->",
+            "app_login": "agent-factory-builder[bot]",
             "provider": "gemini",
             "harness": "gemini-cli",
             "model": "gemini-3.6-flash",

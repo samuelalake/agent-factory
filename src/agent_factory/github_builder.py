@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,11 @@ import urllib.error
 import urllib.request
 
 from .config import Config, load_config
-from .github_delivery import pending_delivery
+from .github_delivery import (
+    authenticated_delivery_evidence,
+    delivery_evidence_manifest,
+    pending_delivery,
+)
 from .context import discover_context
 from .protocol import encode_data
 from .nvidia_builder import (
@@ -335,7 +340,12 @@ def _review_feedback(
 
 
 def _current_delivery_media(
-    pr_body: str, head: str
+    pr_body: str,
+    head: str,
+    *,
+    repo: str = "",
+    pr: int = 0,
+    provenance: dict[str, dict[str, str]] | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
     """Return trusted GitHub-hosted media from the exact current-head delivery."""
     match = re.search(
@@ -357,10 +367,39 @@ def _current_delivery_media(
             and parsed.hostname == "github.com"
         )
 
+    body_manifest = delivery_evidence_manifest(
+        section,
+        expected_repo=repo,
+        expected_pr=pr,
+        expected_head=head,
+    ) if repo and pr else None
+    native_urls = re.findall(
+        r"https://github\.com/user-attachments/assets/"
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        section,
+    )
+    if native_urls:
+        if (
+            body_manifest is None
+            or provenance is None
+            or body_manifest != provenance
+            or len(native_urls) != len(set(native_urls))
+            or tuple(native_urls) != tuple(provenance)
+        ):
+            raise BuilderBlocked(
+                "Builder native evidence does not match publisher provenance"
+            )
+
     images: list[tuple[str, str]] = []
     for alt, url in re.findall(r"!\[([^\]]*)\]\((https://[^)]+)\)", section):
         if not trusted(url):
             continue
+        if "/user-attachments/assets/" in url:
+            entry = provenance[url] if provenance is not None else None
+            if entry is None or not entry["content_type"].startswith("image/"):
+                raise BuilderBlocked("Builder native image has invalid provenance")
+            url = f"{url}#sha256={entry['sha256']}"
         label = re.sub(r"[^A-Za-z0-9 _.-]", "", alt).strip()[:80]
         images.append((label or f"Evidence image {len(images) + 1}", url))
         if len(images) == 6:
@@ -372,6 +411,14 @@ def _current_delivery_media(
             recordings.append(url)
         if len(recordings) == 4:
             break
+    if provenance is not None:
+        for url, entry in provenance.items():
+            if not entry["content_type"].startswith("video/"):
+                continue
+            if re.search(rf"(?m)^{re.escape(url)}$", section) and url not in recordings:
+                recordings.append(url)
+            if len(recordings) == 4:
+                break
     return tuple(images), tuple(recordings)
 
 
@@ -380,10 +427,46 @@ def _revision_delivery_media(
     head: str,
     review_feedback: str,
     enabled: bool,
+    *,
+    repo: str = "",
+    pr: int = 0,
+    provenance: dict[str, dict[str, str]] | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
     if not enabled or not review_feedback:
         return (), ()
-    return _current_delivery_media(pr_body, head)
+    return _current_delivery_media(
+        pr_body, head, repo=repo, pr=pr, provenance=provenance
+    )
+
+
+def _delivery_provenance(
+    repo: str,
+    pr: int,
+    head: str,
+    builder_app_login: str,
+    pr_body: str,
+    *,
+    root: Path,
+) -> dict[str, dict[str, str]] | None:
+    expected_manifest = delivery_evidence_manifest(
+        pr_body,
+        expected_repo=repo,
+        expected_pr=pr,
+        expected_head=head,
+    )
+    if expected_manifest is None:
+        return None
+    comments = json.loads(_gh([
+        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp",
+    ], cwd=root))
+    return authenticated_delivery_evidence(
+        comments,
+        expected_repo=repo,
+        expected_pr=pr,
+        expected_head=head,
+        builder_app_login=builder_app_login,
+        expected_manifest=expected_manifest,
+    )
 
 
 _MAX_EVIDENCE_IMAGE_BYTES = 4_000_000
@@ -407,34 +490,62 @@ def _fetch_delivery_image(
     url: str,
     token: str,
 ) -> tuple[str, int]:
-    """Fetch one exact-head evidence image with Builder App authentication."""
+    """Fetch one bounded GitHub-hosted image from an exact-head delivery."""
     parsed = urlparse(url)
-    match = re.fullmatch(
+    permalink_match = re.fullmatch(
         r"/([^/]+/[^/]+)/raw/([0-9a-f]{40})/(.+)", unquote(parsed.path)
     )
-    if parsed.scheme != "https" or parsed.hostname != "github.com" or not match:
-        raise BuilderBlocked("Builder evidence URL is not a supported GitHub permalink")
-    source_repo, evidence_sha, path = match.groups()
-    expected_prefix = f"pr-{pr}/{head}/"
-    path_segments = path.split("/")
+    native_attachment = re.fullmatch(
+        r"/user-attachments/assets/"
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        parsed.path,
+        flags=re.IGNORECASE,
+    )
     if (
-        source_repo.lower() != repo.lower()
-        or not path.startswith(expected_prefix)
-        or any(segment in {"", ".", ".."} for segment in path_segments)
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or (
+            native_attachment is None and parsed.fragment
+        )
+        or (permalink_match is None and native_attachment is None)
     ):
-        raise BuilderBlocked("Builder evidence is not from this pull request and exact head")
-    api_url = (
-        f"https://api.github.com/repos/{repo}/contents/{quote(path, safe='/')}"
-        f"?ref={evidence_sha}"
-    )
-    request = urllib.request.Request(
-        api_url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github.raw+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+        raise BuilderBlocked("Builder evidence URL is not a supported GitHub permalink")
+    if permalink_match is not None:
+        source_repo, evidence_sha, path = permalink_match.groups()
+        expected_prefix = f"pr-{pr}/{head}/"
+        path_segments = path.split("/")
+        if (
+            source_repo.lower() != repo.lower()
+            or not path.startswith(expected_prefix)
+            or any(segment in {"", ".", ".."} for segment in path_segments)
+        ):
+            raise BuilderBlocked("Builder evidence is not from this pull request and exact head")
+        api_url = (
+            f"https://api.github.com/repos/{repo}/contents/{quote(path, safe='/')}"
+            f"?ref={evidence_sha}"
+        )
+        request = urllib.request.Request(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.raw+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+    else:
+        # Native user attachments are public, immutable GitHub asset URLs. The
+        # exact-head trust binding comes from the enclosing canonical delivery
+        # marker; do not send a repository App token across the CDN redirect.
+        digest_match = re.fullmatch(r"sha256=([0-9a-f]{64})", parsed.fragment)
+        if digest_match is None:
+            raise BuilderBlocked("Builder native evidence has no verified digest")
+        expected_digest = digest_match.group(1)
+        attachment_url = parsed._replace(fragment="").geturl()
+        request = urllib.request.Request(attachment_url, headers={"Accept": "image/*"})
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             length = response.headers.get("Content-Length")
@@ -442,9 +553,11 @@ def _fetch_delivery_image(
                 raise BuilderBlocked("Builder evidence image exceeds the 4 MB limit")
             data = response.read(_MAX_EVIDENCE_IMAGE_BYTES + 1)
     except (urllib.error.URLError, ValueError) as exc:
-        raise BuilderBlocked("Builder could not fetch authenticated visual evidence") from exc
+        raise BuilderBlocked("Builder could not fetch GitHub-hosted visual evidence") from exc
     if len(data) > _MAX_EVIDENCE_IMAGE_BYTES:
         raise BuilderBlocked("Builder evidence image exceeds the 4 MB limit")
+    if native_attachment is not None and hashlib.sha256(data).hexdigest() != expected_digest:
+        raise BuilderBlocked("Builder native evidence digest does not match publisher provenance")
     mime = _image_mime(data)
     if mime is None:
         raise BuilderBlocked("Builder evidence is not a supported PNG, JPEG, or WebP image")
@@ -789,19 +902,39 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     delivery_recordings: tuple[str, ...] = ()
     if existing:
         existing_head = str(existing[0].get("headRefOid") or "")
+        existing_pr = int(existing[0]["number"])
         feedback = _review_feedback(
             repo,
-            int(existing[0]["number"]),
+            existing_pr,
             existing_head,
             config.review.marker,
             config.review.app_login,
             root=root,
+        )
+        has_native_delivery = (
+            "https://github.com/user-attachments/assets/"
+            in str(existing[0].get("body") or "")
+        )
+        provenance = (
+            _delivery_provenance(
+                repo,
+                existing_pr,
+                existing_head,
+                config.builder.app_login,
+                str(existing[0].get("body") or ""),
+                root=root,
+            )
+            if config.builder.visual_revision_context and feedback and has_native_delivery
+            else None
         )
         delivery_images, delivery_recordings = _revision_delivery_media(
             str(existing[0].get("body") or ""),
             existing_head,
             feedback,
             config.builder.visual_revision_context,
+            repo=repo,
+            pr=existing_pr,
+            provenance=provenance,
         )
         _run(["gh", "auth", "setup-git"], cwd=root)
         _run(["git", "fetch", "origin", branch], cwd=root)

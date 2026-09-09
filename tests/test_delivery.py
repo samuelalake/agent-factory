@@ -8,18 +8,37 @@ from unittest import mock
 
 from agent_factory.github_delivery import (
     DELIVERY_END,
+    DELIVERY_PROVENANCE,
     DELIVERY_START,
+    authenticated_delivery_evidence,
     delivery_head,
+    delivery_evidence_manifest,
     delivery_status,
     format_delivery,
     pending_delivery,
     publish,
+    _evidence_manifest,
+    _publish_evidence_provenance,
     _rewrite_attachment_references,
     _stage_native_attachments,
     _validate_attachments,
     replace_delivery,
     wait_for_delivery,
 )
+
+
+def _provenance_response(head: str, manifest_marker: str) -> str:
+    body = (
+        "<!-- agent-factory:builder-evidence-provenance -->\n"
+        "<details><summary>Builder evidence provenance</summary>\n\n"
+        f"Authenticated media manifest for `{head}`.\n\n{manifest_marker}\n\n"
+        "</details>"
+    )
+    return json.dumps({
+        "id": 91,
+        "body": body,
+        "user": {"type": "Bot", "login": "agent-factory-builder[bot]"},
+    })
 
 
 class DeliveryTests(unittest.TestCase):
@@ -65,22 +84,35 @@ class DeliveryTests(unittest.TestCase):
             image.write_bytes(b"png")
             video.write_bytes(b"mp4")
             original = pending_delivery()
+            urls = {
+                str(image): (
+                    "https://github.com/user-attachments/assets/"
+                    "63712384-e836-41c5-aaf8-5c7149499b3f"
+                ),
+                str(video): (
+                    "https://github.com/user-attachments/assets/"
+                    "e75bec00-fa65-4fb6-9b41-9cf55f4eda5e"
+                ),
+            }
             native_body = format_delivery(
                 "ready",
-                "![Swami](https://github.com/user-attachments/assets/image)\n\n"
-                "https://github.com/user-attachments/assets/video",
+                f"![Swami]({urls[str(image)]})\n\n"
+                f"{urls[str(video)]}\n\n"
+                f"{_evidence_manifest('owner/repo', '7', head, (image, video), urls)}",
                 head=head,
+            )
+            manifest_marker = _evidence_manifest(
+                "owner/repo", "7", head, (image, video), urls
             )
             gh.side_effect = [
                 json.dumps({"headRefOid": head, "body": original}),
+                json.dumps([[]]),
+                _provenance_response(head, manifest_marker),
                 json.dumps({"headRefOid": head, "body": original}),
                 "{}",
                 json.dumps({"headRefOid": head, "body": native_body}),
             ]
-            stage.return_value = {
-                str(image): "https://github.com/user-attachments/assets/image",
-                str(video): "https://github.com/user-attachments/assets/video",
-            }
+            stage.return_value = urls
             publish(
                 "owner/repo",
                 "7",
@@ -90,13 +122,131 @@ class DeliveryTests(unittest.TestCase):
                 (image, video),
             )
         stage.assert_called_once_with("owner/repo", "7", (image, video), "media-token")
-        patch_call = gh.call_args_list[2]
+        patch_call = gh.call_args_list[4]
         self.assertEqual(
             patch_call.args[0][:3], ["api", "repos/owner/repo/pulls/7", "-X"]
         )
         payload = json.loads(patch_call.kwargs["stdin"])
-        self.assertIn("![Swami](https://github.com/user-attachments/assets/image)", payload["body"])
-        self.assertIn("\nhttps://github.com/user-attachments/assets/video\n", payload["body"])
+        self.assertIn(f"![Swami]({urls[str(image)]})", payload["body"])
+        self.assertIn(f"\n{urls[str(video)]}\n", payload["body"])
+        manifest = delivery_evidence_manifest(
+            payload["body"], expected_repo="owner/repo", expected_pr=7,
+            expected_head=head,
+        )
+        self.assertEqual(set(manifest or {}), set(urls.values()))
+        self.assertEqual(manifest[urls[str(image)]]["content_type"], "image/png")
+        self.assertEqual(manifest[urls[str(video)]]["content_type"], "video/mp4")
+
+    def test_delivery_evidence_manifest_is_bound_to_head_and_bytes(self) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            image.write_bytes(b"png")
+            url = (
+                "https://github.com/user-attachments/assets/"
+                "63712384-e836-41c5-aaf8-5c7149499b3f"
+            )
+            marker = _evidence_manifest(
+                "owner/repo", "7", head, (image,), {str(image): url}
+            )
+        manifest = delivery_evidence_manifest(
+            marker, expected_repo="owner/repo", expected_pr=7, expected_head=head
+        )
+        self.assertEqual(
+            manifest[url]["sha256"],
+            "8f8cbb7dcf46e0bc7d53265749a6c17d116093a6ba95e442764060c76fd4a86c",
+        )
+        self.assertIsNone(delivery_evidence_manifest(
+            marker, expected_repo="owner/repo", expected_pr=7,
+            expected_head="b" * 40,
+        ))
+
+    def test_authenticated_provenance_requires_bot_and_matches_canonical_body(self) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            image.write_bytes(b"png")
+            url = "https://github.com/user-attachments/assets/asset"
+            marker = _evidence_manifest(
+                "owner/repo", "7", head, (image,), {str(image): url}
+            )
+            other_url = "https://github.com/user-attachments/assets/other"
+            other_marker = _evidence_manifest(
+                "owner/repo", "7", head, (image,), {str(image): other_url}
+            )
+        trusted = {
+            "body": DELIVERY_PROVENANCE + "\n" + marker,
+            "user": {"type": "Bot", "login": "agent-factory-builder[bot]"},
+        }
+        manifest = authenticated_delivery_evidence(
+            [[trusted]], expected_repo="owner/repo", expected_pr=7,
+            expected_head=head, builder_app_login="agent-factory-builder[bot]",
+            expected_manifest=delivery_evidence_manifest(
+                marker, expected_repo="owner/repo", expected_pr=7, expected_head=head
+            ),
+        )
+        self.assertEqual(tuple(manifest or {}), (url,))
+        copied = {**trusted, "user": {"type": "User", "login": "attacker"}}
+        self.assertIsNone(authenticated_delivery_evidence(
+            [[copied]], expected_repo="owner/repo", expected_pr=7,
+            expected_head=head, builder_app_login="agent-factory-builder[bot]",
+            expected_manifest=manifest,
+        ))
+        self.assertEqual(manifest, authenticated_delivery_evidence(
+            [[trusted, trusted]], expected_repo="owner/repo", expected_pr=7,
+            expected_head=head, builder_app_login="agent-factory-builder[bot]",
+            expected_manifest=manifest,
+        ))
+        conflicting = {**trusted, "body": DELIVERY_PROVENANCE + "\n" + other_marker}
+        self.assertEqual(manifest, authenticated_delivery_evidence(
+            [[trusted, conflicting]], expected_repo="owner/repo", expected_pr=7,
+            expected_head=head, builder_app_login="agent-factory-builder[bot]",
+            expected_manifest=manifest,
+        ))
+
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_stale_provenance_is_not_overwritten_by_another_head(self, gh) -> None:
+        head = "a" * 40
+        old_head = "b" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            image.write_bytes(b"png")
+            url = "https://github.com/user-attachments/assets/asset"
+            urls = {str(image): url}
+            marker = _evidence_manifest("owner/repo", "7", head, (image,), urls)
+            old_marker = _evidence_manifest(
+                "owner/repo", "7", old_head, (image,), urls
+            )
+        existing = json.loads(_provenance_response(old_head, old_marker))
+        existing["id"] = 81
+        gh.side_effect = [json.dumps([[existing]]), _provenance_response(head, marker)]
+        _publish_evidence_provenance(
+            "owner/repo", "7", head, marker, "agent-factory-builder[bot]"
+        )
+        self.assertEqual(
+            gh.call_args_list[1].args[0][1], "repos/owner/repo/issues/7/comments"
+        )
+        self.assertIn("POST", gh.call_args_list[1].args[0])
+
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_current_head_provenance_is_upserted(self, gh) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            image.write_bytes(b"png")
+            url = "https://github.com/user-attachments/assets/asset"
+            marker = _evidence_manifest(
+                "owner/repo", "7", head, (image,), {str(image): url}
+            )
+        existing = json.loads(_provenance_response(head, marker))
+        gh.side_effect = [json.dumps([[existing]]), _provenance_response(head, marker)]
+        _publish_evidence_provenance(
+            "owner/repo", "7", head, marker, "agent-factory-builder[bot]"
+        )
+        self.assertEqual(
+            gh.call_args_list[1].args[0][1], "repos/owner/repo/issues/comments/91"
+        )
+        self.assertIn("PATCH", gh.call_args_list[1].args[0])
 
     @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "media-token"})
     @mock.patch("agent_factory.github_delivery._stage_native_attachments")
@@ -109,19 +259,24 @@ class DeliveryTests(unittest.TestCase):
             image.write_bytes(b"png")
             original = pending_delivery()
             newer = "New Builder summary\n\n" + pending_delivery()
+            urls = {str(image): "https://github.com/user-attachments/assets/image"}
+            marker = _evidence_manifest("owner/repo", "7", old_head, (image,), urls)
             gh.side_effect = [
                 json.dumps({"headRefOid": old_head, "body": original}),
+                json.dumps([[]]),
+                _provenance_response(old_head, marker),
                 json.dumps({"headRefOid": new_head, "body": newer}),
             ]
-            stage.return_value = {
-                str(image): "https://github.com/user-attachments/assets/image"
-            }
+            stage.return_value = urls
             with self.assertRaisesRegex(RuntimeError, "refusing stale"):
                 publish(
                     "owner/repo", "7", old_head, "ready", f"![Swami]({image})", (image,)
                 )
-        self.assertEqual(gh.call_count, 2)
-        self.assertFalse(any("PATCH" in call.args[0] for call in gh.call_args_list))
+        self.assertEqual(gh.call_count, 4)
+        self.assertFalse(any(
+            call.args[0][:2] == ["api", "repos/owner/repo/pulls/7"]
+            for call in gh.call_args_list
+        ))
 
     @mock.patch("agent_factory.github_delivery._gh")
     @mock.patch("agent_factory.github_delivery.uuid.uuid4")
@@ -255,13 +410,17 @@ class DeliveryTests(unittest.TestCase):
             incomplete = format_delivery(
                 "ready", f"![First]({url_one})", head=head
             ) + f"\n\nOld unrelated media: {url_two}"
+            urls = {str(first): url_one, str(second): url_two}
+            marker = _evidence_manifest("owner/repo", "7", head, (first, second), urls)
             gh.side_effect = [
                 json.dumps({"headRefOid": head, "body": original}),
+                json.dumps([[]]),
+                _provenance_response(head, marker),
                 json.dumps({"headRefOid": head, "body": original}),
                 "{}",
                 json.dumps({"headRefOid": head, "body": incomplete}),
             ]
-            stage.return_value = {str(first): url_one, str(second): url_two}
+            stage.return_value = urls
             with self.assertRaisesRegex(RuntimeError, "omitted native Builder media"):
                 publish(
                     "owner/repo",
