@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import re
 import subprocess
 import tempfile
@@ -24,8 +25,16 @@ SUPPORTED_ATTACHMENT_SUFFIXES = {
 }
 
 
-def _gh(args: list[str], *, stdin: str | None = None) -> str:
-    result = subprocess.run(["gh", *args], input=stdin, text=True, capture_output=True)
+def _gh(
+    args: list[str], *, stdin: str | None = None, token: str | None = None
+) -> str:
+    environment = None
+    if token:
+        environment = os.environ.copy()
+        environment["GH_TOKEN"] = token
+    result = subprocess.run(
+        ["gh", *args], input=stdin, text=True, capture_output=True, env=environment
+    )
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
@@ -62,6 +71,7 @@ def _stage_native_attachments(
     repo: str,
     pr: str,
     attachments: tuple[Path, ...],
+    token: str,
 ) -> dict[str, str]:
     """Upload with a disposable Builder comment and return durable asset URLs."""
     marker = f"<!-- agent-factory:media-staging:{uuid.uuid4().hex} -->"
@@ -81,7 +91,7 @@ def _stage_native_attachments(
         for attachment in attachments:
             command.extend(["--attach", str(attachment)])
         try:
-            _gh(command)
+            _gh(command, token=token)
         except RuntimeError as error:
             # The CLI may create a partially attached comment before returning
             # nonzero, so cleanup must not depend on command success.
@@ -89,7 +99,7 @@ def _stage_native_attachments(
 
     pages = json.loads(_gh([
         "api", f"repos/{repo}/issues/{pr}/comments", "--paginate", "--slurp",
-    ]))
+    ], token=token))
     comments = [comment for page in pages for comment in page]
     staged = [comment for comment in comments if marker in str(comment.get("body") or "")]
     if len(staged) > 1:
@@ -99,7 +109,7 @@ def _stage_native_attachments(
                 _gh([
                     "api", f"repos/{repo}/issues/comments/{duplicate_id}",
                     "-X", "DELETE",
-                ])
+                ], token=token)
         raise RuntimeError("GitHub created duplicate Builder media staging comments")
     if not staged:
         if upload_error:
@@ -121,7 +131,10 @@ def _stage_native_attachments(
             raise RuntimeError("GitHub CLI did not rewrite every Builder media attachment")
         return {str(path): url for path, url in zip(attachments, urls)}
     finally:
-        _gh(["api", f"repos/{repo}/issues/comments/{comment_id}", "-X", "DELETE"])
+        _gh(
+            ["api", f"repos/{repo}/issues/comments/{comment_id}", "-X", "DELETE"],
+            token=token,
+        )
 
 
 def _rewrite_attachment_references(content: str, urls: dict[str, str]) -> str:
@@ -237,7 +250,12 @@ def publish(
         )
     if attachments:
         _validate_attachments(attachments)
-        urls = _stage_native_attachments(repo, pr, attachments)
+        media_token = os.environ.get("AGENT_FACTORY_MEDIA_UPLOAD_TOKEN", "").strip()
+        if not media_token:
+            raise RuntimeError(
+                "AGENT_FACTORY_MEDIA_UPLOAD_TOKEN is required for native Builder media"
+            )
+        urls = _stage_native_attachments(repo, pr, attachments, media_token)
         content = _rewrite_attachment_references(content, urls)
         # The slow upload never mutates the PR body. Refresh the exact head and
         # latest body before Builder performs the canonical write.

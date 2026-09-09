@@ -52,6 +52,7 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "raced a new head"):
             publish("owner/repo", "7", old_head, "ready", "Evidence")
 
+    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "media-token"})
     @mock.patch("agent_factory.github_delivery._stage_native_attachments")
     @mock.patch("agent_factory.github_delivery._gh")
     def test_publish_stages_media_then_refreshes_before_builder_patch(
@@ -88,7 +89,7 @@ class DeliveryTests(unittest.TestCase):
                 f"![Swami]({image})\n\n![]({video})",
                 (image, video),
             )
-        stage.assert_called_once_with("owner/repo", "7", (image, video))
+        stage.assert_called_once_with("owner/repo", "7", (image, video), "media-token")
         patch_call = gh.call_args_list[2]
         self.assertEqual(
             patch_call.args[0][:3], ["api", "repos/owner/repo/pulls/7", "-X"]
@@ -97,6 +98,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("![Swami](https://github.com/user-attachments/assets/image)", payload["body"])
         self.assertIn("\nhttps://github.com/user-attachments/assets/video\n", payload["body"])
 
+    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "media-token"})
     @mock.patch("agent_factory.github_delivery._stage_native_attachments")
     @mock.patch("agent_factory.github_delivery._gh")
     def test_native_media_detects_revision_before_builder_patch(self, gh, stage) -> None:
@@ -142,12 +144,17 @@ class DeliveryTests(unittest.TestCase):
                 }]]),
                 "{}",
             ]
-            urls = _stage_native_attachments("owner/repo", "7", (image, video))
+            urls = _stage_native_attachments(
+                "owner/repo", "7", (image, video), "media-token"
+            )
         self.assertEqual(urls[str(image)], "https://github.com/user-attachments/assets/image")
         self.assertEqual(urls[str(video)], "https://github.com/user-attachments/assets/video")
         self.assertEqual(
             gh.call_args_list[2].args[0],
             ["api", "repos/owner/repo/issues/comments/17", "-X", "DELETE"],
+        )
+        self.assertTrue(
+            all(call.kwargs.get("token") == "media-token" for call in gh.call_args_list)
         )
 
     @mock.patch("agent_factory.github_delivery._gh")
@@ -166,7 +173,9 @@ class DeliveryTests(unittest.TestCase):
                 "{}",
             ]
             with self.assertRaisesRegex(RuntimeError, "one attachment failed"):
-                _stage_native_attachments("owner/repo", "7", (image,))
+                _stage_native_attachments(
+                    "owner/repo", "7", (image,), "media-token"
+                )
         self.assertEqual(
             gh.call_args_list[2].args[0],
             ["api", "repos/owner/repo/issues/comments/18", "-X", "DELETE"],
@@ -201,6 +210,20 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "same file twice"):
                 _validate_attachments((image, image))
 
+    @mock.patch.dict("os.environ", {}, clear=True)
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_native_media_requires_a_separate_user_token(self, gh) -> None:
+        head = "a" * 40
+        gh.return_value = json.dumps({"headRefOid": head, "body": pending_delivery()})
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            image.write_bytes(b"png")
+            with self.assertRaisesRegex(RuntimeError, "MEDIA_UPLOAD_TOKEN is required"):
+                publish(
+                    "owner/repo", "7", head, "ready", f"![Swami]({image})", (image,)
+                )
+        self.assertEqual(gh.call_count, 1)
+
     def test_rewrite_uses_exact_destinations_for_overlapping_names(self) -> None:
         short = "/tmp/shot.png"
         long = "/tmp/before-shot.png"
@@ -216,6 +239,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn(short, rewritten)
         self.assertNotIn(long, rewritten)
 
+    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "media-token"})
     @mock.patch("agent_factory.github_delivery._stage_native_attachments")
     @mock.patch("agent_factory.github_delivery._gh")
     def test_preexisting_url_cannot_mask_missing_delivery_media(self, gh, stage) -> None:
