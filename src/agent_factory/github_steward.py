@@ -97,8 +97,11 @@ def _strings(value: Any, *, limit: int = 10) -> list[str]:
 
 def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
     decision = str(raw.get("decision") or "needs_human").strip().lower()
+    decision_key = decision.replace("-", "_").replace(" ", "_")
     raw_subtasks = raw.get("subtasks") or []
-    if decision in {"keep-open", "keep_open", "update", "intake"}:
+    if decision_key == "needs_a_human_decision":
+        decision = "needs_human"
+    elif decision_key in {"keep_open", "update", "intake", "dispatch"}:
         # Smaller/free models sometimes describe the tracker operation instead
         # of selecting the readiness enum. Recover the contract only from the
         # structured fields they returned: explicit work slices and duplicate
