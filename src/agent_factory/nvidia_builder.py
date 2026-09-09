@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,7 @@ import time
 from typing import Any
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 
 from .workspace import workspace_snapshot as _workspace_snapshot
 
@@ -36,6 +38,30 @@ _BLOCKED_COMMANDS = re.compile(
 
 class NvidiaBuilderError(RuntimeError):
     pass
+
+
+@dataclass
+class ModelCostBudget:
+    """One cost ceiling shared by every provider attempt in a Builder run."""
+
+    limit_usd: float
+    spent_usd: float = 0.0
+    complete: bool = True
+    kinds: set[str] = field(default_factory=set)
+
+    def record(self, amount: float, kind: str) -> None:
+        self.spent_usd += amount
+        self.kinds.add(kind)
+
+    @property
+    def kind_label(self) -> str:
+        if self.kinds == {"provider-reported"}:
+            return "provider-reported"
+        if self.kinds == {"estimated"}:
+            return "estimated"
+        if self.kinds:
+            return "mixed provider-reported and estimated"
+        return "not incurred"
 
 
 def _inside(root: Path, relative: str) -> Path:
@@ -260,6 +286,7 @@ def run_openai_builder(
     output_cost_per_million: float,
     max_output_tokens: int = 4096,
     image_urls: tuple[str, ...] = (),
+    cost_budget: ModelCostBudget | None = None,
 ) -> tuple[str, int, float]:
     secret_name = API_KEY_ENV.get(provider)
     if secret_name is None:
@@ -284,41 +311,93 @@ def run_openai_builder(
     workspace_baseline = _workspace_snapshot(root)
     deadline = time.monotonic() + timeout_seconds
     tool_count = 0
-    prompt_tokens = 0
-    completion_tokens = 0
+    budget = cost_budget or ModelCostBudget(max_cost_usd)
+    if budget.limit_usd != max_cost_usd:
+        raise NvidiaBuilderError("shared Builder cost budget has a mismatched limit")
     for _ in range(max_requests):
+        if budget.kinds and budget.spent_usd >= budget.limit_usd:
+            raise NvidiaBuilderError(
+                f"{provider} Builder exhausted its ${budget.limit_usd:.2f} "
+                "shared cost limit before another model request"
+            )
         remaining = int(deadline - time.monotonic())
         if remaining <= 0:
             raise NvidiaBuilderError(f"{provider} Builder exceeded its time budget")
-        response = _post(
-            model,
-            messages,
-            api_key,
-            min(300, remaining),
-            provider=provider,
-            max_output_tokens=max_output_tokens,
-            tool_choice=(
-                "required"
-                if _workspace_snapshot(root) == workspace_baseline
-                else "auto"
-            ),
-            input_cost_per_million=input_cost_per_million,
-            output_cost_per_million=output_cost_per_million,
-        )
+        try:
+            response = _post(
+                model,
+                messages,
+                api_key,
+                min(300, remaining),
+                provider=provider,
+                max_output_tokens=max_output_tokens,
+                tool_choice=(
+                    "required"
+                    if _workspace_snapshot(root) == workspace_baseline
+                    else "auto"
+                ),
+                input_cost_per_million=input_cost_per_million,
+                output_cost_per_million=output_cost_per_million,
+            )
+        except json.JSONDecodeError as exc:
+            budget.complete = False
+            raise NvidiaBuilderError(
+                f"{provider} returned malformed JSON with unknown billed cost"
+            ) from exc
+        if not isinstance(response, dict):
+            budget.complete = False
+            raise NvidiaBuilderError(
+                f"{provider} returned a malformed response with unknown billed cost"
+            )
         usage = response.get("usage") or {}
+        if not isinstance(usage, dict):
+            budget.complete = False
+            raise NvidiaBuilderError(
+                f"{provider} returned malformed usage with unknown billed cost"
+            )
         if (input_cost_per_million or output_cost_per_million) and not usage:
+            budget.complete = False
             raise NvidiaBuilderError(
                 f"{provider} omitted token usage required for cost enforcement"
             )
-        prompt_tokens += int(usage.get("prompt_tokens") or 0)
-        completion_tokens += int(usage.get("completion_tokens") or 0)
-        estimated_cost = (
-            prompt_tokens * input_cost_per_million
-            + completion_tokens * output_cost_per_million
-        ) / 1_000_000
-        if estimated_cost > max_cost_usd:
+        if provider == "openrouter":
+            response_cost = usage.get("cost")
+            if (
+                not isinstance(response_cost, (int, float))
+                or isinstance(response_cost, bool)
+                or not math.isfinite(response_cost)
+                or response_cost < 0
+            ):
+                budget.complete = False
+                raise NvidiaBuilderError(
+                    "openrouter omitted numeric usage.cost required for cost enforcement"
+                )
+            cost_kind = "provider-reported"
+            response_cost = float(response_cost)
+        else:
+            try:
+                prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                completion_tokens = int(usage.get("completion_tokens") or 0)
+            except (TypeError, ValueError) as exc:
+                budget.complete = False
+                raise NvidiaBuilderError(
+                    f"{provider} returned invalid token usage required for cost enforcement"
+                ) from exc
+            if prompt_tokens < 0 or completion_tokens < 0:
+                budget.complete = False
+                raise NvidiaBuilderError(
+                    f"{provider} returned invalid token usage required for cost enforcement"
+                )
+            response_cost = (
+                prompt_tokens * input_cost_per_million
+                + completion_tokens * output_cost_per_million
+            ) / 1_000_000
+            cost_kind = "estimated"
+        budget.record(response_cost, cost_kind)
+        if budget.spent_usd > budget.limit_usd:
             raise NvidiaBuilderError(
-                f"{provider} Builder exceeded its ${max_cost_usd:.2f} estimated cost limit"
+                f"{provider} Builder exceeded its ${budget.limit_usd:.2f} "
+                f"{cost_kind} cost limit"
             )
         choices = response.get("choices") or []
         if not choices:
@@ -335,7 +414,7 @@ def run_openai_builder(
                 raise NvidiaBuilderError(
                     f"{provider} Builder returned without repository changes"
                 )
-            return str(assistant.get("content") or ""), tool_count, estimated_cost
+            return str(assistant.get("content") or ""), tool_count, budget.spent_usd
         for call in calls:
             function = call.get("function") or {}
             name = str(function.get("name") or "")
@@ -361,7 +440,7 @@ def run_openai_builder(
             "a reviewable repository candidate. Deterministic verification and Reviewer "
             "remain authoritative for completeness.",
             tool_count,
-            estimated_cost,
+            budget.spent_usd,
         )
     raise NvidiaBuilderError(
         f"{provider} Builder exceeded {max_requests} model requests without repository changes"

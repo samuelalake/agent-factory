@@ -155,6 +155,18 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "greater than zero"):
             parse_config(raw)
 
+    def test_builder_cost_values_must_be_finite(self) -> None:
+        for field in (
+            "max_model_cost_usd",
+            "input_cost_per_million",
+            "output_cost_per_million",
+        ):
+            with self.subTest(field=field):
+                raw = default_config("demo")
+                raw["builder"][field] = float("nan")
+                with self.assertRaisesRegex(ConfigError, "non-negative number"):
+                    parse_config(raw)
+
     def test_builder_revision_limit_must_be_positive(self) -> None:
         raw = default_config("demo")
         raw["builder"]["max_revision_attempts"] = 0

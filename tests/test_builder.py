@@ -30,8 +30,10 @@ from agent_factory.github_builder import (
     build_prompt,
     format_issue_status,
     format_pr_body,
+    run,
     parse_gemini_stream,
 )
+from agent_factory.nvidia_builder import NvidiaBuilderError
 from agent_factory.workspace import _untracked_identity
 from agent_factory.protocol import decode_data
 
@@ -564,6 +566,91 @@ after"""
         self.assertIn("issue #83", body)
         self.assertNotIn("hidden", body)
         self.assertIn("$0.2500", body)
+        self.assertIn("Model cost (estimated)", body)
+
+    def test_pr_body_labels_provider_reported_model_cost(self) -> None:
+        config = parse_config(default_config("demo"))
+        body = format_pr_body(
+            config,
+            "83",
+            "<builder_summary>Implemented the requested change.</builder_summary>",
+            "openai-compatible-tool-loop",
+            "openai/gpt",
+            4,
+            0.75,
+            cost_kind="provider-reported",
+        )
+        self.assertIn("Model cost (provider-reported): `$0.7500`", body)
+
+    def test_pr_body_labels_unmeasured_model_cost(self) -> None:
+        config = parse_config(default_config("demo"))
+        body = format_pr_body(
+            config,
+            "83",
+            "<builder_summary>Implemented the requested change.</builder_summary>",
+            "gemini-cli",
+            "gemini-flash",
+            4,
+            None,
+            cost_kind="not measured",
+        )
+        self.assertIn(
+            "Model cost (not measured): `provider reported separately`", body
+        )
+
+    def test_unknown_primary_cost_prevents_fallback(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "openrouter",
+                "harness": "openai-compatible",
+                "model": "openai/gpt",
+                "fallback_provider": "minimax",
+                "fallback_model": "MiniMax-M2.7",
+                "max_model_cost_usd": 1,
+                "input_cost_per_million": 2,
+                "output_cost_per_million": 10,
+            }
+        )
+        config = parse_config(raw)
+
+        def fail_with_unknown_cost(*args, **kwargs):
+            kwargs["cost_budget"].complete = False
+            raise NvidiaBuilderError("malformed JSON with unknown billed cost")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            with (
+                mock.patch.dict("os.environ", {"GH_TOKEN": "token"}, clear=True),
+                mock.patch(
+                    "agent_factory.github_builder.load_config", return_value=config
+                ),
+                mock.patch(
+                    "agent_factory.github_builder._gh",
+                    side_effect=[
+                        json.dumps(
+                            {
+                                "number": 83,
+                                "title": "Build the thing",
+                                "body": "Acceptance criteria.",
+                                "state": "OPEN",
+                            }
+                        ),
+                        "[]",
+                    ],
+                ),
+                mock.patch("agent_factory.github_builder._run", return_value=""),
+                mock.patch(
+                    "agent_factory.github_builder.run_openai_builder",
+                    side_effect=fail_with_unknown_cost,
+                ) as model_run,
+            ):
+                with self.assertRaisesRegex(
+                    BuilderBlocked, "fallback was not started"
+                ):
+                    run("owner/repo", "83", root, root / "config.json")
+        self.assertEqual(model_run.call_count, 1)
 
     def test_pr_body_never_publishes_unstructured_model_deliberation(self) -> None:
         config = parse_config(default_config("demo"))
