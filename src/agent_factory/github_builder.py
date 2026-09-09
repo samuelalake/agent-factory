@@ -27,6 +27,9 @@ class BuilderBlocked(RuntimeError):
     pass
 
 
+_MAX_REVIEW_FEEDBACK_CHARS = 32_000
+
+
 def _run(
     args: list[str],
     *,
@@ -247,8 +250,21 @@ def _review_feedback(
     *,
     root: Path,
 ) -> str:
-    reviews = json.loads(
-        _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"], cwd=root)
+    raw_review_pages = json.loads(
+        _gh(
+            [
+                "api",
+                f"repos/{repo}/pulls/{pr}/reviews",
+                "--paginate",
+                "--slurp",
+            ],
+            cwd=root,
+        )
+    )
+    reviews = (
+        [item for page in raw_review_pages for item in page]
+        if raw_review_pages and isinstance(raw_review_pages[0], list)
+        else raw_review_pages
     )
     current = [
         item
@@ -304,7 +320,13 @@ def _review_feedback(
     sections = [summary]
     if inline:
         sections.extend(["## Authenticated inline findings", *inline])
-    return "\n\n".join(section for section in sections if section).strip()[-16000:]
+    feedback = "\n\n".join(section for section in sections if section).strip()
+    if len(feedback) > _MAX_REVIEW_FEEDBACK_CHARS:
+        raise BuilderBlocked(
+            "Authenticated Reviewer feedback exceeds the 32000-character Builder limit; "
+            "condense or split the review before retrying"
+        )
+    return feedback
 
 
 def _current_delivery_media(
