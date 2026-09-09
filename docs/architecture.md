@@ -88,6 +88,10 @@ the Steward and Reviewer App bot logins (for example, `acme-steward[bot]` and
 `acme-reviewer[bot]`) in `steward.app_login` and `review.app_login`. Steward
 accepts its feedback cursor only from its configured Bot identity; Builder
 accepts current-head review feedback only from the configured Reviewer identity.
+Any unconsumed OWNER, MEMBER, or COLLABORATOR feedback forces a new shaping pass,
+even when label propagation is delayed. Steward also preserves that feedback in
+a visible canonical issue section so a model cannot silently omit an operator's
+requirements while dispatching Builder.
 
 Making an App publicly installable does not make its private key distributable.
 A globally shared Builder or Reviewer therefore requires a hosted Factory

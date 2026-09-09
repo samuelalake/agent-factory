@@ -17,6 +17,9 @@ from .protocol import decode_data, encode_data, extract_json_reply
 
 
 SHAPED_MARKER = "<!-- agent-factory:steward-shaped -->"
+OPERATOR_AMENDMENTS_START = "<!-- agent-factory:operator-amendments:start -->"
+OPERATOR_AMENDMENTS_END = "<!-- agent-factory:operator-amendments:end -->"
+MAX_ISSUE_BODY_CHARS = 60_000
 ORIGINAL_INTAKE = re.compile(
     r"<details>\s*<summary>Original intake</summary>\s*(.*?)\s*</details>",
     flags=re.DOTALL | re.IGNORECASE,
@@ -78,6 +81,7 @@ def format_status(
     *,
     dispatched_after_builder_result_id: str | None = None,
     feedback_cursor: tuple[str, int] | None = None,
+    feedback_comment_ids: list[int] | None = None,
 ) -> str:
     machine = {
         "version": 1,
@@ -93,6 +97,8 @@ def format_status(
             "updated_at": feedback_cursor[0],
             "id": feedback_cursor[1],
         }
+    if feedback_comment_ids:
+        machine["feedback_comment_ids"] = feedback_comment_ids
     return "\n".join(
         [
             marker,
@@ -210,6 +216,58 @@ def format_shaped_issue(plan: dict[str, Any], original: str) -> str:
         lines.extend(["", "<details>", "<summary>Original intake</summary>", "", original.strip(), "", "</details>"])
     lines.append("")
     return "\n".join(lines)
+
+
+def canonical_operator_amendments(
+    comments: list[dict[str, Any]], comment_ids: list[int]
+) -> str:
+    """Rebuild preserved feedback only from authenticated comment identifiers."""
+    wanted = set(comment_ids)
+    if len(wanted) != len(comment_ids) or len(wanted) > 100:
+        raise ValueError("trusted operator amendment identifiers are invalid or exceed 100")
+    entries: list[tuple[tuple[str, int], str]] = []
+    for comment in comments:
+        key = _feedback_key(comment)
+        if key is None or key[1] not in wanted:
+            continue
+        association = str(
+            comment.get("authorAssociation") or comment.get("author_association") or ""
+        ).upper()
+        body = str(comment.get("body") or "").strip()
+        if association not in TRUSTED_OPERATOR_ASSOCIATIONS or not body:
+            raise ValueError("a preserved operator amendment no longer has trusted provenance")
+        login = _comment_login(comment) or "operator"
+        entries.append((key, f"### @{login}\n\n{body}"))
+    if {key[1] for key, _ in entries} != wanted:
+        raise ValueError("a preserved operator amendment comment is missing")
+    entries.sort(key=lambda entry: entry[0])
+    combined = "\n\n".join(text for _, text in entries).strip()
+    if len(combined) > 30_000:
+        raise ValueError(
+            "trusted operator amendments exceed 30,000 characters; "
+            "consolidate the decisions before retrying"
+        )
+    return combined
+
+
+def authenticated_steward_feedback_ids(
+    comments: list[dict[str, Any]], app_login: str, marker: str
+) -> list[int]:
+    """Read preserved feedback IDs only from the configured Steward App status."""
+    for comment in reversed(comments):
+        if _comment_login(comment) != app_login:
+            continue
+        body = str(comment.get("body") or "")
+        if marker not in body:
+            continue
+        data = decode_data(body) or {}
+        raw = data.get("feedback_comment_ids") or []
+        if not isinstance(raw, list) or any(type(value) is not int or value < 1 for value in raw):
+            raise ValueError("Steward feedback comment identifiers are malformed")
+        if len(raw) != len(set(raw)) or len(raw) > 100:
+            raise ValueError("Steward feedback comment identifiers are invalid or exceed 100")
+        return raw
+    return []
 
 
 def original_intake(body: str) -> str:
@@ -422,21 +480,36 @@ def apply_shape(
     item: dict[str, Any],
     plan: dict[str, Any],
     issue_inventory: list[dict[str, Any]],
+    *,
+    operator_amendments: str = "",
 ) -> tuple[str, str, str]:
     original = original_intake(str(item.get("body") or ""))
     shaped_body = format_shaped_issue(plan, original)
     decision = plan["decision"]
     if decision == "duplicate":
         shaped_body += f"\nDuplicate candidate: #{plan['duplicate_issue']}\n"
+    amendment_block = ""
+    if operator_amendments:
+        amendment_block = "\n".join([
+            "",
+            OPERATOR_AMENDMENTS_START,
+            "## Trusted operator amendments",
+            "",
+            operator_amendments,
+            OPERATOR_AMENDMENTS_END,
+            "",
+        ])
     child_numbers: list[int] = []
     if decision == "split":
         existing_slices = _resolve_existing_slices(issue, plan["subtasks"], issue_inventory)
-        for index, (subtask, existing_slice) in enumerate(
-            zip(plan["subtasks"], existing_slices, strict=True), start=1
-        ):
-            marker = _child_marker(issue, index)
-            matching_existing, is_managed = existing_slice
-            child_body = format_shaped_issue({
+        provisional_slices = "\n## Delivery slices\n\n" + "\n".join(
+            "- [ ] #0000000000" for _ in plan["subtasks"]
+        ) + "\n"
+        if len(shaped_body + provisional_slices + amendment_block) > MAX_ISSUE_BODY_CHARS:
+            raise ValueError("canonical issue body exceeds the 60,000-character safety limit")
+        prepared_children: list[str] = []
+        for index, subtask in enumerate(plan["subtasks"], start=1):
+            child_body = _child_marker(issue, index) + "\n" + format_shaped_issue({
                 **plan,
                 **subtask,
                 "decision": "needs_human",
@@ -447,7 +520,14 @@ def apply_shape(
                 "subtasks": [],
                 "duplicate_issue": None,
             }, "")
-            child_body = marker + "\n" + child_body
+            if len(child_body) > MAX_ISSUE_BODY_CHARS:
+                raise ValueError("Steward subtask body exceeds the 60,000-character safety limit")
+            prepared_children.append(child_body)
+        for index, (subtask, existing_slice) in enumerate(
+            zip(plan["subtasks"], existing_slices, strict=True), start=1
+        ):
+            matching_existing, is_managed = existing_slice
+            child_body = prepared_children[index - 1]
             payload = json.dumps({"title": subtask["title"], "body": child_body})
             if is_managed and matching_existing is not None:
                 number = matching_existing["number"]
@@ -465,6 +545,9 @@ def apply_shape(
         shaped_body += "\n## Delivery slices\n\n" + "\n".join(
             f"- [ ] #{number}" for number in child_numbers
         ) + "\n"
+    shaped_body += amendment_block
+    if len(shaped_body) > MAX_ISSUE_BODY_CHARS:
+        raise ValueError("canonical issue body exceeds the 60,000-character safety limit")
     _gh(
         ["api", f"repos/{repo}/issues/{issue}", "-X", "PATCH", "--input", "-"],
         stdin=json.dumps({"title": plan["title"], "body": shaped_body}),
@@ -515,13 +598,18 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         comments, config.steward.app_login, config.steward.marker
     )
     feedback_error = ""
+    feedback_comment_ids: list[int] = []
     pending_feedback: list[dict[str, Any]] = []
     try:
+        feedback_comment_ids = authenticated_steward_feedback_ids(
+            comments, config.steward.app_login, config.steward.marker
+        )
         pending_feedback = _trusted_operator_comments(item, feedback_cursor)
     except ValueError as exc:
         feedback_error = str(exc)
     has_operator_feedback = bool(pending_feedback)
     feedback_cursor_for_status = feedback_cursor
+    feedback_comment_ids_for_status = feedback_comment_ids
     shaping_item = {**item, "comments": pending_feedback}
     dispatched_after_builder_result_id: str | None = None
     if str(item.get("state") or "").upper() != "OPEN":
@@ -544,6 +632,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             next_owner,
             detail,
             feedback_cursor=feedback_cursor_for_status,
+            feedback_comment_ids=feedback_comment_ids_for_status,
         )
         _upsert_issue_comment(
             repo,
@@ -556,10 +645,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         return state
     elif (
         not labels.intersection(config.steward.ready_labels)
-        or (
-            config.steward.retry_label in labels
-            and has_operator_feedback
-        )
+        or has_operator_feedback
     ):
         issue_inventory = [
             candidate
@@ -572,11 +658,31 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             if "pull_request" not in candidate
         ]
         try:
+            pending_feedback_ids = [
+                key[1]
+                for comment in pending_feedback
+                if (key := _feedback_key(comment)) is not None
+            ]
+            next_feedback_comment_ids = list(dict.fromkeys([
+                *feedback_comment_ids,
+                *pending_feedback_ids,
+            ]))
+            operator_amendments = canonical_operator_amendments(
+                comments, next_feedback_comment_ids
+            )
             plan, provider, model = shape_issue(root, config, shaping_item, issue_inventory)
-            state, next_owner, detail = apply_shape(repo, issue, item, plan, issue_inventory)
+            state, next_owner, detail = apply_shape(
+                repo,
+                issue,
+                item,
+                plan,
+                issue_inventory,
+                operator_amendments=operator_amendments,
+            )
             feedback_cursor_for_status = latest_trusted_operator_feedback_cursor(
                 shaping_item, feedback_cursor
             )
+            feedback_comment_ids_for_status = next_feedback_comment_ids
             detail += f" Model: `{provider}/{model}`."
             if state == "ready":
                 ready_label = config.steward.ready_labels[0]
@@ -600,6 +706,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
                 next_owner,
                 detail,
                 feedback_cursor=feedback_cursor_for_status,
+                feedback_comment_ids=feedback_comment_ids_for_status,
             )
             _upsert_issue_comment(
                 repo,
@@ -628,7 +735,6 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         ])
         if (
             has_operator_feedback
-            and config.steward.retry_label in labels
             and config.steward.dispatch_label in labels
         ):
             # A trusted correction that arrives during an active Builder run
@@ -718,6 +824,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         detail,
         dispatched_after_builder_result_id=dispatched_after_builder_result_id,
         feedback_cursor=feedback_cursor_for_status,
+        feedback_comment_ids=feedback_comment_ids_for_status,
     )
     _upsert_issue_comment(
         repo,
