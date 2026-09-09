@@ -51,9 +51,9 @@ is never treated as proof. Repository-specific rendering and interaction logic
 remain in the consumer.
 GitHub's user-attachment endpoint does not accept GitHub App installation
 tokens. A consumer can provide `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` from a user
-token with push access to use GitHub's supported attachment path: screenshots
-render inline and a standalone video URL renders as GitHub's native player. The
-Builder App then performs the final exact-head body write.
+token with push access to use GitHub's attachment API: screenshots render inline
+and a standalone video URL renders as GitHub's native player. The upload does not
+edit the pull request; the Builder App performs the only exact-head body write.
 
 Without that optional token, the publisher writes runner-generated images and
 videos with the Git Data API to the repository's `agent-factory-evidence`
@@ -172,10 +172,11 @@ unless it finds a current-head approval carrying the factory's machine-readable
 review contract.
 
 `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` is an optional, narrowly scoped exception for
-consumer evidence jobs that require GitHub-native attachments. It must be a user
-token with push access because GitHub rejects App installation tokens at that
-upload endpoint. Factory uses it only for the attachment upload/edit operation;
-Builder's App token reads back and performs the final exact-head body patch.
+consumer evidence jobs that require GitHub-native attachments. It must be an
+OAuth token, classic personal access token, or fine-grained personal access token
+with push access because GitHub rejects App installation tokens at that upload
+endpoint. Factory uses it only to upload the media bytes; Builder's App token
+performs the exact-head pull-request body patch.
 
 Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
 consumer evidence. Keep it at least as long as the consumer's slowest required

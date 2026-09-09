@@ -4,13 +4,15 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import mimetypes
 import os
 import re
 import subprocess
-import tempfile
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 
 DELIVERY_START = "<!-- agent-factory:builder-delivery:start -->"
@@ -21,16 +23,8 @@ VALID_STATUSES = {"pending", "ready", "failed"}
 EVIDENCE_BRANCH = "agent-factory-evidence"
 
 
-def _gh(
-    args: list[str],
-    *,
-    stdin: str | None = None,
-    token: str | None = None,
-) -> str:
-    kwargs: dict = {"input": stdin, "text": True, "capture_output": True}
-    if token is not None:
-        kwargs["env"] = {**os.environ, "GH_TOKEN": token}
-    result = subprocess.run(["gh", *args], **kwargs)
+def _gh(args: list[str], *, stdin: str | None = None) -> str:
+    result = subprocess.run(["gh", *args], input=stdin, text=True, capture_output=True)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
@@ -155,19 +149,48 @@ def _publish_attachments(
 
 def _publish_native_attachments(
     repo: str,
-    pr: str,
-    body: str,
     attachments: tuple[Path, ...],
     token: str,
-) -> None:
-    """Let GitHub rewrite local media references to native attachment URLs."""
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".md") as body_file:
-        body_file.write(body)
-        body_file.flush()
-        args = ["pr", "edit", pr, "--repo", repo, "--body-file", body_file.name]
-        for path in attachments:
-            args.extend(["--attach", str(path)])
-        _gh(args, token=token)
+) -> dict[str, str]:
+    """Upload media without mutating the PR, using GitHub's attachment API."""
+    repository_id = int(_api(repo, "")["id"])
+    urls: dict[str, str] = {}
+    for path in attachments:
+        content_type, _ = mimetypes.guess_type(path.name)
+        if not content_type or not content_type.startswith(("image/", "video/")):
+            raise ValueError(f"unsupported Builder media attachment: {path}")
+        endpoint = "https://uploads.github.com/user-attachments/assets?" + urlencode({
+            "name": path.name,
+            "content_type": content_type,
+            "repository_id": repository_id,
+        })
+        request = Request(
+            endpoint,
+            data=path.read_bytes(),
+            method="POST",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/octet-stream",
+            },
+        )
+        for attempt in range(3):
+            try:
+                with urlopen(request, timeout=120) as result:
+                    response = json.load(result)
+                break
+            except (HTTPError, URLError) as error:
+                status = getattr(error, "code", 0)
+                if attempt == 2 or status not in {0, 429, 500, 502, 503, 504}:
+                    raise RuntimeError(
+                        f"GitHub native attachment upload failed for {path.name}"
+                    ) from error
+                time.sleep(2 ** attempt)
+        url = str(response.get("url") or "")
+        if not url.startswith("https://github.com/user-attachments/"):
+            raise RuntimeError(f"GitHub returned no native attachment URL for {path}")
+        urls[str(path)] = url
+    return urls
 
 
 def format_delivery(status: str, content: str, *, head: str | None = None) -> str:
@@ -263,24 +286,21 @@ def publish(
         if missing:
             raise ValueError(f"Builder delivery attachments do not exist: {', '.join(missing)}")
         if media_token:
-            candidate = replace_delivery(
-                str(meta.get("body") or ""), format_delivery(status, content, head=head)
-            )
-            _publish_native_attachments(repo, pr, candidate, attachments, media_token)
-            # GitHub CLI writes native attachment URLs into the body. Read that
-            # result with Builder authentication before Builder performs the
-            # final exact-head body patch below.
+            urls = _publish_native_attachments(repo, attachments, media_token)
+            for local_path, url in urls.items():
+                if Path(local_path).suffix.lower() in {".mp4", ".mov", ".webm"}:
+                    content = content.replace(f"![]({local_path})", url)
+                content = content.replace(local_path, url)
+            if any(str(path) in content for path in attachments):
+                raise RuntimeError("GitHub did not rewrite every Builder media attachment")
+            if content.count("https://github.com/user-attachments/") < len(attachments):
+                raise RuntimeError("GitHub did not publish native Builder media attachments")
+            # Uploading may take long enough for a new Builder revision to arrive.
+            # The user token has not mutated the PR, so re-read before Builder's
+            # App token performs the only body write.
             meta = json.loads(_gh([
                 "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
             ]))
-            content = str(meta.get("body") or "")
-            if any(str(path) in content for path in attachments):
-                raise RuntimeError("GitHub did not rewrite every Builder media attachment")
-            start = content.find(DELIVERY_START)
-            end = content.find(DELIVERY_END, start)
-            delivery = content[start:end] if start >= 0 and end > start else ""
-            if delivery.count("https://github.com/user-attachments/") < len(attachments):
-                raise RuntimeError("GitHub did not publish native Builder media attachments")
         else:
             urls = _publish_attachments(repo, pr, head, attachments)
             for local_path, url in urls.items():
@@ -299,12 +319,9 @@ def publish(
             raise RuntimeError(
                 f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
             )
-    if attachments and media_token:
-        updated = content
-    else:
-        updated = replace_delivery(
-            str(meta.get("body") or ""), format_delivery(status, content, head=head)
-        )
+    updated = replace_delivery(
+        str(meta.get("body") or ""), format_delivery(status, content, head=head)
+    )
     _gh(
         ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
         stdin=json.dumps({"body": updated}),
