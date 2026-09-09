@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -231,7 +232,12 @@ def parse_config(raw: dict[str, Any]) -> Config:
         (input_cost_per_million, "builder.input_cost_per_million"),
         (output_cost_per_million, "builder.output_cost_per_million"),
     ):
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
             raise ConfigError(f"{path} must be a non-negative number")
     if max_model_cost_usd <= 0:
         raise ConfigError("builder.max_model_cost_usd must be greater than zero")

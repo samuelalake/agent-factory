@@ -323,22 +323,38 @@ def run_openai_builder(
         remaining = int(deadline - time.monotonic())
         if remaining <= 0:
             raise NvidiaBuilderError(f"{provider} Builder exceeded its time budget")
-        response = _post(
-            model,
-            messages,
-            api_key,
-            min(300, remaining),
-            provider=provider,
-            max_output_tokens=max_output_tokens,
-            tool_choice=(
-                "required"
-                if _workspace_snapshot(root) == workspace_baseline
-                else "auto"
-            ),
-            input_cost_per_million=input_cost_per_million,
-            output_cost_per_million=output_cost_per_million,
-        )
+        try:
+            response = _post(
+                model,
+                messages,
+                api_key,
+                min(300, remaining),
+                provider=provider,
+                max_output_tokens=max_output_tokens,
+                tool_choice=(
+                    "required"
+                    if _workspace_snapshot(root) == workspace_baseline
+                    else "auto"
+                ),
+                input_cost_per_million=input_cost_per_million,
+                output_cost_per_million=output_cost_per_million,
+            )
+        except json.JSONDecodeError as exc:
+            budget.complete = False
+            raise NvidiaBuilderError(
+                f"{provider} returned malformed JSON with unknown billed cost"
+            ) from exc
+        if not isinstance(response, dict):
+            budget.complete = False
+            raise NvidiaBuilderError(
+                f"{provider} returned a malformed response with unknown billed cost"
+            )
         usage = response.get("usage") or {}
+        if not isinstance(usage, dict):
+            budget.complete = False
+            raise NvidiaBuilderError(
+                f"{provider} returned malformed usage with unknown billed cost"
+            )
         if (input_cost_per_million or output_cost_per_million) and not usage:
             budget.complete = False
             raise NvidiaBuilderError(

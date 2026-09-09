@@ -331,6 +331,28 @@ class NvidiaBuilderTests(unittest.TestCase):
                     output_cost_per_million=10,
                 )
 
+    def test_openrouter_malformed_response_marks_shared_cost_unknown(self) -> None:
+        budget = ModelCostBudget(1)
+        malformed = json.JSONDecodeError("bad response", "{", 1)
+        with mock.patch(
+            "agent_factory.nvidia_builder._post", side_effect=malformed
+        ):
+            with self.assertRaisesRegex(NvidiaBuilderError, "unknown billed cost"):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="openrouter",
+                    model="openai/gpt",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=1,
+                    input_cost_per_million=2,
+                    output_cost_per_million=10,
+                    cost_budget=budget,
+                )
+        self.assertFalse(budget.complete)
+
     def test_openrouter_nonfinite_reported_cost_fails_closed(self) -> None:
         for invalid_cost in (float("nan"), float("inf"), True, "0.1", -0.1):
             with self.subTest(cost=invalid_cost):

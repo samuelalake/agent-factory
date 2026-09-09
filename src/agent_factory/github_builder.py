@@ -840,6 +840,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
+    cost_kind = "not measured"
     cost_budget = ModelCostBudget(config.builder.max_model_cost_usd)
 
     def run_compatible(
@@ -875,6 +876,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         harness = "current-base-sync"
         model = "not invoked"
         estimated_cost = 0.0
+        cost_kind = "not incurred"
     else:
         delivery_image_data = _fetch_delivery_images(
             repo,
@@ -901,6 +903,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                     visual_input=config.builder.visual_revision_context,
                 )
                 harness = "openai-compatible-tool-loop"
+                cost_kind = cost_budget.kind_label
             _validate_candidate(
                 root,
                 f"origin/{config.builder.base_branch}",
@@ -939,6 +942,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 )
                 harness = "openai-compatible-tool-loop"
                 model = config.builder.fallback_model
+                cost_kind = cost_budget.kind_label
                 _validate_candidate(
                     root,
                     f"origin/{config.builder.base_branch}",
@@ -974,7 +978,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         model,
         tool_calls,
         estimated_cost,
-        cost_kind=cost_budget.kind_label,
+        cost_kind=cost_kind,
         issue_title=str(issue.get("title") or ""),
         changed_paths=changed_paths,
     )
