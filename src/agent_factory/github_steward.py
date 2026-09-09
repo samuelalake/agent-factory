@@ -97,6 +97,25 @@ def _strings(value: Any, *, limit: int = 10) -> list[str]:
 
 def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
     decision = str(raw.get("decision") or "needs_human").strip().lower()
+    raw_subtasks = raw.get("subtasks") or []
+    if decision in {"keep-open", "keep_open", "update", "intake"}:
+        # Smaller/free models sometimes describe the tracker operation instead
+        # of selecting the readiness enum. Recover the contract only from the
+        # structured fields they returned: explicit work slices and duplicate
+        # targets win, unresolved questions fail closed, and a complete
+        # question-free update is ready for Builder.
+        has_duplicate = type(raw.get("duplicate_issue")) is int and raw["duplicate_issue"] > 0
+        has_subtasks = isinstance(raw_subtasks, list) and bool(raw_subtasks)
+        if _strings(raw.get("questions")):
+            decision = "needs_human"
+        elif has_duplicate and has_subtasks:
+            raise ValueError("conflicting Steward intent: duplicate target and subtasks")
+        elif has_duplicate:
+            decision = "duplicate"
+        elif has_subtasks:
+            decision = "split"
+        else:
+            decision = "ready"
     if decision not in {"ready", "needs_human", "split", "duplicate"}:
         raise ValueError(f"unsupported Steward decision: {decision}")
     title = str(raw.get("title") or "").strip()[:240]
@@ -111,7 +130,6 @@ def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
     if decision == "duplicate" and (type(duplicate) is not int or duplicate < 1):
         raise ValueError("duplicate decision requires duplicate_issue")
     subtasks: list[dict[str, Any]] = []
-    raw_subtasks = raw.get("subtasks") or []
     if decision == "split":
         if not isinstance(raw_subtasks, list) or not raw_subtasks:
             raise ValueError("split decision requires subtasks")
