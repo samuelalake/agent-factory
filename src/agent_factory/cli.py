@@ -150,6 +150,7 @@ def default_config(project_name: str) -> dict:
         },
         "steward": {
             "marker": "<!-- steward:agent-factory -->",
+            "app_login": "agent-factory-steward[bot]",
             "ready_labels": ["ready"],
             "dispatch_label": "agent:builder",
             "retry_label": "agent:retry",
