@@ -34,6 +34,14 @@ on:
         required: false
         type: boolean
         default: false
+      input_cost_per_million:
+        required: false
+        type: number
+        default: 0
+      output_cost_per_million:
+        required: false
+        type: number
+        default: 0
     secrets:
       MINIMAX_API_KEY:
         required: false
@@ -66,6 +74,8 @@ jobs:
           MAX_OUTPUT_TOKENS: ${{ inputs.max_output_tokens }}
           PROMPT_BYTES: ${{ inputs.prompt_bytes }}
           VISUAL_INPUT: ${{ inputs.visual_input }}
+          INPUT_COST_PER_MILLION: ${{ inputs.input_cost_per_million }}
+          OUTPUT_COST_PER_MILLION: ${{ inputs.output_cost_per_million }}
           PROVIDER_API_KEY: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY || inputs.provider == 'minimax' && secrets.MINIMAX_API_KEY || inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
         run: |
           args=(
@@ -75,6 +85,8 @@ jobs:
             --max-candidates "$MAX_CANDIDATES"
             --max-output-tokens "$MAX_OUTPUT_TOKENS"
             --prompt-bytes "$PROMPT_BYTES"
+            --input-cost-per-million "$INPUT_COST_PER_MILLION"
+            --output-cost-per-million "$OUTPUT_COST_PER_MILLION"
           )
           if [[ "$BUILDER_SHAPE" == "true" ]]; then
             args+=(--builder-shape)

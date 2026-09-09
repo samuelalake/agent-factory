@@ -167,7 +167,14 @@ class ProviderSmokeTests(unittest.TestCase):
         with mock.patch(
             "agent_factory.provider_smoke._request", side_effect=[first, second]
         ) as request:
-            probe_model("openrouter", "vision-model", "secret", visual_input=True)
+            probe_model(
+                "openrouter",
+                "vision-model",
+                "secret",
+                visual_input=True,
+                input_cost_per_million=4,
+                output_cost_per_million=15,
+            )
         first_payload = request.call_args_list[0].kwargs["payload"]
         self.assertEqual(first_payload["tool_choice"], "required")
         self.assertEqual(request.call_args_list[1].kwargs["payload"]["tool_choice"], "auto")
@@ -175,6 +182,10 @@ class ProviderSmokeTests(unittest.TestCase):
         self.assertEqual(content[0]["type"], "text")
         self.assertEqual(content[1]["type"], "image_url")
         self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            first_payload["provider"],
+            {"max_price": {"prompt": 4, "completion": 15}},
+        )
 
     def test_http_error_reports_only_safe_rate_metadata(self) -> None:
         error = urllib.error.HTTPError(

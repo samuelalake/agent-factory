@@ -120,7 +120,15 @@ class NvidiaBuilderTests(unittest.TestCase):
             mock.patch("agent_factory.nvidia_builder.time.sleep") as sleep,
         ):
             self.assertEqual(
-                _post("qwen/qwen3-coder-next", [], "key", 30, provider="openrouter"),
+                _post(
+                    "qwen/qwen3-coder-next",
+                    [],
+                    "key",
+                    30,
+                    provider="openrouter",
+                    input_cost_per_million=1,
+                    output_cost_per_million=2,
+                ),
                 {"choices": []},
             )
         sleep.assert_called_once_with(120)
@@ -141,7 +149,7 @@ class NvidiaBuilderTests(unittest.TestCase):
         self.assertIs(payload["reasoning_split"], True)
 
     def test_other_providers_do_not_request_split_reasoning(self) -> None:
-        for provider in ("nvidia", "openrouter"):
+        for provider in ("nvidia",):
             with self.subTest(provider=provider):
                 response = mock.MagicMock()
                 response.__enter__.return_value = response
@@ -158,6 +166,60 @@ class NvidiaBuilderTests(unittest.TestCase):
                     _post("model", [], "key", 30, provider=provider)
                 payload = json.loads(open_url.call_args.args[0].data)
                 self.assertNotIn("reasoning_split", payload)
+
+    def test_openrouter_builder_rejects_unpriced_requests(self) -> None:
+        with self.assertRaisesRegex(NvidiaBuilderError, "positive input and output prices"):
+            run_openai_builder(
+                "task",
+                Path("."),
+                provider="openrouter",
+                model="model",
+                api_key="key",
+                max_requests=1,
+                timeout_seconds=60,
+                max_cost_usd=1,
+                input_cost_per_million=0,
+                output_cost_per_million=0,
+            )
+
+    def test_openrouter_rejects_a_partial_price_ceiling(self) -> None:
+        with self.assertRaisesRegex(NvidiaBuilderError, "positive input and output prices"):
+            _post(
+                "model",
+                [],
+                "key",
+                30,
+                provider="openrouter",
+                input_cost_per_million=4,
+            )
+
+    def test_openrouter_caps_endpoint_prices_to_factory_estimate(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        with (
+            mock.patch(
+                "agent_factory.nvidia_builder.urllib.request.urlopen",
+                return_value=response,
+            ) as open_url,
+            mock.patch(
+                "agent_factory.nvidia_builder.json.load",
+                return_value={"choices": []},
+            ),
+        ):
+            _post(
+                "model",
+                [],
+                "key",
+                30,
+                provider="openrouter",
+                input_cost_per_million=4,
+                output_cost_per_million=15,
+            )
+        payload = json.loads(open_url.call_args.args[0].data)
+        self.assertEqual(
+            payload["provider"],
+            {"max_price": {"prompt": 4, "completion": 15}},
+        )
 
     def test_http_error_body_cannot_reach_builder_issue_detail(self) -> None:
         error = urllib.error.HTTPError(

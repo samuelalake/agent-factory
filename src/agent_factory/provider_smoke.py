@@ -9,7 +9,13 @@ from typing import Any
 import urllib.error
 import urllib.request
 
-from .nvidia_builder import API_KEY_ENV, ENDPOINTS, _tools
+from .nvidia_builder import (
+    API_KEY_ENV,
+    ENDPOINTS,
+    NvidiaBuilderError,
+    _tools,
+    openrouter_provider_preferences,
+)
 
 
 PREFERRED_MODELS = (
@@ -150,6 +156,8 @@ def probe_model(
     max_output_tokens: int = 128,
     prompt_bytes: int = 0,
     visual_input: bool = False,
+    input_cost_per_million: float = 0,
+    output_cost_per_million: float = 0,
 ) -> None:
     if not 1 <= max_output_tokens <= MAX_SMOKE_OUTPUT_TOKENS:
         raise ProviderSmokeError(
@@ -224,6 +232,16 @@ def probe_model(
         # state to be preserved across tool turns, but the final content must
         # remain clean enough for an exact acknowledgement.
         payload["reasoning_split"] = True
+    elif provider == "openrouter":
+        try:
+            preferences = openrouter_provider_preferences(
+                input_cost_per_million,
+                output_cost_per_million,
+            )
+            if preferences:
+                payload["provider"] = preferences
+        except NvidiaBuilderError as exc:
+            raise ProviderSmokeError(str(exc)) from exc
     first = _request(endpoint, api_key, payload=payload)
     assistant, call_id = _required_tool_call(first, expected_tool, requested_arguments)
     messages.extend(
@@ -288,6 +306,8 @@ def run(
     max_output_tokens: int = 128,
     prompt_bytes: int = 0,
     visual_input: bool = False,
+    input_cost_per_million: float = 0,
+    output_cost_per_million: float = 0,
 ) -> str:
     if not 1 <= limit <= MAX_SMOKE_CANDIDATES:
         raise ProviderSmokeError(
@@ -327,6 +347,8 @@ def run(
                 max_output_tokens=max_output_tokens,
                 prompt_bytes=prompt_bytes,
                 visual_input=visual_input,
+                input_cost_per_million=input_cost_per_million,
+                output_cost_per_million=output_cost_per_million,
             )
             print(json.dumps({"provider": provider, "model": model, "tool_loop": "pass", "builder_shape": builder_shape, "visual_input": visual_input, "max_output_tokens": max_output_tokens, "prompt_bytes": prompt_bytes}))
             return model
@@ -347,6 +369,8 @@ def main() -> None:
     parser.add_argument("--max-output-tokens", type=int, default=128)
     parser.add_argument("--prompt-bytes", type=int, default=0)
     parser.add_argument("--visual-input", action="store_true")
+    parser.add_argument("--input-cost-per-million", type=float, default=0)
+    parser.add_argument("--output-cost-per-million", type=float, default=0)
     args = parser.parse_args()
     requested = [item.strip() for item in args.models_csv.split(",") if item.strip()]
     run(
@@ -358,6 +382,8 @@ def main() -> None:
         max_output_tokens=args.max_output_tokens,
         prompt_bytes=args.prompt_bytes,
         visual_input=args.visual_input,
+        input_cost_per_million=args.input_cost_per_million,
+        output_cost_per_million=args.output_cost_per_million,
     )
 
 
