@@ -286,6 +286,7 @@ def run_openai_builder(
     tool_count = 0
     prompt_tokens = 0
     completion_tokens = 0
+    provider_reported_cost = 0.0
     for _ in range(max_requests):
         remaining = int(deadline - time.monotonic())
         if remaining <= 0:
@@ -310,15 +311,31 @@ def run_openai_builder(
             raise NvidiaBuilderError(
                 f"{provider} omitted token usage required for cost enforcement"
             )
-        prompt_tokens += int(usage.get("prompt_tokens") or 0)
-        completion_tokens += int(usage.get("completion_tokens") or 0)
-        estimated_cost = (
-            prompt_tokens * input_cost_per_million
-            + completion_tokens * output_cost_per_million
-        ) / 1_000_000
-        if estimated_cost > max_cost_usd:
+        if provider == "openrouter":
+            response_cost = usage.get("cost")
+            if (
+                not isinstance(response_cost, (int, float))
+                or isinstance(response_cost, bool)
+                or response_cost < 0
+            ):
+                raise NvidiaBuilderError(
+                    "openrouter omitted numeric usage.cost required for cost enforcement"
+                )
+            provider_reported_cost += float(response_cost)
+            model_cost = provider_reported_cost
+            cost_kind = "provider-reported"
+        else:
+            prompt_tokens += int(usage.get("prompt_tokens") or 0)
+            completion_tokens += int(usage.get("completion_tokens") or 0)
+            model_cost = (
+                prompt_tokens * input_cost_per_million
+                + completion_tokens * output_cost_per_million
+            ) / 1_000_000
+            cost_kind = "estimated"
+        if model_cost > max_cost_usd:
             raise NvidiaBuilderError(
-                f"{provider} Builder exceeded its ${max_cost_usd:.2f} estimated cost limit"
+                f"{provider} Builder exceeded its ${max_cost_usd:.2f} "
+                f"{cost_kind} cost limit"
             )
         choices = response.get("choices") or []
         if not choices:
@@ -335,7 +352,7 @@ def run_openai_builder(
                 raise NvidiaBuilderError(
                     f"{provider} Builder returned without repository changes"
                 )
-            return str(assistant.get("content") or ""), tool_count, estimated_cost
+            return str(assistant.get("content") or ""), tool_count, model_cost
         for call in calls:
             function = call.get("function") or {}
             name = str(function.get("name") or "")
@@ -361,7 +378,7 @@ def run_openai_builder(
             "a reviewable repository candidate. Deterministic verification and Reviewer "
             "remain authoritative for completeness.",
             tool_count,
-            estimated_cost,
+            model_cost,
         )
     raise NvidiaBuilderError(
         f"{provider} Builder exceeded {max_requests} model requests without repository changes"

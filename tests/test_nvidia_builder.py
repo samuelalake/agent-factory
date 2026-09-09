@@ -283,9 +283,110 @@ class NvidiaBuilderTests(unittest.TestCase):
                     output_cost_per_million=1.2,
                 )
 
+    def test_openrouter_uses_reported_cost_including_cache_charges(self) -> None:
+        response = {
+            "usage": {
+                "prompt_tokens": 400_000,
+                "completion_tokens": 0,
+                "cost": 1.01,
+                "prompt_tokens_details": {"cache_write_tokens": 400_000},
+            },
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+        }
+        with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
+            with self.assertRaisesRegex(
+                NvidiaBuilderError, "provider-reported cost limit"
+            ):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="openrouter",
+                    model="openai/gpt",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=1,
+                    input_cost_per_million=2,
+                    output_cost_per_million=10,
+                )
+
+    def test_openrouter_missing_reported_cost_fails_closed(self) -> None:
+        response = {
+            "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+        }
+        with mock.patch("agent_factory.nvidia_builder._post", return_value=response):
+            with self.assertRaisesRegex(NvidiaBuilderError, "numeric usage.cost"):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="openrouter",
+                    model="openai/gpt",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=1,
+                    input_cost_per_million=2,
+                    output_cost_per_million=10,
+                )
+
+    def test_openrouter_accumulates_reported_cost_across_tool_calls(self) -> None:
+        responses = [
+            {
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 1,
+                    "cost": 0.60,
+                },
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "list_files",
+                                        "arguments": '{"pattern":"*"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            },
+            {
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 1,
+                    "cost": 0.41,
+                },
+                "choices": [
+                    {"message": {"role": "assistant", "content": "done"}}
+                ],
+            },
+        ]
+        with mock.patch("agent_factory.nvidia_builder._post", side_effect=responses):
+            with self.assertRaisesRegex(
+                NvidiaBuilderError, "provider-reported cost limit"
+            ):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="openrouter",
+                    model="openai/gpt",
+                    api_key="key",
+                    max_requests=2,
+                    timeout_seconds=60,
+                    max_cost_usd=1,
+                    input_cost_per_million=2,
+                    output_cost_per_million=10,
+                )
+
     def test_visual_revision_images_are_sent_with_the_initial_prompt(self) -> None:
         response = {
-            "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10, "cost": 0.000012},
             "choices": [
                 {
                     "message": {
@@ -345,19 +446,19 @@ class NvidiaBuilderTests(unittest.TestCase):
             with self.subTest(tracked=tracked), tempfile.TemporaryDirectory() as tmp:
                 responses = [
                     {
-                        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.000003},
                         "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
                             {"id": "call-1", "function": {"name": "list_files", "arguments": '{"pattern":"*"}'}}
                         ]}}],
                     },
                     {
-                        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.000003},
                         "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
                             {"id": "call-2", "function": {"name": "write_file", "arguments": '{"path":"prepared.txt","content":"agent state"}'}}
                         ]}}],
                     },
                     {
-                        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.000003},
                         "choices": [{"message": {"role": "assistant", "content": "done"}}],
                     },
                 ]

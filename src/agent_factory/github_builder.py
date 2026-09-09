@@ -529,7 +529,7 @@ def format_pr_body(
         f"- Harness: `{harness}`",
         f"- Model: `{model}`",
         f"- Repository tool calls: `{tool_calls}`",
-        f"- Estimated model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
+        f"- Model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
         "",
         "</details>",
         "",
