@@ -19,7 +19,12 @@ from .config import Config, load_config
 from .github_delivery import pending_delivery
 from .context import discover_context
 from .protocol import encode_data
-from .nvidia_builder import API_KEY_ENV, NvidiaBuilderError, run_openai_builder
+from .nvidia_builder import (
+    API_KEY_ENV,
+    ModelCostBudget,
+    NvidiaBuilderError,
+    run_openai_builder,
+)
 from .workspace import WorkspaceSnapshot, workspace_snapshot as _workspace_snapshot
 
 
@@ -495,6 +500,7 @@ def format_pr_body(
     tool_calls: int,
     estimated_cost: float | None,
     *,
+    cost_kind: str = "estimated",
     issue_title: str = "",
     changed_paths: tuple[str, ...] = (),
 ) -> str:
@@ -529,7 +535,7 @@ def format_pr_body(
         f"- Harness: `{harness}`",
         f"- Model: `{model}`",
         f"- Repository tool calls: `{tool_calls}`",
-        f"- Model cost: `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
+        f"- Model cost ({cost_kind}): `{f'${estimated_cost:.4f}' if estimated_cost is not None else 'provider reported separately'}`",
         "",
         "</details>",
         "",
@@ -834,6 +840,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
+    cost_budget = ModelCostBudget(config.builder.max_model_cost_usd)
 
     def run_compatible(
         provider: str, selected_model: str, *, visual_input: bool
@@ -854,6 +861,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             output_cost_per_million=config.builder.output_cost_per_million,
             max_output_tokens=config.builder.max_output_tokens,
             image_urls=delivery_image_data if visual_input else (),
+            cost_budget=cost_budget,
         )
 
     evidence_base_sync = (
@@ -905,6 +913,11 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             json.JSONDecodeError,
             NvidiaBuilderError,
         ) as exc:
+            if not cost_budget.complete:
+                raise BuilderBlocked(
+                    f"{config.builder.provider} Builder cost could not be accounted; "
+                    f"fallback was not started: {_safe_provider_failure(exc)}"
+                ) from exc
             if not config.builder.fallback_provider or not config.builder.fallback_model:
                 raise BuilderBlocked(f"{config.builder.provider} Builder failed: {exc}") from exc
             if _workspace_snapshot(root) != agent_baseline:
@@ -961,6 +974,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         model,
         tool_calls,
         estimated_cost,
+        cost_kind=cost_budget.kind_label,
         issue_title=str(issue.get("title") or ""),
         changed_paths=changed_paths,
     )

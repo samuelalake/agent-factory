@@ -564,6 +564,21 @@ after"""
         self.assertIn("issue #83", body)
         self.assertNotIn("hidden", body)
         self.assertIn("$0.2500", body)
+        self.assertIn("Model cost (estimated)", body)
+
+    def test_pr_body_labels_provider_reported_model_cost(self) -> None:
+        config = parse_config(default_config("demo"))
+        body = format_pr_body(
+            config,
+            "83",
+            "<builder_summary>Implemented the requested change.</builder_summary>",
+            "openai-compatible-tool-loop",
+            "openai/gpt",
+            4,
+            0.75,
+            cost_kind="provider-reported",
+        )
+        self.assertIn("Model cost (provider-reported): `$0.7500`", body)
 
     def test_pr_body_never_publishes_unstructured_model_deliberation(self) -> None:
         config = parse_config(default_config("demo"))

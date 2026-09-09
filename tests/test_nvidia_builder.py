@@ -10,6 +10,7 @@ import urllib.error
 from unittest import mock
 
 from agent_factory.nvidia_builder import (
+    ModelCostBudget,
     NvidiaBuilderError,
     _execute_tool,
     _inside,
@@ -330,6 +331,38 @@ class NvidiaBuilderTests(unittest.TestCase):
                     output_cost_per_million=10,
                 )
 
+    def test_openrouter_nonfinite_reported_cost_fails_closed(self) -> None:
+        for invalid_cost in (float("nan"), float("inf"), True, "0.1", -0.1):
+            with self.subTest(cost=invalid_cost):
+                response = {
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 1,
+                        "cost": invalid_cost,
+                    },
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "done"}}
+                    ],
+                }
+                with mock.patch(
+                    "agent_factory.nvidia_builder._post", return_value=response
+                ):
+                    with self.assertRaisesRegex(
+                        NvidiaBuilderError, "numeric usage.cost"
+                    ):
+                        run_openai_builder(
+                            "task",
+                            Path("."),
+                            provider="openrouter",
+                            model="openai/gpt",
+                            api_key="key",
+                            max_requests=1,
+                            timeout_seconds=60,
+                            max_cost_usd=1,
+                            input_cost_per_million=2,
+                            output_cost_per_million=10,
+                        )
+
     def test_openrouter_accumulates_reported_cost_across_tool_calls(self) -> None:
         responses = [
             {
@@ -383,6 +416,51 @@ class NvidiaBuilderTests(unittest.TestCase):
                     input_cost_per_million=2,
                     output_cost_per_million=10,
                 )
+
+    def test_shared_budget_accumulates_cost_across_provider_attempts(self) -> None:
+        budget = ModelCostBudget(1)
+        primary = {
+            "usage": {"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.60},
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+        }
+        with mock.patch("agent_factory.nvidia_builder._post", return_value=primary):
+            with self.assertRaisesRegex(NvidiaBuilderError, "repository tools"):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="openrouter",
+                    model="openai/gpt",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=1,
+                    input_cost_per_million=2,
+                    output_cost_per_million=10,
+                    cost_budget=budget,
+                )
+        fallback = {
+            "usage": {"prompt_tokens": 410_000, "completion_tokens": 0},
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+        }
+        with mock.patch("agent_factory.nvidia_builder._post", return_value=fallback):
+            with self.assertRaisesRegex(NvidiaBuilderError, "estimated cost limit"):
+                run_openai_builder(
+                    "task",
+                    Path("."),
+                    provider="minimax",
+                    model="MiniMax-M2.7",
+                    api_key="key",
+                    max_requests=1,
+                    timeout_seconds=60,
+                    max_cost_usd=1,
+                    input_cost_per_million=1,
+                    output_cost_per_million=1,
+                    cost_budget=budget,
+                )
+        self.assertAlmostEqual(budget.spent_usd, 1.01)
+        self.assertEqual(
+            budget.kind_label, "mixed provider-reported and estimated"
+        )
 
     def test_visual_revision_images_are_sent_with_the_initial_prompt(self) -> None:
         response = {
