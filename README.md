@@ -50,14 +50,20 @@ closed on missing, stale, or failed evidence; a link or green workflow by itself
 is never treated as proof. Repository-specific rendering and interaction logic
 remain in the consumer.
 GitHub's user-attachment endpoint does not accept GitHub App installation
-tokens. The publisher therefore writes runner-generated images and videos with
-the Git Data API to the repository's `agent-factory-evidence` branch, keyed by
-pull request and source-head SHA, then places immutable evidence-commit URLs in
-the PR body. Evidence never changes the Builder's source head. The delivery
-protocol binds its machine-readable state to that exact source SHA, so an older
-runner cannot be accepted for a newer delivery. Images remain inline; video
-evidence is a direct recording link. Same-origin GitHub permalinks preserve
-normal repository authorization for private consumers.
+tokens. A consumer can provide `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` from a user
+token with push access to use GitHub's supported attachment path: screenshots
+render inline and a standalone video URL renders as GitHub's native player. The
+Builder App then performs the final exact-head body write.
+
+Without that optional token, the publisher writes runner-generated images and
+videos with the Git Data API to the repository's `agent-factory-evidence`
+branch, keyed by pull request and source-head SHA, then places immutable
+evidence-commit URLs in the PR body. Evidence never changes the Builder's source
+head. The delivery protocol binds its machine-readable state to that exact
+source SHA, so an older runner cannot be accepted for a newer delivery. Images
+remain inline; fallback video evidence is a direct recording link. Same-origin
+GitHub permalinks preserve normal repository authorization for private
+consumers.
 
 The factory owns:
 
@@ -164,6 +170,12 @@ short-lived installation tokens so agent-authored work has a distinct App
 identity and never relies on a long-lived personal token. The gate fails closed
 unless it finds a current-head approval carrying the factory's machine-readable
 review contract.
+
+`AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` is an optional, narrowly scoped exception for
+consumer evidence jobs that require GitHub-native attachments. It must be a user
+token with push access because GitHub rejects App installation tokens at that
+upload endpoint. Factory uses it only for the attachment upload/edit operation;
+Builder's App token reads back and performs the final exact-head body patch.
 
 Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
 consumer evidence. Keep it at least as long as the consumer's slowest required

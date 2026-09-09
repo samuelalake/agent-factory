@@ -16,6 +16,7 @@ from agent_factory.github_delivery import (
     publish,
     _api,
     _publish_attachments,
+    _publish_native_attachments,
     replace_delivery,
     wait_for_delivery,
 )
@@ -61,6 +62,7 @@ class DeliveryTests(unittest.TestCase):
 
     @mock.patch("agent_factory.github_delivery._gh")
     @mock.patch("agent_factory.github_delivery._publish_attachments")
+    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": ""})
     def test_publish_embeds_durable_github_evidence_urls(self, upload, gh) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "swami.png"
@@ -100,6 +102,79 @@ class DeliveryTests(unittest.TestCase):
             payload["body"],
         )
         self.assertNotIn(str(image), payload["body"])
+
+    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "user-token"})
+    @mock.patch("agent_factory.github_delivery._publish_native_attachments")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_publish_embeds_native_media_then_finalizes_as_builder(self, gh, upload) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            video = Path(directory) / "drag.mp4"
+            image.write_bytes(b"png")
+            video.write_bytes(b"mp4")
+            original = pending_delivery()
+            native_body = format_delivery(
+                "ready",
+                "![Swami](https://github.com/user-attachments/assets/image)\n\n"
+                "https://github.com/user-attachments/assets/video\n\n"
+                "![Origami](https://github.com/user-attachments/assets/origami)\n\n"
+                "![Diff](https://github.com/user-attachments/assets/diff)",
+                head=head,
+            )
+            gh.side_effect = [
+                json.dumps({"headRefOid": head, "body": original}),
+                json.dumps({"headRefOid": head, "body": native_body}),
+                "{}",
+                json.dumps({"headRefOid": head, "body": native_body}),
+            ]
+            publish(
+                "owner/repo",
+                "7",
+                head,
+                "ready",
+                f"![Swami]({image})\n\n![]({video})",
+                (image, video),
+            )
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args.args[:2], ("owner/repo", "7"))
+        self.assertEqual(upload.call_args.args[4], "user-token")
+        payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
+        self.assertEqual(payload["body"], native_body)
+
+    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "user-token"})
+    @mock.patch("agent_factory.github_delivery._publish_native_attachments")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_native_publication_fails_closed_on_non_native_urls(self, gh, upload) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "drag.mp4"
+            video.write_bytes(b"mp4")
+            original = pending_delivery()
+            rewritten = format_delivery(
+                "ready", "[Open interaction recording](https://example.test/drag.mp4)", head=head
+            )
+            gh.side_effect = [
+                json.dumps({"headRefOid": head, "body": original}),
+                json.dumps({"headRefOid": head, "body": rewritten}),
+            ]
+            with self.assertRaisesRegex(RuntimeError, "native Builder media"):
+                publish(
+                    "owner/repo", "7", head, "ready", f"![]({video})", (video,)
+                )
+
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_native_attachment_upload_uses_separate_token(self, gh) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
+            image.write_bytes(b"png")
+            _publish_native_attachments(
+                "owner/repo", "7", f"![Swami]({image})", (image,), "user-token"
+            )
+        args = gh.call_args.args[0]
+        self.assertEqual(args[:6], ["pr", "edit", "7", "--repo", "owner/repo", "--body-file"])
+        self.assertIn("--attach", args)
+        self.assertEqual(gh.call_args.kwargs["token"], "user-token")
 
     @mock.patch("agent_factory.github_delivery._api")
     def test_attachment_commit_is_current_head_keyed_and_atomic(self, api) -> None:
