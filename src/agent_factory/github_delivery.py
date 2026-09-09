@@ -21,6 +21,8 @@ DELIVERY_STATUS = "<!-- agent-factory:builder-delivery-status:{status} -->"
 DELIVERY_HEAD = "<!-- agent-factory:builder-delivery-head:{head} -->"
 VALID_STATUSES = {"pending", "ready", "failed"}
 EVIDENCE_BRANCH = "agent-factory-evidence"
+MAX_NATIVE_ATTACHMENTS = 50
+MAX_NATIVE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
@@ -153,12 +155,32 @@ def _publish_native_attachments(
     token: str,
 ) -> dict[str, str]:
     """Upload media without mutating the PR, using GitHub's attachment API."""
-    repository_id = int(_api(repo, "")["id"])
-    urls: dict[str, str] = {}
+    if not attachments:
+        return {}
+    if len(attachments) > MAX_NATIVE_ATTACHMENTS:
+        raise ValueError(
+            f"Builder delivery has {len(attachments)} native attachments; "
+            f"maximum is {MAX_NATIVE_ATTACHMENTS}"
+        )
+    prepared: list[tuple[Path, str]] = []
     for path in attachments:
+        if not path.is_file():
+            raise ValueError(f"Builder media attachment is not a regular file: {path}")
+        size = path.stat().st_size
+        if size <= 0:
+            raise ValueError(f"Builder media attachment is empty: {path}")
+        if size > MAX_NATIVE_ATTACHMENT_BYTES:
+            raise ValueError(
+                f"Builder media attachment exceeds the portable 10 MB limit: {path}"
+            )
         content_type, _ = mimetypes.guess_type(path.name)
         if not content_type or not content_type.startswith(("image/", "video/")):
             raise ValueError(f"unsupported Builder media attachment: {path}")
+        prepared.append((path, content_type))
+
+    repository_id = int(_api(repo, "")["id"])
+    urls: dict[str, str] = {}
+    for path, content_type in prepared:
         endpoint = "https://uploads.github.com/user-attachments/assets?" + urlencode({
             "name": path.name,
             "content_type": content_type,

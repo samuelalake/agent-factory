@@ -54,6 +54,8 @@ tokens. A consumer can provide `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` from a user
 token with push access to use GitHub's attachment API: screenshots render inline
 and a standalone video URL renders as GitHub's native player. The upload does not
 edit the pull request; the Builder App performs the only exact-head body write.
+Factory preflights all media before upload and uses GitHub's portable 10 MB limit
+per image or video, so the same configuration works on free and paid plans.
 
 Without that optional token, the publisher writes runner-generated images and
 videos with the Git Data API to the repository's `agent-factory-evidence`

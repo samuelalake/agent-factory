@@ -212,6 +212,46 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(request.data, b"png")
         self.assertEqual(urls[str(image)], "https://github.com/user-attachments/assets/image")
 
+    @mock.patch("agent_factory.github_delivery.urlopen")
+    @mock.patch("agent_factory.github_delivery._api")
+    def test_native_attachment_preflights_every_file_before_upload(self, api, open_url) -> None:
+        api.return_value = {"id": 1234}
+        with tempfile.TemporaryDirectory() as directory:
+            valid = Path(directory) / "swami.png"
+            empty = Path(directory) / "drag.mp4"
+            valid.write_bytes(b"png")
+            empty.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "empty"):
+                _publish_native_attachments(
+                    "owner/repo", (valid, empty), "user-token"
+                )
+        api.assert_not_called()
+        open_url.assert_not_called()
+
+    @mock.patch("agent_factory.github_delivery.urlopen")
+    @mock.patch("agent_factory.github_delivery._api")
+    def test_native_attachment_rejects_oversize_before_read_or_upload(self, api, open_url) -> None:
+        api.return_value = {"id": 1234}
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "drag.mp4"
+            with video.open("wb") as handle:
+                handle.truncate(10 * 1024 * 1024 + 1)
+            with mock.patch.object(Path, "read_bytes") as read_bytes:
+                with self.assertRaisesRegex(ValueError, "10 MB"):
+                    _publish_native_attachments("owner/repo", (video,), "user-token")
+            read_bytes.assert_not_called()
+        api.assert_not_called()
+        open_url.assert_not_called()
+
+    @mock.patch("agent_factory.github_delivery.urlopen")
+    @mock.patch("agent_factory.github_delivery._api")
+    def test_native_attachment_caps_count_before_upload(self, api, open_url) -> None:
+        attachments = tuple(Path(f"frame-{index}.png") for index in range(51))
+        with self.assertRaisesRegex(ValueError, "maximum is 50"):
+            _publish_native_attachments("owner/repo", attachments, "user-token")
+        api.assert_not_called()
+        open_url.assert_not_called()
+
     @mock.patch("agent_factory.github_delivery._api")
     def test_attachment_commit_is_current_head_keyed_and_atomic(self, api) -> None:
         api.side_effect = [
