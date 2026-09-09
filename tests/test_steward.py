@@ -78,7 +78,7 @@ class StewardTests(unittest.TestCase):
     def test_tracker_vocabulary_is_normalized_from_structured_intent(self) -> None:
         base = {"title": "Refine the delivery", "outcome": "Ship the corrected result."}
 
-        for alias in ("keep-open", "keep_open", "update", "intake"):
+        for alias in ("keep-open", "keep_open", "update", "intake", "dispatch"):
             with self.subTest(alias=alias):
                 self.assertEqual(
                     normalize_shape({**base, "decision": alias}, 3)["decision"],
@@ -91,6 +91,13 @@ class StewardTests(unittest.TestCase):
             "questions": ["Which product behavior should win?"],
         }, 3)
         self.assertEqual(needs_human["decision"], "needs_human")
+
+        explicit_human_decision = normalize_shape({
+            **base,
+            "decision": "needs-a-human-decision",
+            "questions": ["Which product behavior should win?"],
+        }, 3)
+        self.assertEqual(explicit_human_decision["decision"], "needs_human")
 
         duplicate = normalize_shape({
             **base,
