@@ -75,6 +75,37 @@ class StewardTests(unittest.TestCase):
                 ],
             }, 3)
 
+    def test_tracker_vocabulary_is_normalized_from_structured_intent(self) -> None:
+        base = {"title": "Refine the delivery", "outcome": "Ship the corrected result."}
+
+        for alias in ("keep-open", "keep_open", "update", "intake"):
+            with self.subTest(alias=alias):
+                self.assertEqual(
+                    normalize_shape({**base, "decision": alias}, 3)["decision"],
+                    "ready",
+                )
+
+        needs_human = normalize_shape({
+            **base,
+            "decision": "update",
+            "questions": ["Which product behavior should win?"],
+        }, 3)
+        self.assertEqual(needs_human["decision"], "needs_human")
+
+        duplicate = normalize_shape({
+            **base,
+            "decision": "intake",
+            "duplicate_issue": 91,
+        }, 3)
+        self.assertEqual(duplicate["decision"], "duplicate")
+
+        split = normalize_shape({
+            **base,
+            "decision": "keep-open",
+            "subtasks": [{"title": "One slice", "outcome": "Deliver it."}],
+        }, 3)
+        self.assertEqual(split["decision"], "split")
+
     def test_repeated_shaping_preserves_original_intake(self) -> None:
         first = """<!-- agent-factory:steward-shaped -->
 
