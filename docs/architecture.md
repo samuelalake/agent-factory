@@ -84,9 +84,10 @@ Builder, and Reviewer Apps across repositories it controls and place their crede
 in organization or repository secrets. An independent adopter creates its own
 role Apps (for example, `Acme Builder` and `Acme Reviewer`) from the Factory's
 permission contract and owns the corresponding private keys. The consumer pins
-the Reviewer App's bot login (for example, `acme-reviewer[bot]`) in
-`review.app_login`; Builder accepts current-head review feedback only from that
-configured Bot identity.
+the Steward and Reviewer App bot logins (for example, `acme-steward[bot]` and
+`acme-reviewer[bot]`) in `steward.app_login` and `review.app_login`. Steward
+accepts its feedback cursor only from its configured Bot identity; Builder
+accepts current-head review feedback only from the configured Reviewer identity.
 
 Making an App publicly installable does not make its private key distributable.
 A globally shared Builder or Reviewer therefore requires a hosted Factory

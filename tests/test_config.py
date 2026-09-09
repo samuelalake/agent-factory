@@ -14,6 +14,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.gate.context, "agent-factory")
         self.assertEqual(config.steward.dispatch_label, "agent:builder")
         self.assertEqual(config.steward.retry_label, "agent:retry")
+        self.assertEqual(config.steward.app_login, "agent-factory-steward[bot]")
         self.assertEqual(config.builder.harness, "gemini-cli")
         self.assertEqual(config.builder.provider, "gemini")
         self.assertEqual(config.builder.cli_version, "0.55.1")
@@ -45,6 +46,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(parse_config(raw).review.app_login, "acme-reviewer[bot]")
         raw["review"].pop("app_login")
         with self.assertRaisesRegex(ConfigError, "review.app_login"):
+            parse_config(raw)
+
+    def test_steward_app_login_is_configurable_and_required(self) -> None:
+        raw = default_config("demo")
+        raw["steward"]["app_login"] = "acme-steward[bot]"
+        self.assertEqual(parse_config(raw).steward.app_login, "acme-steward[bot]")
+        raw["steward"].pop("app_login")
+        with self.assertRaisesRegex(ConfigError, "steward.app_login"):
             parse_config(raw)
 
     def test_fallback_pair_is_required(self) -> None:
