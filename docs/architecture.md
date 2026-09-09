@@ -92,6 +92,10 @@ Any unconsumed OWNER, MEMBER, or COLLABORATOR feedback forces a new shaping pass
 even when label propagation is delayed. Steward also preserves that feedback in
 a visible canonical issue section so a model cannot silently omit an operator's
 requirements while dispatching Builder.
+Consumers may also list explicit repository operators in
+`steward.trusted_operator_logins`. This is useful when GitHub App installation
+tokens report a maintainer comment with `author_association: NONE`; the explicit
+login is consumer-owned trust policy rather than a model inference.
 
 Making an App publicly installable does not make its private key distributable.
 A globally shared Builder or Reviewer therefore requires a hosted Factory

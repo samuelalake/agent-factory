@@ -42,6 +42,7 @@ class ReviewConfig:
 class StewardConfig:
     marker: str
     app_login: str
+    trusted_operator_logins: tuple[str, ...]
     ready_labels: tuple[str, ...]
     dispatch_label: str
     retry_label: str
@@ -295,6 +296,10 @@ def parse_config(raw: dict[str, Any]) -> Config:
                 steward.get("marker", "<!-- steward:agent-factory -->"), "steward.marker"
             ),
             app_login=_string(steward.get("app_login"), "steward.app_login"),
+            trusted_operator_logins=_strings(
+                steward.get("trusted_operator_logins", []),
+                "steward.trusted_operator_logins",
+            ),
             ready_labels=_strings(steward.get("ready_labels", ["ready"]), "steward.ready_labels"),
             dispatch_label=_string(
                 steward.get("dispatch_label", "agent:builder"), "steward.dispatch_label"
