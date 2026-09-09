@@ -27,6 +27,9 @@ class BuilderBlocked(RuntimeError):
     pass
 
 
+_MAX_REVIEW_FEEDBACK_CHARS = 32_000
+
+
 def _run(
     args: list[str],
     *,
@@ -247,8 +250,21 @@ def _review_feedback(
     *,
     root: Path,
 ) -> str:
-    reviews = json.loads(
-        _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"], cwd=root)
+    raw_review_pages = json.loads(
+        _gh(
+            [
+                "api",
+                f"repos/{repo}/pulls/{pr}/reviews",
+                "--paginate",
+                "--slurp",
+            ],
+            cwd=root,
+        )
+    )
+    reviews = (
+        [item for page in raw_review_pages for item in page]
+        if raw_review_pages and isinstance(raw_review_pages[0], list)
+        else raw_review_pages
     )
     current = [
         item
@@ -262,8 +278,55 @@ def _review_feedback(
     ]
     if not current:
         return ""
-    body = str(current[-1].get("body") or "")
-    return body.split("<!-- agent-factory:data", 1)[0].strip()[-8000:]
+    selected = current[-1]
+    body = str(selected.get("body") or "")
+    summary = body.split("<!-- agent-factory:data", 1)[0].strip()
+
+    inline: list[str] = []
+    review_id = selected.get("id")
+    if isinstance(review_id, int):
+        raw_pages = json.loads(
+            _gh(
+                [
+                    "api",
+                    f"repos/{repo}/pulls/{pr}/reviews/{review_id}/comments",
+                    "--paginate",
+                    "--slurp",
+                ],
+                cwd=root,
+            )
+        )
+        comments = (
+            [item for page in raw_pages for item in page]
+            if raw_pages and isinstance(raw_pages[0], list)
+            else raw_pages
+        )
+        for comment in comments:
+            user = comment.get("user") or {}
+            if (
+                str(comment.get("commit_id") or "") != head
+                or str(user.get("type") or "") != "Bot"
+                or str(user.get("login") or "") != reviewer_app_login
+            ):
+                continue
+            finding = str(comment.get("body") or "").strip()
+            if not finding:
+                continue
+            path = str(comment.get("path") or "review-wide")
+            line = comment.get("line") or comment.get("original_line")
+            location = f"{path}:{line}" if isinstance(line, int) else path
+            inline.append(f"### Inline finding at `{location}`\n\n{finding}")
+
+    sections = [summary]
+    if inline:
+        sections.extend(["## Authenticated inline findings", *inline])
+    feedback = "\n\n".join(section for section in sections if section).strip()
+    if len(feedback) > _MAX_REVIEW_FEEDBACK_CHARS:
+        raise BuilderBlocked(
+            "Authenticated Reviewer feedback exceeds the 32000-character Builder limit; "
+            "condense or split the review before retrying"
+        )
+    return feedback
 
 
 def _current_delivery_media(
