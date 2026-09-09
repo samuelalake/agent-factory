@@ -233,6 +233,66 @@ The user's rough report and product intent.
         self.assertNotIn("Already incorporated.", feedback)
         self.assertIn("New correction.", feedback)
 
+    def test_configured_operator_login_handles_app_observed_none_association(self) -> None:
+        item = {"comments": [{
+            "user": {"login": "samuelalake"},
+            "author_association": "NONE",
+            "body": "Render the recording inline.",
+            "updated_at": "2026-09-09T07:22:01Z",
+            "id": 11,
+        }]}
+
+        self.assertEqual(trusted_operator_feedback(item), "")
+        self.assertIn(
+            "Render the recording inline.",
+            trusted_operator_feedback(item, trusted_logins=("SamuelAlake",)),
+        )
+
+    def test_newly_trusted_historical_comment_bypasses_cursor_once(self) -> None:
+        item = {"comments": [
+            {
+                "user": {"login": "samuelalake"},
+                "author_association": "NONE",
+                "body": "Historical requirement that was previously ignored.",
+                "updated_at": "2026-09-09T07:00:00Z",
+                "id": 10,
+            },
+            {
+                "user": {"login": "maintainer"},
+                "author_association": "MEMBER",
+                "body": "Newer requirement already processed.",
+                "updated_at": "2026-09-09T08:00:00Z",
+                "id": 11,
+            },
+        ]}
+        cursor = ("2026-09-09T08:00:00Z", 11)
+
+        recovered = trusted_operator_feedback(
+            item,
+            cursor,
+            trusted_logins=("samuelalake",),
+            processed_comment_ids=(11,),
+        )
+        consumed = trusted_operator_feedback(
+            item,
+            cursor,
+            trusted_logins=("samuelalake",),
+            processed_comment_ids=(10, 11),
+        )
+
+        self.assertIn("Historical requirement", recovered)
+        self.assertNotIn("Newer requirement", recovered)
+        self.assertEqual(consumed, "")
+        self.assertEqual(
+            latest_trusted_operator_feedback_cursor(
+                {"comments": [item["comments"][0]]},
+                cursor,
+                ("samuelalake",),
+                (),
+            ),
+            cursor,
+        )
+
     def test_feedback_cursor_only_trusts_configured_steward_app(self) -> None:
         trusted = format_status(
             "<!-- steward:test -->",
@@ -544,7 +604,7 @@ The user's rough report and product intent.
                     "labels": [{"name": "ready"}],
                     "comments": [{
                         "author": {"login": "samuel"},
-                        "authorAssociation": "MEMBER",
+                        "authorAssociation": "NONE",
                         "body": "Render the recording inline and show the touch path.",
                         "updatedAt": "2026-09-09T07:22:01Z",
                         "databaseId": 11,
@@ -567,11 +627,15 @@ The user's rough report and product intent.
         ), mock.patch(
             "agent_factory.github_steward.shape_issue", side_effect=fake_shape
         ):
-            state = run("owner/repo", "83", self._config(Path(tmp)))
+            config_path = self._config(Path(tmp))
+            raw_config = json.loads(config_path.read_text())
+            raw_config["steward"]["trusted_operator_logins"] = ["samuel"]
+            config_path.write_text(json.dumps(raw_config))
+            state = run("owner/repo", "83", config_path)
 
         self.assertEqual(state, "dispatched")
         self.assertEqual(
-            trusted_operator_feedback(seen_item),
+            trusted_operator_feedback(seen_item, trusted_logins=("samuel",)),
             "### @samuel\n\nRender the recording inline and show the touch path.",
         )
         parent_patch = next(
