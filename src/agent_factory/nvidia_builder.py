@@ -136,6 +136,25 @@ def _tools() -> list[dict[str, Any]]:
     ]
 
 
+def openrouter_provider_preferences(
+    input_cost_per_million: float,
+    output_cost_per_million: float,
+) -> dict[str, Any]:
+    """Constrain OpenRouter to endpoints covered by Factory's cost estimate."""
+    if input_cost_per_million == 0 and output_cost_per_million == 0:
+        return {}
+    if input_cost_per_million <= 0 or output_cost_per_million <= 0:
+        raise NvidiaBuilderError(
+            "openrouter requires positive input and output prices for cost enforcement"
+        )
+    return {
+        "max_price": {
+            "prompt": input_cost_per_million,
+            "completion": output_cost_per_million,
+        }
+    }
+
+
 def _post(
     model: str,
     messages: list[dict[str, Any]],
@@ -145,6 +164,8 @@ def _post(
     provider: str = "nvidia",
     max_output_tokens: int = 4096,
     tool_choice: str = "auto",
+    input_cost_per_million: float = 0,
+    output_cost_per_million: float = 0,
 ) -> dict[str, Any]:
     endpoint = ENDPOINTS.get(provider)
     if endpoint is None:
@@ -162,6 +183,13 @@ def _post(
         # MiniMax M2.x always reasons. Split that state from visible content
         # while preserving the complete assistant message between tool turns.
         payload["reasoning_split"] = True
+    elif provider == "openrouter":
+        preferences = openrouter_provider_preferences(
+            input_cost_per_million,
+            output_cost_per_million,
+        )
+        if preferences:
+            payload["provider"] = preferences
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode(),
@@ -238,6 +266,13 @@ def run_openai_builder(
         raise NvidiaBuilderError(f"unsupported OpenAI-compatible provider: {provider}")
     if not api_key:
         raise NvidiaBuilderError(f"{secret_name} is unavailable")
+    if provider == "openrouter" and not openrouter_provider_preferences(
+        input_cost_per_million,
+        output_cost_per_million,
+    ):
+        raise NvidiaBuilderError(
+            "openrouter Builder requires positive input and output prices for cost enforcement"
+        )
     initial_content: str | list[dict[str, Any]] = prompt
     if image_urls:
         initial_content = [{"type": "text", "text": prompt}]
@@ -267,6 +302,8 @@ def run_openai_builder(
                 if _workspace_snapshot(root) == workspace_baseline
                 else "auto"
             ),
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million,
         )
         usage = response.get("usage") or {}
         if (input_cost_per_million or output_cost_per_million) and not usage:

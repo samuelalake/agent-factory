@@ -131,8 +131,11 @@ that a free tier is unlimited.
 Builder configuration can also set `max_model_requests`, `max_output_tokens`,
 `max_model_cost_usd`, `input_cost_per_million`, and
 `output_cost_per_million`. The cost ceiling is calculated from provider-reported
-token usage. Keep a provider-side account or key budget as the authoritative
-hard stop because a response is billed before its usage can be evaluated.
+token usage. OpenRouter Builder requests also send those rates as a provider
+`max_price`, preventing routing to an endpoint that costs more than Factory's
+estimate; both rates must therefore be positive and conservative for the chosen
+model. Keep a provider-side account or key budget as the authoritative hard stop
+because a response is billed before its usage can be evaluated.
 `max_revision_attempts` bounds the Steward-managed Builder → Reviewer repair
 loop. On each clean revision, Builder receives the current-head review findings;
 after the limit, Steward retains the blocker instead of creating an infinite loop.
