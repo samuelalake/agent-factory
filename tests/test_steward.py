@@ -106,6 +106,30 @@ class StewardTests(unittest.TestCase):
         }, 3)
         self.assertEqual(split["decision"], "split")
 
+        questions_override_subtasks = normalize_shape({
+            **base,
+            "decision": "update",
+            "questions": ["Should this be split?"],
+            "subtasks": [{"title": "Possible slice", "outcome": "Deliver it."}],
+        }, 3)
+        self.assertEqual(questions_override_subtasks["decision"], "needs_human")
+
+        questions_override_duplicate = normalize_shape({
+            **base,
+            "decision": "intake",
+            "questions": ["Is issue 91 really the same work?"],
+            "duplicate_issue": 91,
+        }, 3)
+        self.assertEqual(questions_override_duplicate["decision"], "needs_human")
+
+        with self.assertRaisesRegex(ValueError, "conflicting Steward intent"):
+            normalize_shape({
+                **base,
+                "decision": "keep-open",
+                "duplicate_issue": 91,
+                "subtasks": [{"title": "Possible slice", "outcome": "Deliver it."}],
+            }, 3)
+
     def test_repeated_shaping_preserves_original_intake(self) -> None:
         first = """<!-- agent-factory:steward-shaped -->
 

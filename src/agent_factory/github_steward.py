@@ -104,12 +104,16 @@ def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
         # structured fields they returned: explicit work slices and duplicate
         # targets win, unresolved questions fail closed, and a complete
         # question-free update is ready for Builder.
-        if type(raw.get("duplicate_issue")) is int and raw["duplicate_issue"] > 0:
-            decision = "duplicate"
-        elif isinstance(raw_subtasks, list) and raw_subtasks:
-            decision = "split"
-        elif _strings(raw.get("questions")):
+        has_duplicate = type(raw.get("duplicate_issue")) is int and raw["duplicate_issue"] > 0
+        has_subtasks = isinstance(raw_subtasks, list) and bool(raw_subtasks)
+        if _strings(raw.get("questions")):
             decision = "needs_human"
+        elif has_duplicate and has_subtasks:
+            raise ValueError("conflicting Steward intent: duplicate target and subtasks")
+        elif has_duplicate:
+            decision = "duplicate"
+        elif has_subtasks:
+            decision = "split"
         else:
             decision = "ready"
     if decision not in {"ready", "needs_human", "split", "duplicate"}:
