@@ -49,23 +49,18 @@ that section with Builder's App token. Reviewer waits for the section and fails
 closed on missing, stale, or failed evidence; a link or green workflow by itself
 is never treated as proof. Repository-specific rendering and interaction logic
 remain in the consumer.
-GitHub's user-attachment endpoint does not accept GitHub App installation
-tokens. A consumer can provide `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` from a user
-token with push access to use GitHub's attachment API: screenshots render inline
-and a standalone video URL renders as GitHub's native player. The upload does not
-edit the pull request; the Builder App performs the only exact-head body write.
-Factory preflights all media before upload and uses GitHub's portable 10 MB limit
-per image or video, so the same configuration works on free and paid plans.
-
-Without that optional token, the publisher writes runner-generated images and
-videos with the Git Data API to the repository's `agent-factory-evidence`
-branch, keyed by pull request and source-head SHA, then places immutable
-evidence-commit URLs in the PR body. Evidence never changes the Builder's source
-head. The delivery protocol binds its machine-readable state to that exact
-source SHA, so an older runner cannot be accepted for a newer delivery. Images
-remain inline; fallback video evidence is a direct recording link. Same-origin
-GitHub permalinks preserve normal repository authorization for private
-consumers.
+Media publication uses GitHub CLI 2.99 or newer's supported `--attach` flow.
+The CLI rewrites local references inside the canonical delivery section to
+GitHub-hosted user-attachment URLs: screenshots render inline and a standalone
+video reference renders as GitHub's native player. The already-authenticated
+Builder App uploads through a uniquely marked staging comment, captures the
+durable URLs, and deletes that comment. Factory then re-reads the exact head and
+latest pull-request body before the canonical write, so a slow or partial upload
+cannot overwrite a newer Builder or human revision. No personal media token or
+evidence branch is required. Factory preflights all media, rejects duplicates,
+and uses GitHub's portable 10 MB limit per image or video. The delivery protocol
+then verifies that every local reference was rewritten and that the published
+delivery remains bound to the exact source-head SHA.
 
 The factory owns:
 
@@ -173,12 +168,11 @@ identity and never relies on a long-lived personal token. The gate fails closed
 unless it finds a current-head approval carrying the factory's machine-readable
 review contract.
 
-`AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` is an optional, narrowly scoped exception for
-consumer evidence jobs that require GitHub-native attachments. It must be an
-OAuth token, classic personal access token, or fine-grained personal access token
-with push access because GitHub rejects App installation tokens at that upload
-endpoint. Factory uses it only to upload the media bytes; Builder's App token
-performs the exact-head pull-request body patch.
+Consumer evidence publishers that attach media must provide GitHub CLI 2.99 or
+newer. GitHub-hosted runners can install or pin a current CLI release before
+calling `agent-factory publish-delivery`. The Builder App needs push access to
+the consumer repository, which is already required for Builder-authored code
+delivery.
 
 Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
 consumer evidence. Keep it at least as long as the consumer's slowest required

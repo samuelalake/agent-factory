@@ -14,23 +14,15 @@ from agent_factory.github_delivery import (
     format_delivery,
     pending_delivery,
     publish,
-    _api,
-    _publish_attachments,
-    _publish_native_attachments,
+    _rewrite_attachment_references,
+    _stage_native_attachments,
+    _validate_attachments,
     replace_delivery,
     wait_for_delivery,
 )
 
 
 class DeliveryTests(unittest.TestCase):
-    @mock.patch("agent_factory.github_delivery._gh")
-    def test_repository_api_root_has_no_trailing_slash(self, gh) -> None:
-        gh.return_value = json.dumps({"default_branch": "main"})
-
-        self.assertEqual(_api("owner/repo", ""), {"default_branch": "main"})
-
-        gh.assert_called_once_with(["api", "repos/owner/repo"], stdin=None)
-
     def test_pending_section_is_replaced_without_touching_builder_summary(self) -> None:
         body = "Builder summary\n\n" + pending_delivery() + "\n\nExecution details"
         ready = format_delivery("ready", "Current head: `abc1234`\n\nScreenshots here.")
@@ -60,53 +52,11 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "raced a new head"):
             publish("owner/repo", "7", old_head, "ready", "Evidence")
 
+    @mock.patch("agent_factory.github_delivery._stage_native_attachments")
     @mock.patch("agent_factory.github_delivery._gh")
-    @mock.patch("agent_factory.github_delivery._publish_attachments")
-    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": ""})
-    def test_publish_embeds_durable_github_evidence_urls(self, upload, gh) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            image = Path(directory) / "swami.png"
-            video = Path(directory) / "drag.mp4"
-            image.write_bytes(b"png")
-            video.write_bytes(b"mp4")
-            body = pending_delivery()
-            head = "a" * 40
-            gh.side_effect = [
-                json.dumps({"headRefOid": head, "body": body}),
-                json.dumps({"headRefOid": head, "body": body}),
-                "{}",
-                json.dumps({
-                    "headRefOid": head,
-                    "body": format_delivery("ready", "Evidence", head=head),
-                }),
-            ]
-            upload.return_value = {
-                str(image): "https://github.com/owner/repo/raw/evidence/swami.png",
-                str(video): "https://github.com/owner/repo/raw/evidence/drag.mp4",
-            }
-            publish(
-                "owner/repo",
-                "7",
-                head,
-                "ready",
-                f"![Swami]({image})\n\n![]({video})",
-                (image, video),
-            )
-        upload.assert_called_once_with("owner/repo", "7", head, (image, video))
-        args = gh.call_args_list[2].args[0]
-        self.assertEqual(args[:3], ["api", "repos/owner/repo/pulls/7", "-X"])
-        payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
-        self.assertIn("github.com/owner/repo/raw/evidence/swami.png", payload["body"])
-        self.assertIn(
-            "[Open interaction recording](https://github.com/owner/repo/raw/evidence/drag.mp4)",
-            payload["body"],
-        )
-        self.assertNotIn(str(image), payload["body"])
-
-    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "user-token"})
-    @mock.patch("agent_factory.github_delivery._publish_native_attachments")
-    @mock.patch("agent_factory.github_delivery._gh")
-    def test_publish_embeds_native_media_then_finalizes_as_builder(self, gh, upload) -> None:
+    def test_publish_stages_media_then_refreshes_before_builder_patch(
+        self, gh, stage
+    ) -> None:
         head = "a" * 40
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "swami.png"
@@ -117,9 +67,7 @@ class DeliveryTests(unittest.TestCase):
             native_body = format_delivery(
                 "ready",
                 "![Swami](https://github.com/user-attachments/assets/image)\n\n"
-                "https://github.com/user-attachments/assets/video\n\n"
-                "![Origami](https://github.com/user-attachments/assets/origami)\n\n"
-                "![Diff](https://github.com/user-attachments/assets/diff)",
+                "https://github.com/user-attachments/assets/video",
                 head=head,
             )
             gh.side_effect = [
@@ -128,7 +76,7 @@ class DeliveryTests(unittest.TestCase):
                 "{}",
                 json.dumps({"headRefOid": head, "body": native_body}),
             ]
-            upload.return_value = {
+            stage.return_value = {
                 str(image): "https://github.com/user-attachments/assets/image",
                 str(video): "https://github.com/user-attachments/assets/video",
             }
@@ -140,16 +88,18 @@ class DeliveryTests(unittest.TestCase):
                 f"![Swami]({image})\n\n![]({video})",
                 (image, video),
             )
-        upload.assert_called_once()
-        self.assertEqual(upload.call_args.args, ("owner/repo", (image, video), "user-token"))
-        payload = json.loads(gh.call_args_list[2].kwargs["stdin"])
-        self.assertIn("https://github.com/user-attachments/assets/image", payload["body"])
+        stage.assert_called_once_with("owner/repo", "7", (image, video))
+        patch_call = gh.call_args_list[2]
+        self.assertEqual(
+            patch_call.args[0][:3], ["api", "repos/owner/repo/pulls/7", "-X"]
+        )
+        payload = json.loads(patch_call.kwargs["stdin"])
+        self.assertIn("![Swami](https://github.com/user-attachments/assets/image)", payload["body"])
         self.assertIn("\nhttps://github.com/user-attachments/assets/video\n", payload["body"])
 
-    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "user-token"})
-    @mock.patch("agent_factory.github_delivery._publish_native_attachments")
+    @mock.patch("agent_factory.github_delivery._stage_native_attachments")
     @mock.patch("agent_factory.github_delivery._gh")
-    def test_native_media_never_overwrites_a_new_builder_revision(self, gh, upload) -> None:
+    def test_native_media_detects_revision_before_builder_patch(self, gh, stage) -> None:
         old_head = "a" * 40
         new_head = "b" * 40
         with tempfile.TemporaryDirectory() as directory:
@@ -161,120 +111,142 @@ class DeliveryTests(unittest.TestCase):
                 json.dumps({"headRefOid": old_head, "body": original}),
                 json.dumps({"headRefOid": new_head, "body": newer}),
             ]
-            upload.return_value = {
+            stage.return_value = {
                 str(image): "https://github.com/user-attachments/assets/image"
             }
-            with self.assertRaisesRegex(RuntimeError, "refusing stale Builder evidence"):
+            with self.assertRaisesRegex(RuntimeError, "refusing stale"):
                 publish(
                     "owner/repo", "7", old_head, "ready", f"![Swami]({image})", (image,)
                 )
         self.assertEqual(gh.call_count, 2)
         self.assertFalse(any("PATCH" in call.args[0] for call in gh.call_args_list))
 
-    @mock.patch.dict("os.environ", {"AGENT_FACTORY_MEDIA_UPLOAD_TOKEN": "user-token"})
-    @mock.patch("agent_factory.github_delivery._publish_native_attachments")
     @mock.patch("agent_factory.github_delivery._gh")
-    def test_native_publication_fails_closed_on_non_native_urls(self, gh, upload) -> None:
-        head = "a" * 40
+    @mock.patch("agent_factory.github_delivery.uuid.uuid4")
+    def test_staging_comment_is_deleted_after_extracting_native_urls(
+        self, unique_id, gh
+    ) -> None:
+        unique_id.return_value.hex = "fixed"
         with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "swami.png"
             video = Path(directory) / "drag.mp4"
+            image.write_bytes(b"png")
             video.write_bytes(b"mp4")
-            original = pending_delivery()
             gh.side_effect = [
-                json.dumps({"headRefOid": head, "body": original}),
+                "{}",
+                json.dumps([[{
+                    "id": 17,
+                    "body": "<!-- agent-factory:media-staging:fixed -->\n\n"
+                    "![swami.png](https://github.com/user-attachments/assets/image)\n\n"
+                    "https://github.com/user-attachments/assets/video",
+                }]]),
+                "{}",
             ]
-            upload.return_value = {str(video): "https://example.test/drag.mp4"}
-            with self.assertRaisesRegex(RuntimeError, "native Builder media"):
-                publish(
-                    "owner/repo", "7", head, "ready", f"![]({video})", (video,)
-                )
+            urls = _stage_native_attachments("owner/repo", "7", (image, video))
+        self.assertEqual(urls[str(image)], "https://github.com/user-attachments/assets/image")
+        self.assertEqual(urls[str(video)], "https://github.com/user-attachments/assets/video")
+        self.assertEqual(
+            gh.call_args_list[2].args[0],
+            ["api", "repos/owner/repo/issues/comments/17", "-X", "DELETE"],
+        )
 
-    @mock.patch("agent_factory.github_delivery.urlopen")
-    @mock.patch("agent_factory.github_delivery._api")
-    def test_native_attachment_upload_uses_separate_token(self, api, open_url) -> None:
-        api.return_value = {"id": 1234}
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.read.return_value = json.dumps({
-            "url": "https://github.com/user-attachments/assets/image"
-        }).encode("utf-8")
-        open_url.return_value = response
+    @mock.patch("agent_factory.github_delivery._gh")
+    @mock.patch("agent_factory.github_delivery.uuid.uuid4")
+    def test_partial_upload_failure_deletes_staging_comment(self, unique_id, gh) -> None:
+        unique_id.return_value.hex = "fixed"
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "swami.png"
             image.write_bytes(b"png")
-            urls = _publish_native_attachments("owner/repo", (image,), "user-token")
-        request = open_url.call_args.args[0]
-        self.assertEqual(request.full_url,
-            "https://uploads.github.com/user-attachments/assets?"
-            "name=swami.png&content_type=image%2Fpng&repository_id=1234",
+            gh.side_effect = [
+                RuntimeError("one attachment failed"),
+                json.dumps([[{
+                    "id": 18,
+                    "body": "<!-- agent-factory:media-staging:fixed -->",
+                }]]),
+                "{}",
+            ]
+            with self.assertRaisesRegex(RuntimeError, "one attachment failed"):
+                _stage_native_attachments("owner/repo", "7", (image,))
+        self.assertEqual(
+            gh.call_args_list[2].args[0],
+            ["api", "repos/owner/repo/issues/comments/18", "-X", "DELETE"],
         )
-        self.assertEqual(request.get_header("Authorization"), "Bearer user-token")
-        self.assertEqual(request.data, b"png")
-        self.assertEqual(urls[str(image)], "https://github.com/user-attachments/assets/image")
 
-    @mock.patch("agent_factory.github_delivery.urlopen")
-    @mock.patch("agent_factory.github_delivery._api")
-    def test_native_attachment_preflights_every_file_before_upload(self, api, open_url) -> None:
-        api.return_value = {"id": 1234}
+    def test_native_attachment_preflights_every_file_before_upload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             valid = Path(directory) / "swami.png"
             empty = Path(directory) / "drag.mp4"
             valid.write_bytes(b"png")
             empty.write_bytes(b"")
             with self.assertRaisesRegex(ValueError, "empty"):
-                _publish_native_attachments(
-                    "owner/repo", (valid, empty), "user-token"
-                )
-        api.assert_not_called()
-        open_url.assert_not_called()
+                _validate_attachments((valid, empty))
 
-    @mock.patch("agent_factory.github_delivery.urlopen")
-    @mock.patch("agent_factory.github_delivery._api")
-    def test_native_attachment_rejects_oversize_before_read_or_upload(self, api, open_url) -> None:
-        api.return_value = {"id": 1234}
+    def test_native_attachment_rejects_oversize_before_upload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "drag.mp4"
             with video.open("wb") as handle:
                 handle.truncate(10 * 1024 * 1024 + 1)
-            with mock.patch.object(Path, "read_bytes") as read_bytes:
-                with self.assertRaisesRegex(ValueError, "10 MB"):
-                    _publish_native_attachments("owner/repo", (video,), "user-token")
-            read_bytes.assert_not_called()
-        api.assert_not_called()
-        open_url.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "10 MB"):
+                _validate_attachments((video,))
 
-    @mock.patch("agent_factory.github_delivery.urlopen")
-    @mock.patch("agent_factory.github_delivery._api")
-    def test_native_attachment_caps_count_before_upload(self, api, open_url) -> None:
+    def test_native_attachment_caps_count_before_upload(self) -> None:
         attachments = tuple(Path(f"frame-{index}.png") for index in range(51))
         with self.assertRaisesRegex(ValueError, "maximum is 50"):
-            _publish_native_attachments("owner/repo", attachments, "user-token")
-        api.assert_not_called()
-        open_url.assert_not_called()
+            _validate_attachments(attachments)
 
-    @mock.patch("agent_factory.github_delivery._api")
-    def test_attachment_commit_is_current_head_keyed_and_atomic(self, api) -> None:
-        api.side_effect = [
-            {"sha": "blob-sha"},
-            {"object": {"sha": "parent-sha"}},
-            {"tree": {"sha": "base-tree"}},
-            {"sha": "new-tree"},
-            {"sha": "evidence-commit"},
-            {},
-        ]
+    def test_native_attachment_rejects_duplicate_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "swami.png"
             image.write_bytes(b"png")
-            urls = _publish_attachments("owner/repo", "7", "abc123", (image,))
-        self.assertEqual(
-            urls[str(image)],
-            "https://github.com/owner/repo/raw/evidence-commit/pr-7/abc123/01-swami.png",
+            with self.assertRaisesRegex(ValueError, "same file twice"):
+                _validate_attachments((image, image))
+
+    def test_rewrite_uses_exact_destinations_for_overlapping_names(self) -> None:
+        short = "/tmp/shot.png"
+        long = "/tmp/before-shot.png"
+        rewritten = _rewrite_attachment_references(
+            f"![After]({short})\n\n![Before]({long})",
+            {
+                short: "https://github.com/user-attachments/assets/after",
+                long: "https://github.com/user-attachments/assets/before",
+            },
         )
-        tree_payload = api.call_args_list[3].kwargs["payload"]
-        self.assertEqual(tree_payload["base_tree"], "base-tree")
-        self.assertEqual(tree_payload["tree"][0]["path"], "pr-7/abc123/01-swami.png")
-        ref_payload = api.call_args_list[5].kwargs["payload"]
-        self.assertEqual(ref_payload, {"sha": "evidence-commit", "force": False})
+        self.assertIn("assets/after)", rewritten)
+        self.assertIn("assets/before)", rewritten)
+        self.assertNotIn(short, rewritten)
+        self.assertNotIn(long, rewritten)
+
+    @mock.patch("agent_factory.github_delivery._stage_native_attachments")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_preexisting_url_cannot_mask_missing_delivery_media(self, gh, stage) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first.png"
+            second = Path(directory) / "second.png"
+            first.write_bytes(b"png")
+            second.write_bytes(b"png")
+            url_one = "https://github.com/user-attachments/assets/one"
+            url_two = "https://github.com/user-attachments/assets/two"
+            original = pending_delivery() + f"\n\nOld unrelated media: {url_two}"
+            incomplete = format_delivery(
+                "ready", f"![First]({url_one})", head=head
+            ) + f"\n\nOld unrelated media: {url_two}"
+            gh.side_effect = [
+                json.dumps({"headRefOid": head, "body": original}),
+                json.dumps({"headRefOid": head, "body": original}),
+                "{}",
+                json.dumps({"headRefOid": head, "body": incomplete}),
+            ]
+            stage.return_value = {str(first): url_one, str(second): url_two}
+            with self.assertRaisesRegex(RuntimeError, "omitted native Builder media"):
+                publish(
+                    "owner/repo",
+                    "7",
+                    head,
+                    "ready",
+                    f"![First]({first})\n\n![Second]({second})",
+                    (first, second),
+                )
 
     @mock.patch("agent_factory.github_delivery._gh")
     def test_wait_returns_failed_delivery_without_sleeping(self, gh) -> None:
