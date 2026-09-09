@@ -2,17 +2,14 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import mimetypes
-import os
 import re
 import subprocess
+import tempfile
 import time
+import uuid
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
 
 DELIVERY_START = "<!-- agent-factory:builder-delivery:start -->"
@@ -20,9 +17,11 @@ DELIVERY_END = "<!-- agent-factory:builder-delivery:end -->"
 DELIVERY_STATUS = "<!-- agent-factory:builder-delivery-status:{status} -->"
 DELIVERY_HEAD = "<!-- agent-factory:builder-delivery-head:{head} -->"
 VALID_STATUSES = {"pending", "ready", "failed"}
-EVIDENCE_BRANCH = "agent-factory-evidence"
 MAX_NATIVE_ATTACHMENTS = 50
 MAX_NATIVE_ATTACHMENT_BYTES = 10 * 1024 * 1024
+SUPPORTED_ATTACHMENT_SUFFIXES = {
+    ".gif", ".jpeg", ".jpg", ".mov", ".mp4", ".png", ".webm", ".webp",
+}
 
 
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
@@ -32,137 +31,16 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
     return result.stdout
 
 
-def _api(repo: str, endpoint: str, *, method: str = "GET", payload: dict | None = None) -> dict:
-    path = f"repos/{repo}"
-    if endpoint:
-        path += f"/{endpoint.lstrip('/')}"
-    args = ["api", path]
-    if method != "GET":
-        args.extend(["-X", method])
-    stdin = None
-    if payload is not None:
-        args.extend(["--input", "-"])
-        stdin = json.dumps(payload)
-    output = _gh(args, stdin=stdin)
-    return json.loads(output) if output.strip() else {}
-
-
-def _evidence_ref(repo: str) -> dict:
-    try:
-        return _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
-    except RuntimeError as error:
-        if "404" not in str(error):
-            raise
-    repository = _api(repo, "")
-    default_branch = str(repository["default_branch"])
-    base = _api(repo, f"git/ref/heads/{default_branch}")
-    try:
-        return _api(
-            repo,
-            "git/refs",
-            method="POST",
-            payload={
-                "ref": f"refs/heads/{EVIDENCE_BRANCH}",
-                "sha": base["object"]["sha"],
-            },
-        )
-    except RuntimeError as error:
-        # Another delivery may have created the shared ref concurrently.
-        if "422" not in str(error):
-            raise
-        return _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
-
-
-def _publish_attachments(
-    repo: str,
-    pr: str,
-    head: str,
-    attachments: tuple[Path, ...],
-) -> dict[str, str]:
-    blobs: list[tuple[Path, str]] = []
-    for path in attachments:
-        blob = _api(
-            repo,
-            "git/blobs",
-            method="POST",
-            payload={
-                "content": base64.b64encode(path.read_bytes()).decode("ascii"),
-                "encoding": "base64",
-            },
-        )
-        blobs.append((path, str(blob["sha"])))
-
-    remote_paths = {
-        path: f"pr-{pr}/{head}/{index:02d}-{path.name}"
-        for index, (path, _) in enumerate(blobs, start=1)
-    }
-    ref = _evidence_ref(repo)
-    for attempt in range(3):
-        parent = str(ref["object"]["sha"])
-        commit = _api(repo, f"git/commits/{parent}")
-        tree = _api(
-            repo,
-            "git/trees",
-            method="POST",
-            payload={
-                "base_tree": commit["tree"]["sha"],
-                "tree": [
-                    {
-                        "path": remote_paths[path],
-                        "mode": "100644",
-                        "type": "blob",
-                        "sha": blob_sha,
-                    }
-                    for path, blob_sha in blobs
-                ],
-            },
-        )
-        evidence_commit = _api(
-            repo,
-            "git/commits",
-            method="POST",
-            payload={
-                "message": f"evidence: PR #{pr} at {head[:12]}",
-                "tree": tree["sha"],
-                "parents": [parent],
-            },
-        )
-        try:
-            _api(
-                repo,
-                f"git/refs/heads/{EVIDENCE_BRANCH}",
-                method="PATCH",
-                payload={"sha": evidence_commit["sha"], "force": False},
-            )
-            break
-        except RuntimeError as error:
-            if attempt == 2 or "422" not in str(error):
-                raise
-            ref = _api(repo, f"git/ref/heads/{EVIDENCE_BRANCH}")
-    evidence_sha = quote(str(evidence_commit["sha"]), safe="")
-    return {
-        str(path): (
-            f"https://github.com/{repo}/raw/{evidence_sha}/"
-            f"{quote(remote_paths[path], safe='/')}"
-        )
-        for path, _ in blobs
-    }
-
-
-def _publish_native_attachments(
-    repo: str,
-    attachments: tuple[Path, ...],
-    token: str,
-) -> dict[str, str]:
-    """Upload media without mutating the PR, using GitHub's attachment API."""
-    if not attachments:
-        return {}
+def _validate_attachments(attachments: tuple[Path, ...]) -> None:
+    """Fail before publication if any attachment is invalid or non-portable."""
     if len(attachments) > MAX_NATIVE_ATTACHMENTS:
         raise ValueError(
             f"Builder delivery has {len(attachments)} native attachments; "
             f"maximum is {MAX_NATIVE_ATTACHMENTS}"
         )
-    prepared: list[tuple[Path, str]] = []
+    normalized = [path.resolve() for path in attachments]
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("Builder delivery cannot attach the same file twice")
     for path in attachments:
         if not path.is_file():
             raise ValueError(f"Builder media attachment is not a regular file: {path}")
@@ -173,46 +51,101 @@ def _publish_native_attachments(
             raise ValueError(
                 f"Builder media attachment exceeds the portable 10 MB limit: {path}"
             )
+        if path.suffix.lower() not in SUPPORTED_ATTACHMENT_SUFFIXES:
+            raise ValueError(f"unsupported Builder media attachment: {path}")
         content_type, _ = mimetypes.guess_type(path.name)
         if not content_type or not content_type.startswith(("image/", "video/")):
             raise ValueError(f"unsupported Builder media attachment: {path}")
-        prepared.append((path, content_type))
 
-    repository_id = int(_api(repo, "")["id"])
-    urls: dict[str, str] = {}
-    for path, content_type in prepared:
-        endpoint = "https://uploads.github.com/user-attachments/assets?" + urlencode({
-            "name": path.name,
-            "content_type": content_type,
-            "repository_id": repository_id,
-        })
-        request = Request(
-            endpoint,
-            data=path.read_bytes(),
-            method="POST",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/octet-stream",
-            },
-        )
-        for attempt in range(3):
-            try:
-                with urlopen(request, timeout=120) as result:
-                    response = json.load(result)
-                break
-            except (HTTPError, URLError) as error:
-                status = getattr(error, "code", 0)
-                if attempt == 2 or status not in {0, 429, 500, 502, 503, 504}:
-                    raise RuntimeError(
-                        f"GitHub native attachment upload failed for {path.name}"
-                    ) from error
-                time.sleep(2 ** attempt)
-        url = str(response.get("url") or "")
-        if not url.startswith("https://github.com/user-attachments/"):
-            raise RuntimeError(f"GitHub returned no native attachment URL for {path}")
-        urls[str(path)] = url
-    return urls
+
+def _stage_native_attachments(
+    repo: str,
+    pr: str,
+    attachments: tuple[Path, ...],
+) -> dict[str, str]:
+    """Upload with a disposable Builder comment and return durable asset URLs."""
+    marker = f"<!-- agent-factory:media-staging:{uuid.uuid4().hex} -->"
+    references = [
+        f"![]({path})" if mimetypes.guess_type(path.name)[0].startswith("video/")
+        else f"![{path.name}]({path})"
+        for path in attachments
+    ]
+    staged_body = "\n\n".join([marker, *references])
+    upload_error: RuntimeError | None = None
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as body_file:
+        body_file.write(staged_body)
+        body_file.flush()
+        command = [
+            "pr", "comment", pr, "--repo", repo, "--body-file", body_file.name,
+        ]
+        for attachment in attachments:
+            command.extend(["--attach", str(attachment)])
+        try:
+            _gh(command)
+        except RuntimeError as error:
+            # The CLI may create a partially attached comment before returning
+            # nonzero, so cleanup must not depend on command success.
+            upload_error = error
+
+    pages = json.loads(_gh([
+        "api", f"repos/{repo}/issues/{pr}/comments", "--paginate", "--slurp",
+    ]))
+    comments = [comment for page in pages for comment in page]
+    staged = [comment for comment in comments if marker in str(comment.get("body") or "")]
+    if len(staged) > 1:
+        for duplicate in staged:
+            duplicate_id = str(duplicate.get("id") or "")
+            if duplicate_id:
+                _gh([
+                    "api", f"repos/{repo}/issues/comments/{duplicate_id}",
+                    "-X", "DELETE",
+                ])
+        raise RuntimeError("GitHub created duplicate Builder media staging comments")
+    if not staged:
+        if upload_error:
+            raise upload_error
+        raise RuntimeError("GitHub created no Builder media staging comment")
+
+    comment = staged[0]
+    comment_id = str(comment.get("id") or "")
+    body = str(comment.get("body") or "")
+    if not comment_id:
+        raise RuntimeError("GitHub media staging comment has no authenticated id")
+    try:
+        if upload_error:
+            raise upload_error
+        urls = re.findall(r"https://github\.com/user-attachments/[^\s)]+", body)
+        if len(urls) != len(attachments):
+            raise RuntimeError("GitHub CLI did not publish every Builder media attachment")
+        if any(str(path) in body for path in attachments):
+            raise RuntimeError("GitHub CLI did not rewrite every Builder media attachment")
+        return {str(path): url for path, url in zip(attachments, urls)}
+    finally:
+        _gh(["api", f"repos/{repo}/issues/comments/{comment_id}", "-X", "DELETE"])
+
+
+def _rewrite_attachment_references(content: str, urls: dict[str, str]) -> str:
+    """Replace only exact Markdown destinations, preserving unrelated path text."""
+    rewritten = content
+    for local_path, url in urls.items():
+        path = Path(local_path)
+        destination = f"]({local_path})"
+        if destination not in rewritten:
+            raise ValueError(f"Builder delivery does not reference attachment: {path.name}")
+        if path.suffix.lower() in {".mov", ".mp4", ".webm"}:
+            video_reference = f"![]({local_path})"
+            if video_reference not in rewritten:
+                raise ValueError(
+                    f"Builder video must use a standalone empty-alt reference: {path.name}"
+                )
+            rewritten = rewritten.replace(video_reference, url)
+        else:
+            rewritten = rewritten.replace(destination, f"]({url})")
+    if any(f"]({local_path})" in rewritten for local_path in urls):
+        raise RuntimeError("Builder delivery retained a local media reference")
+    if any(url not in rewritten for url in urls.values()):
+        raise RuntimeError("Builder delivery omitted a staged media attachment")
+    return rewritten
 
 
 def format_delivery(status: str, content: str, *, head: str | None = None) -> str:
@@ -302,48 +235,22 @@ def publish(
         raise RuntimeError(
             f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
         )
-    media_token = os.environ.get("AGENT_FACTORY_MEDIA_UPLOAD_TOKEN", "").strip()
     if attachments:
-        missing = [str(path) for path in attachments if not path.is_file()]
-        if missing:
-            raise ValueError(f"Builder delivery attachments do not exist: {', '.join(missing)}")
-        if media_token:
-            urls = _publish_native_attachments(repo, attachments, media_token)
-            for local_path, url in urls.items():
-                if Path(local_path).suffix.lower() in {".mp4", ".mov", ".webm"}:
-                    content = content.replace(f"![]({local_path})", url)
-                content = content.replace(local_path, url)
-            if any(str(path) in content for path in attachments):
-                raise RuntimeError("GitHub did not rewrite every Builder media attachment")
-            if content.count("https://github.com/user-attachments/") < len(attachments):
-                raise RuntimeError("GitHub did not publish native Builder media attachments")
-            # Uploading may take long enough for a new Builder revision to arrive.
-            # The user token has not mutated the PR, so re-read before Builder's
-            # App token performs the only body write.
-            meta = json.loads(_gh([
-                "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
-            ]))
-        else:
-            urls = _publish_attachments(repo, pr, head, attachments)
-            for local_path, url in urls.items():
-                if Path(local_path).suffix.lower() in {".mp4", ".mov", ".webm"}:
-                    content = content.replace(
-                        f"![]({local_path})", f"[Open interaction recording]({url})"
-                    )
-                content = content.replace(local_path, url)
-            # Uploading may take long enough for a new Builder revision to arrive.
-            # Re-read both the head and body so stale media can never overwrite it.
-            meta = json.loads(_gh([
-                "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
-            ]))
+        _validate_attachments(attachments)
+        urls = _stage_native_attachments(repo, pr, attachments)
+        content = _rewrite_attachment_references(content, urls)
+        # The slow upload never mutates the PR body. Refresh the exact head and
+        # latest body before Builder performs the canonical write.
+        meta = json.loads(_gh([
+            "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
+        ]))
         current_head = str(meta.get("headRefOid") or "")
         if current_head != head:
             raise RuntimeError(
                 f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
             )
-    updated = replace_delivery(
-        str(meta.get("body") or ""), format_delivery(status, content, head=head)
-    )
+    delivery = format_delivery(status, content, head=head)
+    updated = replace_delivery(str(meta.get("body") or ""), delivery)
     _gh(
         ["api", f"repos/{repo}/pulls/{pr}", "-X", "PATCH", "--input", "-"],
         stdin=json.dumps({"body": updated}),
@@ -352,11 +259,18 @@ def publish(
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
     ]))
     published_head = str(published.get("headRefOid") or "")
-    if published_head != head or delivery_head(str(published.get("body") or "")) != head:
+    published_body = str(published.get("body") or "")
+    if published_head != head or delivery_head(published_body) != head:
         raise RuntimeError(
             f"Builder evidence publication raced a new head; expected {head[:7]}, "
             f"found {published_head[:7]}"
         )
+    if attachments:
+        published_start = published_body.find(DELIVERY_START)
+        published_end = published_body.find(DELIVERY_END, published_start)
+        published_delivery = published_body[published_start:published_end]
+        if any(url not in published_delivery for url in urls.values()):
+            raise RuntimeError("canonical delivery omitted native Builder media")
 
 
 def main() -> int:
