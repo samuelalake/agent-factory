@@ -17,6 +17,7 @@ from .github_delivery import delivery_status, wait_for_delivery
 from .github_builder import (
     BuilderBlocked,
     _current_delivery_media,
+    _delivery_provenance,
     _fetch_delivery_images,
 )
 from .model import ModelError, complete
@@ -419,21 +420,31 @@ def run(
         if status == "failed":
             delivery_gate = failed_delivery_review(status, refreshed_body)
         if config.review.visual_evidence or config.review.fallback_visual_evidence:
-            images, _ = _current_delivery_media(
-                refreshed_body,
-                str(meta["headRefOid"]),
-            )
-            if not images:
-                delivery_image_failure = True
-                evidence_failure = failed_review(
-                    "Reviewer found no trusted current-head visual evidence."
+            try:
+                provenance = (
+                    _delivery_provenance(
+                        repo,
+                        int(pr),
+                        str(meta["headRefOid"]),
+                        config.builder.app_login,
+                        refreshed_body,
+                        root=Path("."),
+                    )
+                    if "https://github.com/user-attachments/assets/" in refreshed_body
+                    else None
                 )
-                if delivery_gate is None:
-                    delivery_gate = evidence_failure
+                images, _ = _current_delivery_media(
+                    refreshed_body,
+                    str(meta["headRefOid"]),
+                    repo=repo,
+                    pr=int(pr),
+                    provenance=provenance,
+                )
+                if not images:
+                    raise BuilderBlocked(
+                        "Reviewer found no trusted current-head visual evidence."
+                    )
                 else:
-                    delivery_gate["findings"].extend(evidence_failure["findings"])
-            else:
-                try:
                     delivery_image_urls = _fetch_delivery_images(
                         repo,
                         int(pr),
@@ -441,18 +452,21 @@ def run(
                         images,
                         os.environ["GH_TOKEN"],
                     )
-                except BuilderBlocked:
-                    # Never let a text-only review approve after the consumer opted
-                    # into visual review but its authenticated evidence was unreadable.
-                    delivery_image_urls = ()
-                    delivery_image_failure = True
-                    evidence_failure = failed_review(
-                        "Reviewer could not fetch authenticated current-head visual evidence."
+            except BuilderBlocked as exc:
+                # Never let a text-only review approve after the consumer opted
+                # into visual review but its exact-head evidence was unreadable.
+                delivery_image_urls = ()
+                delivery_image_failure = True
+                reason = str(exc)
+                if reason != "Reviewer found no trusted current-head visual evidence.":
+                    reason = (
+                        "Reviewer could not verify GitHub-hosted current-head visual evidence."
                     )
-                    if delivery_gate is None:
-                        delivery_gate = evidence_failure
-                    else:
-                        delivery_gate["findings"].extend(evidence_failure["findings"])
+                evidence_failure = failed_review(reason)
+                if delivery_gate is None:
+                    delivery_gate = evidence_failure
+                else:
+                    delivery_gate["findings"].extend(evidence_failure["findings"])
     elif visual_paths:
         delivery_gate = missing_visual_delivery_review(visual_paths)
     diff = _gh(["pr", "diff", pr, "--repo", repo])

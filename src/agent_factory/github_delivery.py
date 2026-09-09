@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -12,11 +14,15 @@ import time
 import uuid
 from pathlib import Path
 
+from .config import load_config
+
 
 DELIVERY_START = "<!-- agent-factory:builder-delivery:start -->"
 DELIVERY_END = "<!-- agent-factory:builder-delivery:end -->"
 DELIVERY_STATUS = "<!-- agent-factory:builder-delivery-status:{status} -->"
 DELIVERY_HEAD = "<!-- agent-factory:builder-delivery-head:{head} -->"
+DELIVERY_EVIDENCE = "<!-- agent-factory:builder-evidence:{payload} -->"
+DELIVERY_PROVENANCE = "<!-- agent-factory:builder-evidence-provenance -->"
 VALID_STATUSES = {"pending", "ready", "failed"}
 MAX_NATIVE_ATTACHMENTS = 50
 MAX_NATIVE_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -161,6 +167,202 @@ def _rewrite_attachment_references(content: str, urls: dict[str, str]) -> str:
     return rewritten
 
 
+def _evidence_manifest(
+    repo: str,
+    pr: str,
+    head: str,
+    attachments: tuple[Path, ...],
+    urls: dict[str, str],
+) -> str:
+    entries = []
+    for path in attachments:
+        content_type, _ = mimetypes.guess_type(path.name)
+        entries.append({
+            "url": urls[str(path)],
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "content_type": content_type,
+        })
+    raw = json.dumps(
+        {
+            "version": 1,
+            "repo": repo,
+            "pr": int(pr),
+            "head": head,
+            "attachments": entries,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    payload = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    return DELIVERY_EVIDENCE.format(payload=payload)
+
+
+def delivery_evidence_manifest(
+    body: str,
+    *,
+    expected_repo: str,
+    expected_pr: int,
+    expected_head: str,
+) -> dict[str, dict[str, str]] | None:
+    """Decode one publisher-produced native-attachment allowlist."""
+    payloads = re.findall(
+        r"<!-- agent-factory:builder-evidence:([A-Za-z0-9_-]+) -->",
+        body,
+    )
+    if len(payloads) != 1:
+        return None
+    try:
+        payload = payloads[0]
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        manifest = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("version") != 1
+        or manifest.get("repo") != expected_repo
+        or manifest.get("pr") != expected_pr
+        or manifest.get("head") != expected_head
+        or not isinstance(manifest.get("attachments"), list)
+    ):
+        return None
+    entries: dict[str, dict[str, str]] = {}
+    for item in manifest["attachments"]:
+        if not isinstance(item, dict):
+            return None
+        url = item.get("url")
+        digest = item.get("sha256")
+        content_type = item.get("content_type")
+        if (
+            not isinstance(url, str)
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or not isinstance(content_type, str)
+            or not content_type.startswith(("image/", "video/"))
+            or url in entries
+        ):
+            return None
+        entries[url] = {"sha256": digest, "content_type": content_type}
+    return entries
+
+
+def authenticated_delivery_evidence(
+    comments: object,
+    *,
+    expected_repo: str,
+    expected_pr: int,
+    expected_head: str,
+    builder_app_login: str,
+    expected_manifest: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]] | None:
+    """Authenticate the body-selected manifest against configured Builder comments."""
+    if not isinstance(comments, list):
+        return None
+    pages = comments if comments and isinstance(comments[0], list) else [comments]
+    matched = False
+    for page in pages:
+        if not isinstance(page, list):
+            return None
+        for comment in page:
+            if not isinstance(comment, dict):
+                return None
+            user = comment.get("user") or {}
+            body = str(comment.get("body") or "")
+            if (
+                not isinstance(user, dict)
+                or user.get("type") != "Bot"
+                or user.get("login") != builder_app_login
+                or DELIVERY_PROVENANCE not in body
+            ):
+                continue
+            manifest = delivery_evidence_manifest(
+                body,
+                expected_repo=expected_repo,
+                expected_pr=expected_pr,
+                expected_head=expected_head,
+            )
+            if manifest is not None:
+                matched = matched or manifest == expected_manifest
+    return expected_manifest if matched else None
+
+
+def _publish_evidence_provenance(
+    repo: str,
+    pr: str,
+    head: str,
+    manifest_marker: str,
+    builder_app_login: str,
+) -> None:
+    """Upsert one Builder-authored provenance comment for this exact source head."""
+    raw = json.loads(_gh([
+        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp",
+    ]))
+    if not isinstance(raw, list):
+        raise RuntimeError("GitHub returned invalid provenance comments")
+    pages = raw if raw and isinstance(raw[0], list) else [raw]
+    target = delivery_evidence_manifest(
+        manifest_marker,
+        expected_repo=repo,
+        expected_pr=int(pr),
+        expected_head=head,
+    )
+    if target is None:
+        raise RuntimeError("Builder evidence provenance manifest is invalid")
+    matching: list[dict[str, object]] = []
+    for page in pages:
+        if not isinstance(page, list):
+            raise RuntimeError("GitHub returned invalid provenance comments")
+        for comment in page:
+            if not isinstance(comment, dict):
+                raise RuntimeError("GitHub returned invalid provenance comment")
+            user = comment.get("user") or {}
+            if not (
+                isinstance(user, dict)
+                and user.get("type") == "Bot"
+                and user.get("login") == builder_app_login
+                and DELIVERY_PROVENANCE in str(comment.get("body") or "")
+            ):
+                continue
+            manifest = delivery_evidence_manifest(
+                str(comment.get("body") or ""),
+                expected_repo=repo,
+                expected_pr=int(pr),
+                expected_head=head,
+            )
+            if manifest is not None:
+                if manifest == target:
+                    matching.append(comment)
+    body = (
+        f"{DELIVERY_PROVENANCE}\n"
+        "<details><summary>Builder evidence provenance</summary>\n\n"
+        f"Authenticated media manifest for `{head}`.\n\n{manifest_marker}\n\n"
+        "</details>"
+    )
+    payload = json.dumps({"body": body})
+    if matching:
+        canonical = max(
+            matching,
+            key=lambda item: item.get("id") if isinstance(item.get("id"), int) else -1,
+        )
+        comment_id = canonical.get("id")
+        if not isinstance(comment_id, int):
+            raise RuntimeError("Builder evidence provenance comment has no id")
+        endpoint = f"repos/{repo}/issues/comments/{comment_id}"
+        method = "PATCH"
+    else:
+        endpoint = f"repos/{repo}/issues/{pr}/comments"
+        method = "POST"
+    created = json.loads(_gh(["api", endpoint, "-X", method, "--input", "-"], stdin=payload))
+    user = created.get("user") or {}
+    if (
+        not isinstance(user, dict)
+        or user.get("type") != "Bot"
+        or user.get("login") != builder_app_login
+        or str(created.get("body") or "") != body
+    ):
+        raise RuntimeError("Builder App could not authenticate evidence provenance")
+
+
 def format_delivery(status: str, content: str, *, head: str | None = None) -> str:
     if status not in VALID_STATUSES:
         raise ValueError(f"unsupported Builder delivery status: {status}")
@@ -239,6 +441,8 @@ def publish(
     status: str,
     content: str,
     attachments: tuple[Path, ...] = (),
+    *,
+    builder_app_login: str = "agent-factory-builder[bot]",
 ) -> None:
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
@@ -257,6 +461,14 @@ def publish(
             )
         urls = _stage_native_attachments(repo, pr, attachments, media_token)
         content = _rewrite_attachment_references(content, urls)
+        manifest_marker = _evidence_manifest(repo, pr, head, attachments, urls)
+        content = "\n\n".join([
+            content.rstrip(),
+            manifest_marker,
+        ])
+        _publish_evidence_provenance(
+            repo, pr, head, manifest_marker, builder_app_login
+        )
         # The slow upload never mutates the PR body. Refresh the exact head and
         # latest body before Builder performs the canonical write.
         meta = json.loads(_gh([
@@ -289,6 +501,14 @@ def publish(
         published_delivery = published_body[published_start:published_end]
         if any(url not in published_delivery for url in urls.values()):
             raise RuntimeError("canonical delivery omitted native Builder media")
+        manifest = delivery_evidence_manifest(
+            published_delivery,
+            expected_repo=repo,
+            expected_pr=int(pr),
+            expected_head=head,
+        )
+        if manifest is None or tuple(manifest) != tuple(urls.values()):
+            raise RuntimeError("canonical delivery omitted Builder media provenance")
 
 
 def main() -> int:
@@ -299,7 +519,13 @@ def main() -> int:
     parser.add_argument("--status", required=True, choices=sorted(VALID_STATUSES))
     parser.add_argument("--body-file", type=Path, required=True)
     parser.add_argument("--attach", type=Path, action="append", default=[])
+    parser.add_argument("--config", type=Path, default=Path(".agent-factory/config.json"))
     args = parser.parse_args()
+    builder_app_login = (
+        load_config(args.config).builder.app_login
+        if args.config.is_file()
+        else "agent-factory-builder[bot]"
+    )
     publish(
         args.repo,
         args.pr,
@@ -307,6 +533,7 @@ def main() -> int:
         args.status,
         args.body_file.read_text(encoding="utf-8"),
         tuple(args.attach),
+        builder_app_login=builder_app_login,
     )
     return 0
 

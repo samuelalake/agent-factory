@@ -56,6 +56,7 @@ class StewardConfig:
 @dataclass(frozen=True)
 class BuilderConfig:
     marker: str
+    app_login: str
     provider: str
     harness: str
     model: str
@@ -316,6 +317,10 @@ def parse_config(raw: dict[str, Any]) -> Config:
         builder=BuilderConfig(
             marker=_string(
                 builder.get("marker", "<!-- builder:agent-factory -->"), "builder.marker"
+            ),
+            app_login=_string(
+                builder.get("app_login", "agent-factory-builder[bot]"),
+                "builder.app_login",
             ),
             provider=builder_provider,
             harness=builder_harness,

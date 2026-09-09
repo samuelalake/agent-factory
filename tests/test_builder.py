@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -33,6 +35,7 @@ from agent_factory.github_builder import (
     run,
     parse_gemini_stream,
 )
+from agent_factory.github_delivery import DELIVERY_EVIDENCE, format_delivery
 from agent_factory.nvidia_builder import NvidiaBuilderError
 from agent_factory.workspace import _untracked_identity
 from agent_factory.protocol import decode_data
@@ -275,6 +278,108 @@ after"""
         self.assertEqual(request.headers["Authorization"], "Bearer app-token")
         self.assertTrue(data_url.startswith("data:image/png;base64,"))
         self.assertEqual(size, len(png))
+
+    def test_native_attachment_image_is_fetched_without_repository_token(self) -> None:
+        png = b"\x89PNG\r\n\x1a\n" + b"pixels"
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Length": str(len(png))}
+        response.read.return_value = png
+        attachment_url = (
+            "https://github.com/user-attachments/assets/"
+            "63712384-e836-41c5-aaf8-5c7149499b3f"
+        )
+        url = f"{attachment_url}#sha256={hashlib.sha256(png).hexdigest()}"
+        with mock.patch(
+            "agent_factory.github_builder.urllib.request.urlopen",
+            return_value=response,
+        ) as open_url:
+            data_url, size = _fetch_delivery_image(
+                "acme/repo",
+                7,
+                "a" * 40,
+                url,
+                "app-token",
+            )
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.full_url, attachment_url)
+        self.assertNotIn("Authorization", request.headers)
+        self.assertEqual(request.headers["Accept"], "image/*")
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        self.assertEqual(size, len(png))
+
+    def test_native_attachment_rejects_digest_mismatch(self) -> None:
+        png = b"\x89PNG\r\n\x1a\n" + b"pixels"
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Length": str(len(png))}
+        response.read.return_value = png
+        url = (
+            "https://github.com/user-attachments/assets/"
+            "63712384-e836-41c5-aaf8-5c7149499b3f#sha256=" + ("0" * 64)
+        )
+        with mock.patch(
+            "agent_factory.github_builder.urllib.request.urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(BuilderBlocked, "digest"):
+                _fetch_delivery_image("acme/repo", 7, "a" * 40, url, "app-token")
+
+    def test_native_delivery_media_requires_manifest_and_retains_bare_video(self) -> None:
+        head = "a" * 40
+        image_url = (
+            "https://github.com/user-attachments/assets/"
+            "63712384-e836-41c5-aaf8-5c7149499b3f"
+        )
+        video_url = (
+            "https://github.com/user-attachments/assets/"
+            "e75bec00-fa65-4fb6-9b41-9cf55f4eda5e"
+        )
+        payload = {
+            "version": 1,
+            "repo": "acme/repo",
+            "pr": 7,
+            "head": head,
+            "attachments": [
+                {"url": image_url, "sha256": "1" * 64, "content_type": "image/png"},
+                {"url": video_url, "sha256": "2" * 64, "content_type": "video/mp4"},
+            ],
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        body = format_delivery(
+            "ready",
+            f"![Swami Drag]({image_url})\n\n{video_url}\n\n"
+            + DELIVERY_EVIDENCE.format(payload=encoded),
+            head=head,
+        )
+        provenance = {item["url"]: {
+            "sha256": item["sha256"], "content_type": item["content_type"]
+        } for item in payload["attachments"]}
+        images, recordings = _current_delivery_media(
+            body, head, repo="acme/repo", pr=7, provenance=provenance
+        )
+        self.assertEqual(images, (("Swami Drag", f"{image_url}#sha256={'1' * 64}"),))
+        self.assertEqual(recordings, (video_url,))
+
+        substituted = body.replace(image_url, image_url.replace("63712384", "73712384"), 1)
+        with self.assertRaisesRegex(BuilderBlocked, "provenance"):
+            _current_delivery_media(
+                substituted, head, repo="acme/repo", pr=7, provenance=provenance
+            )
+
+    def test_native_attachment_rejects_non_asset_paths_and_query_strings(self) -> None:
+        urls = (
+            "https://example.com/user-attachments/assets/63712384-e836-41c5-aaf8-5c7149499b3f",
+            "https://github.com/user-attachments/assets/not-a-uuid",
+            "https://github.com/user-attachments/assets/63712384-e836-41c5-aaf8-5c7149499b3f?download=1",
+        )
+        with mock.patch("agent_factory.github_builder.urllib.request.urlopen") as open_url:
+            for url in urls:
+                with self.assertRaisesRegex(BuilderBlocked, "supported GitHub permalink"):
+                    _fetch_delivery_image("acme/repo", 7, "a" * 40, url, "app-token")
+        open_url.assert_not_called()
 
     def test_delivery_images_enforce_an_aggregate_payload_limit(self) -> None:
         images = tuple(
