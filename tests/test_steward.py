@@ -292,6 +292,39 @@ The user's rough report and product intent.
                 comments,
             )
 
+    def test_feedback_resolution_normalizes_digits_only_string_ids(self) -> None:
+        plan = normalize_shape({
+            "decision": "ready",
+            "title": "Hold the current result",
+            "outcome": "Keep the failed result with Steward.",
+            "feedback_resolutions": [{
+                "comment_id": "5623328827",
+                "disposition": "incorporated",
+                "summary": "Record the failed head without authorizing a retry.",
+            }],
+        }, 3)
+
+        self.assertEqual(plan["feedback_resolutions"][0]["comment_id"], 5623328827)
+        validate_feedback_resolutions(plan, [{
+            "updatedAt": "2026-09-10T18:19:00Z",
+            "databaseId": 5623328827,
+        }])
+
+        for invalid in ("12.0", " 12", "-12", True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                ValueError, "positive comment_id"
+            ):
+                normalize_shape({
+                    "decision": "ready",
+                    "title": "Hold",
+                    "outcome": "Hold.",
+                    "feedback_resolutions": [{
+                        "comment_id": invalid,
+                        "disposition": "incorporated",
+                        "summary": "Invalid identifier.",
+                    }],
+                }, 3)
+
     def test_ready_decision_cannot_ignore_blocked_feedback(self) -> None:
         comments = [{"updatedAt": "2026-09-09T07:00:00Z", "databaseId": 11}]
         plan = normalize_shape({
