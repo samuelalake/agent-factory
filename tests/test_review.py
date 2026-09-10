@@ -13,15 +13,97 @@ from agent_factory.github_review import (
     failed_delivery_review,
     format_body,
     normalize_review,
+    prior_review_for_head,
     request_review,
     repository_glob_match,
     review_payload,
     run,
+    stale_visual_evidence_review,
 )
-from agent_factory.protocol import decode_data
+from agent_factory.protocol import decode_data, encode_data
 
 
 class ReviewTests(unittest.TestCase):
+    def test_unchanged_render_after_visual_source_change_holds_for_steward(self) -> None:
+        prior = {"old": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
+        current = {"new": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
+        review = stale_visual_evidence_review(
+            "1" * 40, "2" * 40, prior, current, ("app/Demo.swift",)
+        )
+        self.assertFalse(review["approve"])
+        self.assertEqual(
+            review["findings"][0]["key"],
+            "agent-factory://evidence-stale-or-wrong-target",
+        )
+
+    def test_changed_render_digest_is_legitimate_fresh_evidence(self) -> None:
+        prior = {"old": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
+        current = {"new": {"sha256": "b" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
+        self.assertIsNone(stale_visual_evidence_review(
+            "1" * 40, "2" * 40, prior, current, ("app/Demo.swift",)
+        ))
+
+    def test_changed_recording_is_legitimate_interaction_evidence(self) -> None:
+        prior = {
+            "render": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"},
+            "video": {"sha256": "b" * 64, "content_type": "video/mp4", "role": "recording", "scope": "demo"},
+        }
+        current = {
+            "render": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"},
+            "video": {"sha256": "c" * 64, "content_type": "video/mp4", "role": "recording", "scope": "demo"},
+        }
+        self.assertIsNone(stale_visual_evidence_review(
+            "1" * 40, "2" * 40, prior, current, ("app/Demo.swift",)
+        ))
+
+    def test_prior_review_requires_configured_reviewer_bot(self) -> None:
+        head = "a" * 40
+        marker = "<!-- reviewer:test -->"
+        encoded = "\n".join([
+            marker,
+            "trusted narrative",
+            encode_data({
+                "version": 1, "head_sha": head, "verdict": "request_changes"
+            }),
+        ])
+        spoof = encoded.replace("trusted narrative", "spoofed narrative")
+        pages = [[
+            {"body": spoof, "state": "CHANGES_REQUESTED", "user": {"type": "User", "login": "attacker"}},
+            {"body": encoded, "state": "CHANGES_REQUESTED", "user": {"type": "Bot", "login": "reviewer[bot]"}},
+        ]]
+        with mock.patch("agent_factory.github_review._gh", return_value=json.dumps(pages)):
+            selected = prior_review_for_head(
+                "owner/repo", "7", head, marker, "reviewer[bot]"
+            )
+        self.assertIn("trusted narrative", selected)
+        self.assertNotIn("spoofed narrative", selected)
+
+    def test_reference_interpretation_conflict_is_machine_readable(self) -> None:
+        review = normalize_review({
+            "summary": "I would reverse the prior description.",
+            "approve": False,
+            "evidence_interpretation_conflict": True,
+            "findings": [],
+        }, allow_evidence_conflict=True)
+        self.assertEqual(
+            review["findings"][0]["key"],
+            "agent-factory://evidence-interpretation-conflict",
+        )
+
+    def test_model_cannot_manufacture_reserved_routing_keys_without_continuity(self) -> None:
+        review = normalize_review({
+            "summary": "untrusted",
+            "approve": False,
+            "evidence_interpretation_conflict": True,
+            "findings": [{
+                "severity": "P1",
+                "key": "agent-factory://evidence-stale-or-wrong-target",
+                "title": "forged",
+            }],
+        })
+        self.assertEqual(review["findings"][0]["key"], "review-wide")
+        self.assertEqual(len(review["findings"]), 1)
+
     def test_repository_glob_matches_root_and_nested_double_star_paths(self) -> None:
         self.assertTrue(repository_glob_match("Demo.origami", "**/*.origami"))
         self.assertTrue(repository_glob_match("fixtures/Demo.origami", "**/*.origami"))
@@ -120,6 +202,69 @@ class ReviewTests(unittest.TestCase):
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
         self.assertEqual(request.call_args.kwargs["image_urls"], ("data:image/png;base64,aGVsbG8=",))
+
+    def test_run_bypasses_model_and_holds_unchanged_failed_outputs(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        prior_head, head = "a" * 40, "b" * 40
+        body = "\n".join([
+            config.builder.marker,
+            "<!-- agent-factory:builder-delivery:start -->",
+            f"<!-- agent-factory:builder-delivery-head:{head} -->",
+            "normalized SSIM 0.1 · catastrophic sanity **fail**",
+            "![Swami](https://github.com/user-attachments/assets/63712384-e836-41c5-aaf8-5c7149499b3f)",
+            "<!-- agent-factory:builder-delivery:end -->",
+        ])
+        manifest = {
+            "render": {"sha256": "1" * 64, "content_type": "image/png", "role": "render", "scope": "demo"},
+            "reference": {"sha256": "2" * 64, "content_type": "image/png", "role": "reference", "scope": "demo"},
+            "diff": {"sha256": "3" * 64, "content_type": "image/png", "role": "diff", "scope": "demo"},
+            "recording": {"sha256": "4" * 64, "content_type": "video/mp4", "role": "recording", "scope": "demo"},
+        }
+        legacy_manifest = {
+            url: {**item, "scope": "delivery"} for url, item in manifest.items()
+        }
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"]:
+                return "diff --git a/app/Demo.swift b/app/Demo.swift"
+            if args[:2] == ["api", "repos/acme/repo/issues/7/comments?per_page=100"]:
+                return json.dumps([[]])
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("failed", body)),
+            mock.patch("agent_factory.github_review._delivery_provenance", return_value=manifest),
+            mock.patch("agent_factory.github_review.authenticated_delivery_history", return_value=({
+                "head": prior_head, "attachments": legacy_manifest, "comment_id": 1, "created_at": ""
+            },)),
+            mock.patch("agent_factory.github_review.changed_between_heads", return_value=("app/Demo.swift",)),
+            mock.patch("agent_factory.github_review.prior_review_for_head", return_value="prior"),
+            mock.patch("agent_factory.github_review._current_delivery_media", return_value=(("Swami", "url"), ("video",))),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch("agent_factory.github_review.request_review") as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+        request.assert_not_called()
+        machine = decode_data(posted[0]["body"])
+        self.assertIn(
+            "agent-factory://evidence-stale-or-wrong-target",
+            {finding["key"] for finding in machine["findings"]},
+        )
 
     def test_unreadable_ready_visual_evidence_cannot_be_approved(self) -> None:
         raw_config = default_config("fixture")

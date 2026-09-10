@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import unittest
@@ -8,9 +9,11 @@ from unittest import mock
 
 from agent_factory.github_delivery import (
     DELIVERY_END,
+    DELIVERY_EVIDENCE,
     DELIVERY_PROVENANCE,
     DELIVERY_START,
     authenticated_delivery_evidence,
+    authenticated_delivery_history,
     delivery_head,
     delivery_evidence_manifest,
     delivery_status,
@@ -160,6 +163,70 @@ class DeliveryTests(unittest.TestCase):
             marker, expected_repo="owner/repo", expected_pr=7,
             expected_head="b" * 40,
         ))
+
+    def test_manifest_carries_semantic_evidence_identity(self) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            render = Path(directory) / "interaction-drag-render.png"
+            reference = Path(directory) / "interaction-drag-reference.png"
+            render.write_bytes(b"render")
+            reference.write_bytes(b"reference")
+            urls = {str(render): "https://example.test/render", str(reference): "https://example.test/reference"}
+            content = f"![Swami Interaction Drag]({urls[str(render)]})\n![Origami Interaction Drag]({urls[str(reference)]})"
+            marker = _evidence_manifest(
+                "owner/repo", "7", head, (render, reference), urls, content
+            )
+        manifest = delivery_evidence_manifest(
+            marker, expected_repo="owner/repo", expected_pr=7, expected_head=head
+        )
+        self.assertEqual(manifest[urls[str(render)]]["role"], "render")
+        self.assertEqual(manifest[urls[str(reference)]]["role"], "reference")
+        self.assertEqual(manifest[urls[str(render)]]["scope"], "interaction-drag")
+
+    def test_history_accepts_only_builder_authored_manifests(self) -> None:
+        head = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "render.png"
+            image.write_bytes(b"render")
+            marker = _evidence_manifest(
+                "owner/repo", "7", head, (image,), {str(image): "https://example.test/render"}
+            )
+        trusted = json.loads(_provenance_response(head, marker))
+        copied = {**trusted, "id": 92, "user": {"type": "User", "login": "attacker"}}
+        history = authenticated_delivery_history(
+            [[copied, trusted]], expected_repo="owner/repo", expected_pr=7,
+            builder_app_login="agent-factory-builder[bot]",
+        )
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["head"], head)
+
+    def test_ambiguous_multi_pattern_v1_manifest_does_not_invent_roles(self) -> None:
+        head = "a" * 40
+        payload = {
+            "version": 1,
+            "repo": "owner/repo",
+            "pr": 7,
+            "head": head,
+            "attachments": [
+                {
+                    "url": f"https://example.test/{index}",
+                    "sha256": f"{index + 1:x}" * 64,
+                    "content_type": "image/png",
+                }
+                for index in range(6)
+            ],
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        manifest = delivery_evidence_manifest(
+            DELIVERY_EVIDENCE.format(payload=encoded),
+            expected_repo="owner/repo",
+            expected_pr=7,
+            expected_head=head,
+        )
+        self.assertTrue(manifest)
+        self.assertEqual({item["role"] for item in manifest.values()}, {"image"})
 
     def test_authenticated_provenance_requires_bot_and_matches_canonical_body(self) -> None:
         head = "a" * 40
