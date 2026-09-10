@@ -39,6 +39,16 @@ def linked_issue_numbers(body: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(matches))
 
 
+def review_author_login(review: dict[str, Any]) -> str:
+    author = review.get("author") or review.get("user") or {}
+    return str(author.get("login") or "") if isinstance(author, dict) else ""
+
+
+def same_app_login(actual: str, configured: str) -> bool:
+    """GitHub GraphQL omits the REST-only ``[bot]`` login suffix."""
+    return actual.removesuffix("[bot]") == configured.removesuffix("[bot]")
+
+
 def route_failure(
     repo: str, meta: dict[str, Any], config: Any, token: str
 ) -> tuple[str, str]:
@@ -53,6 +63,7 @@ def route_failure(
         if (
             config.review.marker in body
             and isinstance(data, dict)
+            and same_app_login(review_author_login(review), config.review.app_login)
             and str(review.get("state") or "").upper() != "DISMISSED"
         ):
             latest_review, latest_review_data = review, data
@@ -62,12 +73,31 @@ def route_failure(
         and latest_review_data.get("head_sha") == str(meta.get("headRefOid") or "")
         and config.review.failure_marker in str(latest_review.get("body") or "")
     )
+    evidence_hold = bool(
+        latest_review_data
+        and latest_review_data.get("head_sha") == str(meta.get("headRefOid") or "")
+        and any(
+            isinstance(finding, dict)
+            and finding.get("key") in {
+                "agent-factory://evidence-stale-or-wrong-target",
+                "agent-factory://evidence-interpretation-conflict",
+            }
+            for finding in latest_review_data.get("findings") or []
+        )
+    )
     attempts = sum(
         1
         for commit in meta.get("commits") or []
         if str(commit.get("messageHeadline") or "").startswith("feat: implement issue #")
     )
-    if reviewer_unavailable:
+    if evidence_hold:
+        label = None
+        route = (
+            "Reviewer found stale, wrong-target, or contradictory evidence. Steward retained "
+            "the blocker for evidence arbitration; Builder will not receive another code revision."
+        )
+        next_owner = "Steward"
+    elif reviewer_unavailable:
         label = None
         route = (
             "Reviewer providers did not produce a valid current-head verdict; "

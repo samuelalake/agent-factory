@@ -13,7 +13,11 @@ from typing import Any
 from .app_auth import get_installation_token
 from .config import load_config
 from .context import discover_context
-from .github_delivery import delivery_status, wait_for_delivery
+from .github_delivery import (
+    authenticated_delivery_history,
+    delivery_status,
+    wait_for_delivery,
+)
 from .github_builder import (
     BuilderBlocked,
     _current_delivery_media,
@@ -21,7 +25,7 @@ from .github_builder import (
     _fetch_delivery_images,
 )
 from .model import ModelError, complete
-from .protocol import encode_data, extract_json_reply
+from .protocol import decode_data, encode_data, extract_json_reply
 
 
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
@@ -66,7 +70,9 @@ def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
     return tuple(paths)
 
 
-def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
+def normalize_review(
+    raw: dict[str, Any], *, allow_evidence_conflict: bool = False
+) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     for item in raw.get("findings") or []:
         if not isinstance(item, dict):
@@ -87,8 +93,140 @@ def normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
             "reasoning": str(item.get("reasoning") or "").strip(),
             "suggestion": str(item.get("suggestion") or "").strip(),
         })
+    if allow_evidence_conflict and raw.get("evidence_interpretation_conflict") is True:
+        findings.insert(0, {
+            "severity": "P1",
+            "key": "agent-factory://evidence-interpretation-conflict",
+            "path": "",
+            "line": None,
+            "title": "Evidence interpretation conflict",
+            "reasoning": (
+                "The same authenticated reference digest would receive materially conflicting "
+                "visual guidance across Reviewer runs."
+            ),
+            "suggestion": (
+                "Steward must resolve the evidence interpretation before Builder changes code."
+            ),
+        })
     approve = bool(raw.get("approve")) and not any(f["severity"] == "P1" for f in findings)
     return {"summary": str(raw.get("summary") or "").strip(), "approve": approve, "findings": findings}
+
+
+def changed_between_heads(repo: str, before: str, after: str) -> tuple[str, ...]:
+    """Return files changed between two delivered heads."""
+    raw = json.loads(_gh(["api", f"repos/{repo}/compare/{before}...{after}"]))
+    files = raw.get("files") if isinstance(raw, dict) else None
+    if not isinstance(files, list):
+        raise RuntimeError("GitHub returned an invalid compare response")
+    if len(files) >= 300:
+        raise RuntimeError(
+            "GitHub compare reached its 300-file evidence limit; split the revision before review"
+        )
+    return tuple(
+        str(item["filename"])
+        for item in files
+        if isinstance(item, dict) and isinstance(item.get("filename"), str)
+    )
+
+
+def evidence_digests(
+    manifest: dict[str, dict[str, str]], role: str
+) -> tuple[str, ...]:
+    return tuple(
+        item["sha256"] for item in manifest.values() if item.get("role") == role
+    )
+
+
+def evidence_output_digests(
+    manifest: dict[str, dict[str, str]],
+) -> tuple[tuple[str, str, str], ...]:
+    selected = [
+        item for item in manifest.values()
+        if item.get("role") in {"render", "diff", "recording"}
+    ]
+    roles = [item["role"] for item in selected]
+    single_pattern = len(roles) == len(set(roles))
+    return tuple(
+        (item["role"], "" if single_pattern else item["scope"], item["sha256"])
+        for item in selected
+    )
+
+
+def stale_visual_evidence_review(
+    prior_head: str,
+    current_head: str,
+    prior_manifest: dict[str, dict[str, str]],
+    current_manifest: dict[str, dict[str, str]],
+    changed_paths: tuple[str, ...],
+) -> dict[str, Any] | None:
+    """Fail closed when visual source changes but its rendered bytes do not."""
+    prior_render = evidence_digests(prior_manifest, "render")
+    current_render = evidence_digests(current_manifest, "render")
+    prior_outputs = evidence_output_digests(prior_manifest)
+    current_outputs = evidence_output_digests(current_manifest)
+    if (
+        not prior_render
+        or prior_render != current_render
+        or not prior_outputs
+        or prior_outputs != current_outputs
+        or not changed_paths
+    ):
+        return None
+    review = normalize_review({
+        "approve": False,
+        "summary": "Authenticated current-head visual evidence appears stale or targets the wrong build.",
+        "findings": [{
+            "severity": "P1",
+            "key": "agent-factory://evidence-stale-or-wrong-target",
+            "title": "Visual implementation changed but rendered evidence did not",
+            "reasoning": (
+                f"Visual source changed from {prior_head[:7]} to {current_head[:7]} "
+                f"({', '.join(changed_paths[:5])}), but Builder published the same render "
+                f"SHA-256 digest{'s' if len(current_render) != 1 else ''}: "
+                f"{', '.join(current_render)}. Every generated render, diff, and recording "
+                "digest also remained unchanged."
+            ),
+            "suggestion": (
+                "Steward should inspect the runner checkout, build target, cache, and capture path. "
+                "Do not route another implementation revision to Builder until fresh evidence is proven."
+            ),
+        }],
+    })
+    review["findings"][0]["key"] = "agent-factory://evidence-stale-or-wrong-target"
+    return review
+
+
+def prior_review_for_head(
+    repo: str,
+    pr: str,
+    head: str,
+    marker: str,
+    reviewer_app_login: str,
+) -> str:
+    """Return the latest non-dismissed authenticated Reviewer narrative for a prior head."""
+    raw = json.loads(_gh([
+        "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp",
+    ]))
+    pages = raw if isinstance(raw, list) and raw and isinstance(raw[0], list) else [raw]
+    matches: list[str] = []
+    for page in pages:
+        if not isinstance(page, list):
+            continue
+        for review in page:
+            if not isinstance(review, dict) or str(review.get("state") or "").upper() == "DISMISSED":
+                continue
+            user = review.get("user") or {}
+            if not (
+                isinstance(user, dict)
+                and user.get("type") == "Bot"
+                and user.get("login") == reviewer_app_login
+            ):
+                continue
+            body = str(review.get("body") or "")
+            data = decode_data(body)
+            if marker in body and isinstance(data, dict) and data.get("head_sha") == head:
+                matches.append(body)
+    return matches[-1][-12000:] if matches else ""
 
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -345,6 +483,7 @@ def request_review(
     user: str,
     *,
     image_urls: tuple[str, ...] = (),
+    allow_evidence_conflict: bool = False,
 ) -> tuple[dict[str, Any], str, str]:
     failures: list[str] = []
     for provider, model, supports_images in candidates:
@@ -362,7 +501,10 @@ def request_review(
                 api_key,
                 image_urls=image_urls,
             )
-            return normalize_review(extract_json_reply(reply)), provider, model
+            return normalize_review(
+                extract_json_reply(reply),
+                allow_evidence_conflict=allow_evidence_conflict,
+            ), provider, model
         except (ModelError, ValueError) as exc:
             failures.append(f"{provider}/{model}: {type(exc).__name__}: {exc}")
     raise ModelError("all configured review providers failed: " + "; ".join(failures))
@@ -395,6 +537,8 @@ def run(
         if any(repository_glob_match(path, pattern) for pattern in config.review.visual_evidence_paths)
     )
     delivery_gate: dict[str, Any] | None = None
+    evidence_consistency_gate: dict[str, Any] | None = None
+    prior_review_context = ""
     delivery_image_urls: tuple[str, ...] = ()
     delivery_image_failure = False
     if config.review.require_builder_delivery and has_builder_delivery:
@@ -433,6 +577,58 @@ def run(
                     if "https://github.com/user-attachments/assets/" in refreshed_body
                     else None
                 )
+                if provenance is not None:
+                    comments = json.loads(_gh([
+                        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100",
+                        "--paginate", "--slurp",
+                    ]))
+                    history = authenticated_delivery_history(
+                        comments,
+                        expected_repo=repo,
+                        expected_pr=int(pr),
+                        builder_app_login=config.builder.app_login,
+                    )
+                    prior = next(
+                        (
+                            item for item in reversed(history)
+                            if item.get("head") != str(meta["headRefOid"])
+                        ),
+                        None,
+                    )
+                    if prior is not None:
+                        prior_manifest = prior.get("attachments")
+                        prior_head = str(prior.get("head") or "")
+                        if isinstance(prior_manifest, dict) and prior_head:
+                            between = changed_between_heads(
+                                repo, prior_head, str(meta["headRefOid"])
+                            )
+                            changed_visual = tuple(
+                                path for path in between
+                                if any(
+                                    repository_glob_match(path, pattern)
+                                    for pattern in config.review.visual_evidence_paths
+                                )
+                            )
+                            if status == "failed":
+                                evidence_consistency_gate = stale_visual_evidence_review(
+                                    prior_head,
+                                    str(meta["headRefOid"]),
+                                    prior_manifest,
+                                    provenance,
+                                    changed_visual,
+                                )
+                            if (
+                                evidence_digests(prior_manifest, "reference")
+                                and evidence_digests(prior_manifest, "reference")
+                                == evidence_digests(provenance, "reference")
+                            ):
+                                prior_review_context = prior_review_for_head(
+                                    repo,
+                                    pr,
+                                    prior_head,
+                                    config.review.marker,
+                                    config.review.app_login,
+                                )
                 images, _ = _current_delivery_media(
                     refreshed_body,
                     str(meta["headRefOid"]),
@@ -440,7 +636,9 @@ def run(
                     pr=int(pr),
                     provenance=provenance,
                 )
-                if not images:
+                if evidence_consistency_gate is not None:
+                    delivery_image_urls = ()
+                elif not images:
                     raise BuilderBlocked(
                         "Reviewer found no trusted current-head visual evidence."
                     )
@@ -452,7 +650,7 @@ def run(
                         images,
                         os.environ["GH_TOKEN"],
                     )
-            except BuilderBlocked as exc:
+            except (BuilderBlocked, RuntimeError) as exc:
                 # Never let a text-only review approve after the consumer opted
                 # into visual review but its exact-head evidence was unreadable.
                 delivery_image_urls = ()
@@ -482,6 +680,11 @@ def run(
     system = (
         f"You are the required code reviewer for {config.project.name}. "
         "Return only JSON with summary:string, approve:boolean, and findings:array. "
+        "Also return evidence_interpretation_conflict:boolean. When the supplied authenticated "
+        "prior review describes the same unchanged reference digest, preserve that interpretation. "
+        "If you believe it is materially wrong or your new guidance would reverse it, set "
+        "evidence_interpretation_conflict true and do not direct Builder to change code; Steward "
+        "must arbitrate the evidence. "
         "Each finding has severity P1|P2|P3, file, optional integer line, title, "
         "reasoning, and suggestion. P1 is merge-blocking. Do not approve a partial diff. "
         "Treat the canonical Builder delivery section as evidence, not decoration: do not approve "
@@ -517,6 +720,13 @@ def run(
     )
     user = "\n\n".join(context + [
         f"## Evidence scope\n\n{evidence_scope}",
+        *(
+            [
+                "## Authenticated prior-head Reviewer continuity\n\n"
+                + prior_review_context
+            ]
+            if prior_review_context else []
+        ),
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
         f"## Diff\n\n```diff\n{diff}\n```",
     ])
@@ -532,17 +742,22 @@ def run(
     marker = config.review.marker
     if delivery_image_failure:
         marker = f"{config.review.marker}\n{config.review.failure_marker}"
-    try:
-        raw, provider, model = request_review(
-            candidates,
-            system,
-            user,
-            image_urls=delivery_image_urls,
-        )
-    except ModelError as exc:
-        raw = failed_review(str(exc))
-        provider, model = "unavailable", "configured providers exhausted"
-        marker = f"{config.review.marker}\n{config.review.failure_marker}"
+    if evidence_consistency_gate is not None:
+        raw = evidence_consistency_gate
+        provider, model = "deterministic", "evidence-consistency-gate"
+    else:
+        try:
+            raw, provider, model = request_review(
+                candidates,
+                system,
+                user,
+                image_urls=delivery_image_urls,
+                allow_evidence_conflict=bool(prior_review_context),
+            )
+        except ModelError as exc:
+            raw = failed_review(str(exc))
+            provider, model = "unavailable", "configured providers exhausted"
+            marker = f"{config.review.marker}\n{config.review.failure_marker}"
     if delivery_gate is not None:
         raw["approve"] = False
         raw["summary"] = " ".join(

@@ -20,6 +20,7 @@ from .config import Config, load_config
 from .github_delivery import (
     authenticated_delivery_evidence,
     delivery_evidence_manifest,
+    evidence_manifests_match,
     pending_delivery,
 )
 from .context import discover_context
@@ -379,11 +380,16 @@ def _current_delivery_media(
         r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
         section,
     )
+    manifests_match = bool(
+        body_manifest is not None
+        and provenance is not None
+        and evidence_manifests_match(body_manifest, provenance)
+    )
     if native_urls:
         if (
             body_manifest is None
             or provenance is None
-            or body_manifest != provenance
+            or not manifests_match
             or len(native_urls) != len(set(native_urls))
             or tuple(native_urls) != tuple(provenance)
         ):

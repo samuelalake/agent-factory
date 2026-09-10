@@ -173,18 +173,22 @@ def _evidence_manifest(
     head: str,
     attachments: tuple[Path, ...],
     urls: dict[str, str],
+    content: str = "",
 ) -> str:
     entries = []
     for path in attachments:
         content_type, _ = mimetypes.guess_type(path.name)
+        role, scope = _evidence_identity(content, urls[str(path)], path)
         entries.append({
             "url": urls[str(path)],
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "content_type": content_type,
+            "role": role,
+            "scope": scope,
         })
     raw = json.dumps(
         {
-            "version": 1,
+            "version": 2,
             "repo": repo,
             "pr": int(pr),
             "head": head,
@@ -195,6 +199,32 @@ def _evidence_manifest(
     ).encode()
     payload = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     return DELIVERY_EVIDENCE.format(payload=payload)
+
+
+def _evidence_identity(content: str, url: str, path: Path) -> tuple[str, str]:
+    """Derive a stable semantic role and scope from Builder's visible label."""
+    match = re.search(rf"!\[([^]]*)\]\({re.escape(url)}\)", content)
+    label = (match.group(1) if match else path.stem).strip()
+    lowered = label.lower()
+    content_type, _ = mimetypes.guess_type(path.name)
+    if content_type and content_type.startswith("video/"):
+        role = "recording"
+    elif re.search(r"\b(origami|reference|expected)\b", lowered):
+        role = "reference"
+    elif re.search(r"\b(diff|difference)\b", lowered):
+        role = "diff"
+    elif re.search(r"\b(swami|render|actual|current)\b", lowered):
+        role = "render"
+    else:
+        role = "image" if content_type and content_type.startswith("image/") else "media"
+    scope = re.sub(
+        r"\b(swami|origami|reference|expected|diff(?:erence)?|render|actual|current|recording)\b",
+        " ",
+        label,
+        flags=re.IGNORECASE,
+    )
+    scope = re.sub(r"[^A-Za-z0-9]+", "-", scope).strip("-").lower()
+    return role, scope or "delivery"
 
 
 def delivery_evidence_manifest(
@@ -219,31 +249,74 @@ def delivery_evidence_manifest(
         return None
     if (
         not isinstance(manifest, dict)
-        or manifest.get("version") != 1
+        or manifest.get("version") not in {1, 2}
         or manifest.get("repo") != expected_repo
         or manifest.get("pr") != expected_pr
         or manifest.get("head") != expected_head
         or not isinstance(manifest.get("attachments"), list)
     ):
         return None
+    legacy_types = [
+        item.get("content_type") if isinstance(item, dict) else None
+        for item in manifest["attachments"]
+    ]
+    legacy_single_pattern = bool(
+        manifest.get("version") == 1
+        and len(legacy_types) in {3, 4}
+        and all(str(value).startswith("image/") for value in legacy_types[:3])
+        and (
+            len(legacy_types) == 3
+            or str(legacy_types[3]).startswith("video/")
+        )
+    )
     entries: dict[str, dict[str, str]] = {}
-    for item in manifest["attachments"]:
+    for index, item in enumerate(manifest["attachments"]):
         if not isinstance(item, dict):
             return None
         url = item.get("url")
         digest = item.get("sha256")
         content_type = item.get("content_type")
+        inferred_role, inferred_scope = _evidence_identity(
+            body, str(url or ""), Path(f"attachment-{index}{mimetypes.guess_extension(str(content_type or '')) or ''}")
+        )
+        if legacy_single_pattern and inferred_role == "image":
+            inferred_role = ("render", "reference", "diff")[index]
+            inferred_scope = "delivery"
+        role = item.get("role", inferred_role)
+        scope = item.get("scope", inferred_scope)
         if (
             not isinstance(url, str)
             or not isinstance(digest, str)
             or re.fullmatch(r"[0-9a-f]{64}", digest) is None
             or not isinstance(content_type, str)
             or not content_type.startswith(("image/", "video/"))
+            or role not in {"render", "reference", "diff", "recording", "image", "media"}
+            or not isinstance(scope, str)
+            or not scope
             or url in entries
         ):
             return None
-        entries[url] = {"sha256": digest, "content_type": content_type}
+        entries[url] = {
+            "sha256": digest,
+            "content_type": content_type,
+            "role": role,
+            "scope": scope,
+        }
     return entries
+
+
+def evidence_manifests_match(
+    left: dict[str, dict[str, str]], right: dict[str, dict[str, str]]
+) -> bool:
+    """Compare authenticated bytes while tolerating derived v1 identity metadata."""
+    return (
+        tuple(left) == tuple(right)
+        and all(
+            left[url].get("sha256") == right[url].get("sha256")
+            and left[url].get("content_type") == right[url].get("content_type")
+            for url in left
+        )
+    )
 
 
 def authenticated_delivery_evidence(
@@ -282,8 +355,55 @@ def authenticated_delivery_evidence(
                 expected_head=expected_head,
             )
             if manifest is not None:
-                matched = matched or manifest == expected_manifest
+                matched = matched or evidence_manifests_match(manifest, expected_manifest)
     return expected_manifest if matched else None
+
+
+def authenticated_delivery_history(
+    comments: object,
+    *,
+    expected_repo: str,
+    expected_pr: int,
+    builder_app_login: str,
+) -> tuple[dict[str, object], ...]:
+    """Return Builder-authored evidence manifests for prior PR heads, oldest first."""
+    if not isinstance(comments, list):
+        return ()
+    pages = comments if comments and isinstance(comments[0], list) else [comments]
+    history: list[dict[str, object]] = []
+    for page in pages:
+        if not isinstance(page, list):
+            return ()
+        for comment in page:
+            if not isinstance(comment, dict):
+                return ()
+            user = comment.get("user") or {}
+            body = str(comment.get("body") or "")
+            head_match = re.search(r"Authenticated media manifest for `([0-9a-f]{40})`", body)
+            if not (
+                isinstance(user, dict)
+                and user.get("type") == "Bot"
+                and user.get("login") == builder_app_login
+                and DELIVERY_PROVENANCE in body
+                and head_match
+            ):
+                continue
+            head = head_match.group(1)
+            manifest = delivery_evidence_manifest(
+                body,
+                expected_repo=expected_repo,
+                expected_pr=expected_pr,
+                expected_head=head,
+            )
+            if manifest is not None:
+                history.append({
+                    "head": head,
+                    "attachments": manifest,
+                    "comment_id": comment.get("id"),
+                    "created_at": str(comment.get("created_at") or ""),
+                })
+    history.sort(key=lambda item: (str(item["created_at"]), int(item["comment_id"] or 0)))
+    return tuple(history)
 
 
 def _publish_evidence_provenance(
@@ -330,7 +450,7 @@ def _publish_evidence_provenance(
                 expected_head=head,
             )
             if manifest is not None:
-                if manifest == target:
+                if evidence_manifests_match(manifest, target):
                     matching.append(comment)
     body = (
         f"{DELIVERY_PROVENANCE}\n"
@@ -461,7 +581,7 @@ def publish(
             )
         urls = _stage_native_attachments(repo, pr, attachments, media_token)
         content = _rewrite_attachment_references(content, urls)
-        manifest_marker = _evidence_manifest(repo, pr, head, attachments, urls)
+        manifest_marker = _evidence_manifest(repo, pr, head, attachments, urls, content)
         content = "\n\n".join([
             content.rstrip(),
             manifest_marker,
