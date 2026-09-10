@@ -28,6 +28,9 @@ from .model import ModelError, complete
 from .protocol import decode_data, encode_data, extract_json_reply
 
 
+ARBITRATION_MARKER = "<!-- steward:agent-factory-evidence-arbitration -->"
+
+
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
     result = subprocess.run(["gh", *args], input=stdin, text=True, capture_output=True)
     if result.returncode:
@@ -227,6 +230,55 @@ def prior_review_for_head(
             if marker in body and isinstance(data, dict) and data.get("head_sha") == head:
                 matches.append(body)
     return matches[-1][-12000:] if matches else ""
+
+
+def authenticated_arbitration_for_head(
+    comments: list[Any], *, repo: str, pr: int, head: str,
+    reference_digests: tuple[str, ...], steward_app_login: str
+) -> str:
+    """Return only a same-head, same-reference ruling from the configured Steward App."""
+    pages = comments if comments and isinstance(comments[0], list) else [comments]
+    selected = None
+    for page in pages:
+        if not isinstance(page, list):
+            continue
+        for comment in page:
+            if not isinstance(comment, dict):
+                continue
+            user = comment.get("user") or {}
+            body = str(comment.get("body") or "")
+            data = decode_data(body)
+            if not (
+                isinstance(user, dict)
+                and user.get("type") == "Bot"
+                and str(user.get("login") or "").removesuffix("[bot]")
+                == steward_app_login.removesuffix("[bot]")
+                and ARBITRATION_MARKER in body
+                and isinstance(data, dict)
+                and data.get("role") == "steward"
+                and data.get("kind") == "evidence_arbitration"
+                and data.get("repo") == repo
+                and data.get("pr") == pr
+                and data.get("head_sha") == head
+                and tuple(data.get("reference_digests") or ()) == reference_digests
+                and data.get("resolved") is True
+            ):
+                continue
+            selected = data
+    if selected is None:
+        return ""
+    observations = selected.get("observations") or []
+    if not isinstance(observations, list) or any(not isinstance(item, str) for item in observations):
+        return ""
+    interpretation = str(selected.get("authoritative_interpretation") or "").strip()
+    if not interpretation:
+        return ""
+    facts = "\n".join(f"- {item[:500]}" for item in observations[:12])
+    return (
+        f"Steward ruling for `{head[:7]}` and reference "
+        f"`{', '.join(reference_digests)}`:\n\n{facts}\n\n"
+        f"Authoritative interpretation: {interpretation[:2000]}"
+    )
 
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -539,6 +591,7 @@ def run(
     delivery_gate: dict[str, Any] | None = None
     evidence_consistency_gate: dict[str, Any] | None = None
     prior_review_context = ""
+    arbitration_context = ""
     delivery_image_urls: tuple[str, ...] = ()
     delivery_image_failure = False
     if config.review.require_builder_delivery and has_builder_delivery:
@@ -587,6 +640,14 @@ def run(
                         expected_repo=repo,
                         expected_pr=int(pr),
                         builder_app_login=config.builder.app_login,
+                    )
+                    arbitration_context = authenticated_arbitration_for_head(
+                        comments,
+                        repo=repo,
+                        pr=int(pr),
+                        head=str(meta["headRefOid"]),
+                        reference_digests=evidence_digests(provenance, "reference"),
+                        steward_app_login=config.steward.app_login,
                     )
                     prior = next(
                         (
@@ -682,6 +743,8 @@ def run(
         "Return only JSON with summary:string, approve:boolean, and findings:array. "
         "Also return evidence_interpretation_conflict:boolean. When the supplied authenticated "
         "prior review describes the same unchanged reference digest, preserve that interpretation. "
+        "When an authenticated same-head Steward evidence ruling is supplied, its observable visual "
+        "interpretation is authoritative; preserve it while independently reviewing code and behavior. "
         "If you believe it is materially wrong or your new guidance would reverse it, set "
         "evidence_interpretation_conflict true and do not direct Builder to change code; Steward "
         "must arbitrate the evidence. "
@@ -727,6 +790,10 @@ def run(
             ]
             if prior_review_context else []
         ),
+        *(
+            ["## Authenticated Steward evidence ruling\n\n" + arbitration_context]
+            if arbitration_context else []
+        ),
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
         f"## Diff\n\n```diff\n{diff}\n```",
     ])
@@ -752,7 +819,7 @@ def run(
                 system,
                 user,
                 image_urls=delivery_image_urls,
-                allow_evidence_conflict=bool(prior_review_context),
+                allow_evidence_conflict=bool(prior_review_context and not arbitration_context),
             )
         except ModelError as exc:
             raw = failed_review(str(exc))
