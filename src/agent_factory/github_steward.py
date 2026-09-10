@@ -120,6 +120,15 @@ def _strings(value: Any, *, limit: int = 10) -> list[str]:
     return [str(item).strip()[:1000] for item in value[:limit] if str(item).strip()]
 
 
+def _positive_int(value: Any) -> int | None:
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
+
+
 def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
     decision = str(raw.get("decision") or "needs_human").strip().lower()
     decision_key = decision.replace("-", "_").replace(" ", "_")
@@ -187,20 +196,21 @@ def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
     for item in raw_resolutions:
         if not isinstance(item, dict):
             raise ValueError("each feedback resolution must be an object")
-        comment_id = item.get("comment_id")
+        comment_id = _positive_int(item.get("comment_id"))
         disposition = str(item.get("disposition") or "").strip().lower()
         summary = str(item.get("summary") or "").strip()[:1000]
-        superseded_by = item.get("superseded_by_comment_id")
-        if type(comment_id) is not int or comment_id < 1:
+        raw_superseded_by = item.get("superseded_by_comment_id")
+        superseded_by = _positive_int(raw_superseded_by)
+        if comment_id is None:
             raise ValueError("each feedback resolution requires a positive comment_id")
         if disposition not in {"incorporated", "superseded", "blocked"}:
             raise ValueError("unsupported feedback resolution disposition")
         if not summary:
             raise ValueError("each feedback resolution requires a summary")
         if disposition == "superseded":
-            if type(superseded_by) is not int or superseded_by < 1:
+            if superseded_by is None:
                 raise ValueError("superseded feedback requires superseded_by_comment_id")
-        elif superseded_by is not None:
+        elif raw_superseded_by is not None:
             raise ValueError("only superseded feedback may name superseded_by_comment_id")
         feedback_resolutions.append({
             "comment_id": comment_id,
