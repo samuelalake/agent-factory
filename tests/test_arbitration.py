@@ -55,7 +55,7 @@ class ArbitrationTests(unittest.TestCase):
         self.assertIsNone(current_conflict_review([spoof, stale], head, "<!-- reviewer:agent-factory -->", "reviewer[bot]"))
         self.assertIs(trusted, current_conflict_review([spoof, trusted], head, "<!-- reviewer:agent-factory -->", "reviewer[bot]"))
 
-    def test_newer_same_head_verdict_supersedes_conflict(self) -> None:
+    def test_same_head_conflict_remains_sticky_until_steward_rules(self) -> None:
         head = "a" * 40
         conflict = {
             "user": {"login": "reviewer[bot]", "type": "Bot"},
@@ -71,8 +71,55 @@ class ArbitrationTests(unittest.TestCase):
                 "head_sha": head, "findings": [],
             }),
         }
-        self.assertIsNone(current_conflict_review(
+        self.assertIs(conflict, current_conflict_review(
             [conflict, normal], head, "<!-- reviewer:test -->", "reviewer[bot]"
+        ))
+
+    def test_same_head_explicit_handoff_survives_later_model_rephrasing(self) -> None:
+        head = "a" * 40
+        explicit = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{
+                    "key": "app/View.swift:12",
+                    "severity": "P1",
+                    "suggestion": (
+                        "Steward must arbitrate the evidence. Do not change code from this "
+                        "finding alone."
+                    ),
+                }],
+            }),
+        }
+        rephrased = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{"key": "review-wide", "severity": "P1"}],
+            }),
+        }
+        self.assertIs(explicit, current_conflict_review(
+            [explicit, rephrased], head, "<!-- reviewer:test -->", "reviewer[bot]"
+        ))
+
+    def test_negated_same_head_handoff_does_not_become_sticky(self) -> None:
+        head = "a" * 40
+        negated = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{
+                    "key": "app/View.swift:12",
+                    "severity": "P1",
+                    "suggestion": "Do not say Steward must arbitrate the evidence.",
+                }],
+            }),
+        }
+        self.assertIsNone(current_conflict_review(
+            [negated], head, "<!-- reviewer:test -->", "reviewer[bot]"
         ))
 
     def test_image_labels_come_from_authenticated_roles(self) -> None:

@@ -16,7 +16,7 @@ from .github_builder import (
     _fetch_delivery_images,
 )
 from .github_delivery import authenticated_delivery_history
-from .github_review import evidence_digests
+from .github_review import _explicit_arbitration_request, evidence_digests
 from .model import ModelError, complete
 from .protocol import decode_data, encode_data, extract_json_reply
 
@@ -80,15 +80,13 @@ def current_conflict_review(
             and str(review.get("state") or "").upper() != "DISMISSED"
         ):
             continue
-        selected = review
-    if selected is None:
-        return None
-    data = decode_data(str(selected.get("body") or "")) or {}
-    findings = data.get("findings") or []
-    return selected if any(
-        isinstance(finding, dict) and finding.get("key") == CONFLICT_KEY
-        for finding in findings
-    ) else None
+        findings = data.get("findings") or []
+        if any(
+            isinstance(finding, dict) and finding.get("key") == CONFLICT_KEY
+            for finding in findings
+        ) or _explicit_arbitration_request(data):
+            selected = review
+    return selected
 
 
 def authenticated_review_history(
