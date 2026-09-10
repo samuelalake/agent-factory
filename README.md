@@ -213,7 +213,9 @@ Consumers can set `review.visual_evidence_paths` to repository-relative globs su
 as `app/**` and `**/*.origami`. A matching change without a canonical Builder
 delivery is blocked deterministically, even when the model would approve it. A
 non-matching control-plane or documentation change is reviewed from its diff,
-checks, and linked evidence without manufacturing unrelated screenshots.
+checks, and linked evidence without manufacturing unrelated screenshots. Builder
+marks that visual delivery as not applicable and binds the decision to the exact
+commit, so Reviewer does not wait for an evidence job that correctly did not run.
 Reviewer findings must describe concrete defects in the supplied change. A
 consumer that pins a reusable workflow is not expected to duplicate that
 workflow's enforcement logic locally; dependency-pin review instead evaluates

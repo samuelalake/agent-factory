@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import os
 import re
@@ -14,6 +13,7 @@ from .app_auth import get_installation_token
 from .config import load_config
 from .context import discover_context
 from .github_delivery import (
+    DELIVERY_EVIDENCE_NOT_APPLICABLE,
     authenticated_delivery_history,
     delivery_status,
     wait_for_delivery,
@@ -26,6 +26,7 @@ from .github_builder import (
 )
 from .model import ModelError, complete
 from .protocol import decode_data, encode_data, extract_json_reply
+from .repository_paths import repository_glob_match
 
 
 ARBITRATION_MARKER = "<!-- steward:agent-factory-evidence-arbitration -->"
@@ -36,22 +37,6 @@ def _gh(args: list[str], *, stdin: str | None = None) -> str:
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout
-
-
-def repository_glob_match(path: str, pattern: str) -> bool:
-    """Match repository paths while allowing ``**/`` to span zero directories."""
-    candidates = {pattern}
-    pending = [pattern]
-    while pending:
-        candidate = pending.pop()
-        start = candidate.find("**/")
-        if start < 0:
-            continue
-        collapsed = candidate[:start] + candidate[start + 3:]
-        if collapsed not in candidates:
-            candidates.add(collapsed)
-            pending.append(collapsed)
-    return any(fnmatch.fnmatchcase(path, candidate) for candidate in candidates)
 
 
 def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
@@ -586,7 +571,8 @@ def run(
     has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
     changed_paths = (
         changed_file_paths(repo, pr)
-        if not has_builder_delivery and config.review.visual_evidence_paths
+        if config.review.visual_evidence_paths
+        and not has_builder_delivery
         else ()
     )
     visual_paths = tuple(
@@ -620,9 +606,28 @@ def run(
             ))
             _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)
             return
+        claims_nonvisual_delivery = (
+            bool(config.review.visual_evidence_paths)
+            and DELIVERY_EVIDENCE_NOT_APPLICABLE in refreshed_body
+        )
+        if claims_nonvisual_delivery:
+            changed_paths = changed_file_paths(repo, pr)
+            visual_paths = tuple(
+                path
+                for path in changed_paths
+                if any(
+                    repository_glob_match(path, pattern)
+                    for pattern in config.review.visual_evidence_paths
+                )
+            )
+        builder_delivery_requires_visual_evidence = (
+            not claims_nonvisual_delivery or bool(visual_paths)
+        )
         if status == "failed":
             delivery_gate = failed_delivery_review(status, refreshed_body)
-        if config.review.visual_evidence or config.review.fallback_visual_evidence:
+        if builder_delivery_requires_visual_evidence and (
+            config.review.visual_evidence or config.review.fallback_visual_evidence
+        ):
             try:
                 provenance = (
                     _delivery_provenance(

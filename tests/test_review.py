@@ -7,6 +7,10 @@ from unittest import mock
 from agent_factory.cli import default_config
 from agent_factory.config import parse_config
 from agent_factory.github_builder import BuilderBlocked
+from agent_factory.github_delivery import (
+    DELIVERY_EVIDENCE_NOT_APPLICABLE,
+    format_delivery,
+)
 from agent_factory.github_review import (
     diff_right_lines,
     failed_review,
@@ -453,6 +457,243 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("absence of dependency source code", system)
         self.assertIn("absence of a triplet is not a finding", user)
         self.assertEqual(posted[0]["event"], "APPROVE")
+
+    def test_builder_nonvisual_delivery_does_not_require_visual_artifacts(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        body = "\n".join([
+            config.builder.marker,
+            format_delivery(
+                "ready",
+                f"{DELIVERY_EVIDENCE_NOT_APPLICABLE}\n\n"
+                "Visual evidence is **not applicable**.",
+                head=head,
+            ),
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Promote provider route",
+                    "body": body,
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[{"filename": ".agent-factory/config.json"}]])
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch(
+                "agent_factory.github_review.wait_for_delivery",
+                return_value=("ready", body),
+            ),
+            mock.patch("agent_factory.github_review._fetch_delivery_images") as fetch,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Control plane is sound.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        fetch.assert_not_called()
+        self.assertEqual(posted[0]["event"], "APPROVE")
+
+    def test_reviewer_classifies_nonvisual_delivery_after_wait_refresh(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        old_head = "b" * 40
+        head = "a" * 40
+        initial_body = "\n".join([
+            config.builder.marker,
+            format_delivery("ready", "Prior visual delivery.", head=old_head),
+        ])
+        refreshed_body = "\n".join([
+            config.builder.marker,
+            format_delivery(
+                "ready",
+                f"{DELIVERY_EVIDENCE_NOT_APPLICABLE}\n\n"
+                "Visual evidence is **not applicable**.",
+                head=head,
+            ),
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Promote provider route",
+                    "body": initial_body,
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[{"filename": ".agent-factory/config.json"}]])
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch(
+                "agent_factory.github_review.wait_for_delivery",
+                return_value=("ready", refreshed_body),
+            ),
+            mock.patch("agent_factory.github_review._fetch_delivery_images") as fetch,
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Control plane is sound.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        fetch.assert_not_called()
+        self.assertEqual(posted[0]["event"], "APPROVE")
+
+    def test_builder_cannot_waive_visual_evidence_for_a_renamed_visual_path(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        body = "\n".join([
+            config.builder.marker,
+            format_delivery(
+                "ready",
+                f"{DELIVERY_EVIDENCE_NOT_APPLICABLE}\n\n"
+                "Visual evidence is **not applicable**.",
+                head=head,
+            ),
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Move screen", "body": body})
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[
+                    {
+                        "filename": "archive/Screen.swift",
+                        "previous_filename": "app/Screen.swift",
+                    }
+                ]])
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch(
+                "agent_factory.github_review.wait_for_delivery",
+                return_value=("ready", body),
+            ),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Model approves.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        self.assertIn("no trusted current-head visual evidence", posted[0]["body"])
+
+    def test_builder_cannot_waive_visual_evidence_without_a_path_policy(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        body = "\n".join([
+            config.builder.marker,
+            format_delivery(
+                "ready",
+                f"{DELIVERY_EVIDENCE_NOT_APPLICABLE}\n\n"
+                "Visual evidence is **not applicable**.",
+                head=head,
+            ),
+        ])
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Unscoped change", "body": body})
+            if args[:2] == ["pr", "diff"]:
+                return ""
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch(
+                "agent_factory.github_review.wait_for_delivery",
+                return_value=("ready", body),
+            ),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Model approves.", "approve": True}),
+                    "openrouter",
+                    "visual",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        self.assertIn("no trusted current-head visual evidence", posted[0]["body"])
 
     def test_non_builder_visual_change_without_evidence_is_deterministically_blocked(self) -> None:
         raw_config = default_config("fixture")
