@@ -1035,6 +1035,36 @@ The user's rough report and product intent.
         )
         self.assertLess(remove_index, add_index)
 
+    def test_steward_hold_after_delivered_builder_does_not_redispatch(self) -> None:
+        calls: list[list[str]] = []
+        builder_data = encode_data({
+            "version": 1,
+            "role": "builder",
+            "state": "delivered",
+            "result_id": "github-run:18:1",
+        })
+
+        def fake_gh(args: list[str], *, stdin: str | None = None) -> str:
+            calls.append(args)
+            if args[:2] == ["issue", "view"]:
+                return json.dumps({
+                    "state": "OPEN",
+                    "labels": [{"name": "ready"}, {"name": "agent:steward"}],
+                })
+            if "/comments" in args[1] and "--paginate" in args:
+                return json.dumps([{"id": 7, "body": builder_data}])
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            "os.environ", {"GH_TOKEN": "steward-token"}, clear=True
+        ), mock.patch("agent_factory.github_steward._gh", side_effect=fake_gh):
+            state = run("owner/repo", "83", self._config(Path(tmp)))
+
+        self.assertEqual(state, "blocked")
+        self.assertFalse(any(
+            "--add-label" in args and "agent:builder" in args for args in calls
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

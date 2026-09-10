@@ -23,6 +23,7 @@ from agent_factory.github_integration import (
     route_failure,
     run,
 )
+from agent_factory.github_steward import run as run_steward
 from agent_factory.protocol import decode_data, encode_data
 
 
@@ -147,6 +148,93 @@ class IntegrationTests(unittest.TestCase):
             ["issue", "edit", "83", "--repo", "owner/repo", "--add-label", "agent:steward"],
             token="steward",
         )
+
+    def test_integration_holds_do_not_redispatch_builder_when_steward_consumes_label(self) -> None:
+        config = parse_config(default_config("fixture"))
+        evidence_review = "\n".join([
+            config.review.marker,
+            encode_data({
+                "version": 1,
+                "head_sha": "head",
+                "verdict": "request_changes",
+                "findings": [{"key": "agent-factory://evidence-interpretation-conflict"}],
+            }),
+        ])
+        cases = {
+            "evidence conflict": {
+                "commits": [{"messageHeadline": "feat: implement issue #83"}],
+                "reviews": [{
+                    "body": evidence_review,
+                    "state": "CHANGES_REQUESTED",
+                    "author": {"login": config.review.app_login},
+                }],
+            },
+            "revision limit": {
+                "commits": [
+                    {"messageHeadline": "feat: implement issue #83"},
+                    {"messageHeadline": "feat: implement issue #83"},
+                    {"messageHeadline": "feat: implement issue #83"},
+                ],
+                "reviews": [],
+            },
+        }
+        builder_data = encode_data({
+            "version": 1,
+            "role": "builder",
+            "state": "delivered",
+            "result_id": "github-run:18:1",
+        })
+
+        for name, case in cases.items():
+            with self.subTest(name=name), patch(
+                "agent_factory.github_integration._gh"
+            ) as integration_gh:
+                _, next_owner = route_failure(
+                    "owner/repo",
+                    {
+                        "headRefOid": "head",
+                        "body": "Closes #83",
+                        **case,
+                    },
+                    config,
+                    "steward",
+                )
+                self.assertEqual(next_owner, "Steward")
+                integration_gh.assert_called_once_with(
+                    [
+                        "issue", "edit", "83", "--repo", "owner/repo",
+                        "--add-label", "agent:steward",
+                    ],
+                    token="steward",
+                )
+
+            steward_calls: list[list[str]] = []
+
+            def fake_steward_gh(args: list[str], *, stdin: str | None = None) -> str:
+                steward_calls.append(args)
+                if args[:2] == ["issue", "view"]:
+                    return json.dumps({
+                        "state": "OPEN",
+                        "labels": [{"name": "ready"}, {"name": "agent:steward"}],
+                    })
+                if "/comments" in args[1] and "--paginate" in args:
+                    return json.dumps([{"id": 7, "body": builder_data}])
+                return ""
+
+            with TemporaryDirectory() as tmp, patch.dict(
+                os.environ, {"GH_TOKEN": "steward-token"}, clear=True
+            ), patch(
+                "agent_factory.github_steward._gh", side_effect=fake_steward_gh
+            ):
+                config_path = Path(tmp) / "config.json"
+                config_path.write_text(json.dumps(default_config("fixture")))
+                state = run_steward("owner/repo", "83", config_path)
+
+            self.assertEqual(state, "blocked")
+            self.assertFalse(any(
+                "--add-label" in args and "agent:builder" in args
+                for args in steward_calls
+            ))
 
     @patch("agent_factory.github_integration._gh")
     def test_reviewer_provider_failure_holds_for_explicit_retry(self, gh) -> None:
