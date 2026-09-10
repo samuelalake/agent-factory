@@ -42,6 +42,9 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    concurrency:
+      group: agent-factory-review-${{ github.repository }}-${{ inputs.pr }}
+      cancel-in-progress: false
     steps:
       - name: Checkout consumer
         uses: actions/checkout@v7

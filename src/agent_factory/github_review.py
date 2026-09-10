@@ -238,7 +238,7 @@ def authenticated_arbitration_for_head(
 ) -> str:
     """Return only a same-head, same-reference ruling from the configured Steward App."""
     pages = comments if comments and isinstance(comments[0], list) else [comments]
-    selected = None
+    matches: list[dict[str, Any]] = []
     for page in pages:
         if not isinstance(page, list):
             continue
@@ -264,9 +264,15 @@ def authenticated_arbitration_for_head(
                 and data.get("resolved") is True
             ):
                 continue
-            selected = data
-    if selected is None:
+            matches.append(data)
+    if not matches:
         return ""
+    canonical = {
+        json.dumps(value, sort_keys=True, separators=(",", ":")) for value in matches
+    }
+    if len(canonical) != 1:
+        return ""
+    selected = matches[-1]
     observations = selected.get("observations") or []
     if not isinstance(observations, list) or any(not isinstance(item, str) for item in observations):
         return ""

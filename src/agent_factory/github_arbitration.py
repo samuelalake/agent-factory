@@ -15,6 +15,7 @@ from .github_builder import (
     _delivery_provenance,
     _fetch_delivery_images,
 )
+from .github_delivery import authenticated_delivery_history
 from .github_review import evidence_digests
 from .model import ModelError, complete
 from .protocol import decode_data, encode_data, extract_json_reply
@@ -64,26 +65,73 @@ def current_conflict_review(
             and str(review.get("state") or "").upper() != "DISMISSED"
         ):
             continue
-        findings = data.get("findings") or []
-        if any(
-            isinstance(finding, dict) and finding.get("key") == CONFLICT_KEY
-            for finding in findings
+        selected = review
+    if selected is None:
+        return None
+    data = decode_data(str(selected.get("body") or "")) or {}
+    findings = data.get("findings") or []
+    return selected if any(
+        isinstance(finding, dict) and finding.get("key") == CONFLICT_KEY
+        for finding in findings
+    ) else None
+
+
+def authenticated_review_history(
+    reviews: list[dict[str, Any]], *, marker: str, app_login: str,
+    relevant_heads: tuple[str, ...]
+) -> str:
+    """Bound arbitration context to authenticated Reviewer verdicts for relevant heads."""
+    latest_by_head: dict[str, str] = {}
+    for review in reviews:
+        user = review.get("user") or {}
+        body = str(review.get("body") or "")
+        data = decode_data(body)
+        head = str(data.get("head_sha") or "") if isinstance(data, dict) else ""
+        if not (
+            isinstance(user, dict)
+            and user.get("type") == "Bot"
+            and _same_app(str(user.get("login") or ""), app_login)
+            and marker in body
+            and head in relevant_heads
+            and str(review.get("state") or "").upper() != "DISMISSED"
         ):
-            selected = review
-    return selected
+            continue
+        latest_by_head[head] = body.split("<!-- agent-factory:data", 1)[0].strip()[:6000]
+    ordered = [latest_by_head[head] for head in relevant_heads if head in latest_by_head]
+    return "\n\n".join(ordered)[-24000:]
+
+
+def authenticated_image_labels(
+    images: tuple[tuple[str, str], ...],
+    provenance: dict[str, dict[str, str]],
+) -> tuple[str, ...]:
+    """Derive semantics from the authenticated manifest, never editable alt text."""
+    labels = []
+    display = {"render": "Swami render", "reference": "Origami reference", "diff": "Difference"}
+    for _, annotated_url in images:
+        url = annotated_url.split("#", 1)[0]
+        entry = provenance.get(url)
+        if not entry or entry.get("role") not in display:
+            raise BuilderBlocked("Steward evidence image has no unambiguous authenticated role")
+        scope = str(entry.get("scope") or "").strip()
+        labels.append(f"{display[entry['role']]}" + (f" ({scope})" if scope else ""))
+    if len(labels) != len(set(labels)):
+        raise BuilderBlocked("Steward evidence image roles are ambiguous")
+    return tuple(labels)
 
 
 def authenticated_ruling(
     comments: list[dict[str, Any]], *, app_login: str, repo: str, pr: int,
     head: str, references: tuple[str, ...]
 ) -> dict[str, Any] | None:
-    selected = None
+    matches = []
     for comment in comments:
         user = comment.get("user") or {}
         body = str(comment.get("body") or "")
         data = decode_data(body)
         if not (
             isinstance(user, dict)
+            and user.get("type") == "Bot"
             and _same_app(str(user.get("login") or ""), app_login)
             and MARKER in body
             and isinstance(data, dict)
@@ -96,8 +144,15 @@ def authenticated_ruling(
             and data.get("resolved") is True
         ):
             continue
-        selected = data
-    return selected
+        matches.append(data)
+    if not matches:
+        return None
+    canonical = {
+        json.dumps(value, sort_keys=True, separators=(",", ":")) for value in matches
+    }
+    if len(canonical) != 1:
+        raise ValueError("conflicting authenticated Steward rulings share one evidence binding")
+    return matches[-1]
 
 
 def normalize_ruling(raw: dict[str, Any]) -> dict[str, Any]:
@@ -169,20 +224,8 @@ def _format(ruling: dict[str, Any], payload: dict[str, Any]) -> str:
     ])
 
 
-def _upsert(repo: str, pr: int, comments: list[dict[str, Any]], body: str, app_login: str) -> None:
-    target = None
-    for comment in comments:
-        user = comment.get("user") or {}
-        if (
-            isinstance(user, dict)
-            and _same_app(str(user.get("login") or ""), app_login)
-            and MARKER in str(comment.get("body") or "")
-        ):
-            target = comment.get("id")
-    args = ["api", f"repos/{repo}/issues/comments/{target}", "-X", "PATCH"] if target else [
-        "api", f"repos/{repo}/issues/{pr}/comments", "-X", "POST"
-    ]
-    _gh([*args, "-f", f"body={body}"])
+def _publish_immutable(repo: str, pr: int, body: str) -> None:
+    _gh(["api", f"repos/{repo}/issues/{pr}/comments", "-X", "POST", "-f", f"body={body}"])
 
 
 def _set_output(value: bool) -> None:
@@ -215,10 +258,11 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     comments = _pages(_gh([
         "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
     ], cwd=root))
-    if authenticated_ruling(
+    existing = authenticated_ruling(
         comments, app_login=config.steward.app_login, repo=repo, pr=pr,
         head=head, references=references
-    ) is not None:
+    )
+    if existing is not None:
         _set_output(True)
         return True
     images, _ = _current_delivery_media(
@@ -227,13 +271,23 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     if not images:
         raise BuilderBlocked("Steward found no authenticated current-head evidence images")
     image_urls = _fetch_delivery_images(repo, pr, head, images, os.environ.get("GH_TOKEN", ""))
-    history = "\n\n".join(
-        str(review.get("body") or "")[:8000]
-        for review in reviews
-        if config.review.marker in str(review.get("body") or "")
-    )[-24000:]
+    delivery_history = authenticated_delivery_history(
+        comments, expected_repo=repo, expected_pr=pr,
+        builder_app_login=config.builder.app_login,
+    )
+    relevant_heads = tuple(dict.fromkeys(
+        str(item.get("head") or "") for item in delivery_history
+        if isinstance(item.get("attachments"), dict)
+        and evidence_digests(item["attachments"], "reference") == references
+    ))
+    relevant_heads = tuple(dict.fromkeys((*relevant_heads, head)))
+    history = authenticated_review_history(
+        reviews, marker=config.review.marker, app_login=config.review.app_login,
+        relevant_heads=relevant_heads,
+    )
+    trusted_labels = authenticated_image_labels(images, provenance)
     labels = "\n".join(
-        f"Image {index + 1}: {label}" for index, (label, _) in enumerate(images)
+        f"Image {index + 1}: {label}" for index, label in enumerate(trusted_labels)
     )
     system = (
         f"You are Steward, the engineering-manager evidence arbiter for {config.project.name}. "
@@ -264,7 +318,19 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
         "provider": provider,
         "model": model,
     }
-    _upsert(repo, pr, comments, _format(ruling, payload), config.steward.app_login)
+    refreshed = json.loads(_gh([
+        "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid"
+    ], cwd=root))
+    if str(refreshed.get("headRefOid") or "") != head:
+        raise BuilderBlocked("pull request head changed during Steward arbitration")
+    refreshed_comments = _pages(_gh([
+        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
+    ], cwd=root))
+    if authenticated_ruling(
+        refreshed_comments, app_login=config.steward.app_login, repo=repo, pr=pr,
+        head=head, references=references
+    ) is None:
+        _publish_immutable(repo, pr, _format(ruling, payload))
     _set_output(True)
     return True
 
