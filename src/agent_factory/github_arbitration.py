@@ -15,8 +15,12 @@ from .github_builder import (
     _delivery_provenance,
     _fetch_delivery_images,
 )
-from .github_delivery import authenticated_delivery_history
-from .github_review import evidence_digests
+from .github_delivery import (
+    authenticated_delivery_evidence,
+    authenticated_delivery_history,
+    delivery_evidence_manifest,
+)
+from .github_review import _explicit_arbitration_request, evidence_digests
 from .model import ModelError, complete
 from .protocol import decode_data, encode_data, extract_json_reply
 
@@ -80,15 +84,40 @@ def current_conflict_review(
             and str(review.get("state") or "").upper() != "DISMISSED"
         ):
             continue
-        selected = review
-    if selected is None:
-        return None
-    data = decode_data(str(selected.get("body") or "")) or {}
-    findings = data.get("findings") or []
-    return selected if any(
-        isinstance(finding, dict) and finding.get("key") == CONFLICT_KEY
-        for finding in findings
-    ) else None
+        if any(
+            isinstance(finding, dict) and finding.get("key") == CONFLICT_KEY
+            for finding in data.get("findings") or []
+        ):
+            selected = review
+    return selected
+
+
+def explicit_conflict_review_with_continuity(
+    reviews: list[dict[str, Any]], head: str, prior_reference_heads: tuple[str, ...],
+    marker: str, app_login: str,
+) -> dict[str, Any] | None:
+    """Recover legacy prose only after authenticating same-reference continuity."""
+    authenticated_prior = False
+    selected = None
+    for review in reviews:
+        user = review.get("user") or {}
+        body = str(review.get("body") or "")
+        data = decode_data(body)
+        if not (
+            isinstance(user, dict)
+            and user.get("type") == "Bot"
+            and _same_app(str(user.get("login") or ""), app_login)
+            and marker in body
+            and isinstance(data, dict)
+            and str(review.get("state") or "").upper() != "DISMISSED"
+        ):
+            continue
+        review_head = str(data.get("head_sha") or "")
+        if review_head in prior_reference_heads:
+            authenticated_prior = True
+        if review_head == head and _explicit_arbitration_request(data):
+            selected = review
+    return selected if authenticated_prior else None
 
 
 def authenticated_review_history(
@@ -257,9 +286,9 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     reviews = _pages(_gh([
         "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp"
     ], cwd=root))
-    if current_conflict_review(reviews, head, config.review.marker, config.review.app_login) is None:
-        _set_output(False)
-        return False
+    conflict = current_conflict_review(
+        reviews, head, config.review.marker, config.review.app_login
+    )
     provenance = _delivery_provenance(
         repo, pr, head, config.builder.app_login, str(meta.get("body") or ""), root=root
     )
@@ -271,6 +300,24 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     comments = _pages(_gh([
         "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
     ], cwd=root))
+    delivery_history = authenticated_delivery_history(
+        comments, expected_repo=repo, expected_pr=pr,
+        builder_app_login=config.builder.app_login,
+    )
+    prior_reference_heads = tuple(dict.fromkeys(
+        str(item.get("head") or "") for item in delivery_history
+        if str(item.get("head") or "") != head
+        and isinstance(item.get("attachments"), dict)
+        and evidence_digests(item["attachments"], "reference") == references
+    ))
+    if conflict is None:
+        conflict = explicit_conflict_review_with_continuity(
+            reviews, head, prior_reference_heads,
+            config.review.marker, config.review.app_login,
+        )
+    if conflict is None:
+        _set_output(False)
+        return False
     existing = authenticated_ruling(
         comments, app_login=config.steward.app_login, repo=repo, pr=pr,
         head=head, references=references
@@ -284,10 +331,6 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     if not images:
         raise BuilderBlocked("Steward found no authenticated current-head evidence images")
     image_urls = _fetch_delivery_images(repo, pr, head, images, os.environ.get("GH_TOKEN", ""))
-    delivery_history = authenticated_delivery_history(
-        comments, expected_repo=repo, expected_pr=pr,
-        builder_app_login=config.builder.app_login,
-    )
     relevant_heads = tuple(dict.fromkeys(
         str(item.get("head") or "") for item in delivery_history
         if isinstance(item.get("attachments"), dict)
@@ -337,6 +380,44 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     refreshed_comments = _pages(_gh([
         "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
     ], cwd=root))
+    refreshed_manifest = delivery_evidence_manifest(
+        str(refreshed.get("body") or ""), expected_repo=repo,
+        expected_pr=pr, expected_head=head,
+    )
+    refreshed_provenance = (
+        authenticated_delivery_evidence(
+            refreshed_comments, expected_repo=repo, expected_pr=pr,
+            expected_head=head, builder_app_login=config.builder.app_login,
+            expected_manifest=refreshed_manifest,
+        )
+        if refreshed_manifest is not None else None
+    )
+    if (
+        refreshed_provenance is None
+        or evidence_digests(refreshed_provenance, "reference") != references
+    ):
+        raise BuilderBlocked("Builder evidence binding changed during Steward arbitration")
+    refreshed_history = authenticated_delivery_history(
+        refreshed_comments, expected_repo=repo, expected_pr=pr,
+        builder_app_login=config.builder.app_login,
+    )
+    refreshed_prior_reference_heads = tuple(dict.fromkeys(
+        str(item.get("head") or "") for item in refreshed_history
+        if str(item.get("head") or "") != head
+        and isinstance(item.get("attachments"), dict)
+        and evidence_digests(item["attachments"], "reference") == references
+    ))
+    refreshed_reviews = _pages(_gh([
+        "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp"
+    ], cwd=root))
+    refreshed_conflict = current_conflict_review(
+        refreshed_reviews, head, config.review.marker, config.review.app_login
+    ) or explicit_conflict_review_with_continuity(
+        refreshed_reviews, head, refreshed_prior_reference_heads,
+        config.review.marker, config.review.app_login,
+    )
+    if refreshed_conflict is None:
+        raise BuilderBlocked("Reviewer conflict handoff changed during Steward arbitration")
     if authenticated_ruling(
         refreshed_comments, app_login=config.steward.app_login, repo=repo, pr=pr,
         head=head, references=references

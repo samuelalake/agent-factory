@@ -15,6 +15,7 @@ from agent_factory.github_arbitration import (
     authenticated_image_labels,
     authenticated_review_history,
     current_conflict_review,
+    explicit_conflict_review_with_continuity,
     normalize_ruling,
     request_ruling,
     run,
@@ -52,10 +53,14 @@ class ArbitrationTests(unittest.TestCase):
             "state": "CHANGES_REQUESTED",
             "body": body,
         }
-        self.assertIsNone(current_conflict_review([spoof, stale], head, "<!-- reviewer:agent-factory -->", "reviewer[bot]"))
+        dismissed = dict(trusted, state="DISMISSED")
+        self.assertIsNone(current_conflict_review(
+            [spoof, stale, dismissed], head,
+            "<!-- reviewer:agent-factory -->", "reviewer[bot]",
+        ))
         self.assertIs(trusted, current_conflict_review([spoof, trusted], head, "<!-- reviewer:agent-factory -->", "reviewer[bot]"))
 
-    def test_newer_same_head_verdict_supersedes_conflict(self) -> None:
+    def test_same_head_conflict_remains_sticky_until_steward_rules(self) -> None:
         head = "a" * 40
         conflict = {
             "user": {"login": "reviewer[bot]", "type": "Bot"},
@@ -71,8 +76,92 @@ class ArbitrationTests(unittest.TestCase):
                 "head_sha": head, "findings": [],
             }),
         }
-        self.assertIsNone(current_conflict_review(
+        self.assertIs(conflict, current_conflict_review(
             [conflict, normal], head, "<!-- reviewer:test -->", "reviewer[bot]"
+        ))
+
+    def test_same_head_explicit_handoff_survives_later_model_rephrasing(self) -> None:
+        head = "a" * 40
+        prior_head = "b" * 40
+        prior = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": prior_head,
+                "findings": [{"key": "review-wide", "severity": "P1"}],
+            }),
+        }
+        explicit = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{
+                    "key": "app/View.swift:12",
+                    "severity": "P1",
+                    "suggestion": (
+                        "Steward must arbitrate the evidence. Do not change code from this "
+                        "finding alone."
+                    ),
+                }],
+            }),
+        }
+        rephrased = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{"key": "review-wide", "severity": "P1"}],
+            }),
+        }
+        self.assertIs(explicit, explicit_conflict_review_with_continuity(
+            [prior, explicit, rephrased], head, (prior_head,),
+            "<!-- reviewer:test -->", "reviewer[bot]"
+        ))
+
+    def test_explicit_handoff_without_same_reference_continuity_cannot_route(self) -> None:
+        head = "a" * 40
+        explicit = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{
+                    "key": "app/View.swift:12",
+                    "severity": "P1",
+                    "suggestion": "Steward must arbitrate the evidence.",
+                }],
+            }),
+        }
+        self.assertIsNone(explicit_conflict_review_with_continuity(
+            [explicit], head, (), "<!-- reviewer:test -->", "reviewer[bot]"
+        ))
+
+    def test_negated_same_head_handoff_does_not_become_sticky(self) -> None:
+        head = "a" * 40
+        prior_head = "b" * 40
+        prior = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": prior_head, "findings": [],
+            }),
+        }
+        negated = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{
+                    "key": "app/View.swift:12",
+                    "severity": "P1",
+                    "suggestion": "Do not say Steward must arbitrate the evidence.",
+                }],
+            }),
+        }
+        self.assertIsNone(explicit_conflict_review_with_continuity(
+            [prior, negated], head, (prior_head,),
+            "<!-- reviewer:test -->", "reviewer[bot]"
         ))
 
     def test_image_labels_come_from_authenticated_roles(self) -> None:
@@ -240,6 +329,177 @@ class ArbitrationTests(unittest.TestCase):
                  }, "gemini", "model")), \
                  mock.patch("agent_factory.github_arbitration._publish_immutable") as publish:
                 with self.assertRaisesRegex(BuilderBlocked, "head changed"):
+                    run("o/r", 7, Path(directory), config_path)
+            publish.assert_not_called()
+
+    def test_conflict_dismissal_during_run_fails_before_publication(self) -> None:
+        raw = default_config("demo")
+        raw["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        raw["steward"]["arbitration_visual_evidence"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(json.dumps(raw))
+            head = "a" * 40
+            conflict_body = "<!-- reviewer:agent-factory -->\n" + encode_data({
+                "head_sha": head, "findings": [{"key": CONFLICT_KEY}],
+            })
+            active = {
+                "user": {"login": "agent-factory-reviewer[bot]", "type": "Bot"},
+                "state": "CHANGES_REQUESTED", "body": conflict_body,
+            }
+            dismissed = dict(active, state="DISMISSED")
+            responses = iter([
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[active]]),
+                json.dumps([[]]),
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[]]),
+                json.dumps([[dismissed]]),
+            ])
+            provenance = {
+                "https://github.com/user-attachments/assets/11111111-1111-1111-1111-111111111111": {
+                    "role": "render", "scope": "demo", "sha256": "1" * 64,
+                    "content_type": "image/png",
+                },
+                "https://github.com/user-attachments/assets/22222222-2222-2222-2222-222222222222": {
+                    "role": "reference", "scope": "demo", "sha256": "2" * 64,
+                    "content_type": "image/png",
+                },
+            }
+            images = tuple(
+                ("mutable", url + "#sha256=" + item["sha256"])
+                for url, item in provenance.items()
+            )
+            with mock.patch(
+                "agent_factory.github_arbitration._gh",
+                side_effect=lambda *a, **k: next(responses),
+            ), mock.patch(
+                "agent_factory.github_arbitration._delivery_provenance",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration._current_delivery_media",
+                return_value=(images, ()),
+            ), mock.patch(
+                "agent_factory.github_arbitration._fetch_delivery_images",
+                return_value=("data:image/png;base64,AA==",) * 2,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_history",
+                return_value=[],
+            ), mock.patch(
+                "agent_factory.github_arbitration.delivery_evidence_manifest",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_evidence",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.request_ruling",
+                return_value=({
+                    "resolved": True,
+                    "observations": ["fact"],
+                    "authoritative_interpretation": "ruling",
+                    "reason": "visible",
+                }, "gemini", "model"),
+            ), mock.patch(
+                "agent_factory.github_arbitration._publish_immutable"
+            ) as publish:
+                with self.assertRaisesRegex(BuilderBlocked, "handoff changed"):
+                    run("o/r", 7, Path(directory), config_path)
+            publish.assert_not_called()
+
+    def test_legacy_continuity_removal_during_run_fails_before_publication(self) -> None:
+        raw = default_config("demo")
+        raw["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        raw["steward"]["arbitration_visual_evidence"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(json.dumps(raw))
+            head = "a" * 40
+            prior_head = "b" * 40
+
+            def review(review_head: str, findings: list[dict[str, str]]) -> dict:
+                return {
+                    "user": {
+                        "login": "agent-factory-reviewer[bot]", "type": "Bot",
+                    },
+                    "state": "CHANGES_REQUESTED",
+                    "body": "<!-- reviewer:agent-factory -->\n" + encode_data({
+                        "head_sha": review_head, "findings": findings,
+                    }),
+                }
+
+            prior_review = review(prior_head, [])
+            explicit = review(head, [{
+                "key": "app/View.swift:12",
+                "severity": "P1",
+                "suggestion": "Steward must arbitrate the evidence.",
+            }])
+            responses = iter([
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[prior_review, explicit]]),
+                json.dumps([[]]),
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[]]),
+                json.dumps([[prior_review, explicit]]),
+            ])
+            provenance = {
+                "https://github.com/user-attachments/assets/11111111-1111-1111-1111-111111111111": {
+                    "role": "render", "scope": "demo", "sha256": "1" * 64,
+                    "content_type": "image/png",
+                },
+                "https://github.com/user-attachments/assets/22222222-2222-2222-2222-222222222222": {
+                    "role": "reference", "scope": "demo", "sha256": "2" * 64,
+                    "content_type": "image/png",
+                },
+            }
+            prior_delivery = ({
+                "head": prior_head,
+                "attachments": provenance,
+                "comment_id": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+            },)
+            images = tuple(
+                ("mutable", url + "#sha256=" + item["sha256"])
+                for url, item in provenance.items()
+            )
+            with mock.patch(
+                "agent_factory.github_arbitration._gh",
+                side_effect=lambda *a, **k: next(responses),
+            ), mock.patch(
+                "agent_factory.github_arbitration._delivery_provenance",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration._current_delivery_media",
+                return_value=(images, ()),
+            ), mock.patch(
+                "agent_factory.github_arbitration._fetch_delivery_images",
+                return_value=("data:image/png;base64,AA==",) * 2,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_history",
+                side_effect=[prior_delivery, ()],
+            ), mock.patch(
+                "agent_factory.github_arbitration.delivery_evidence_manifest",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_evidence",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.request_ruling",
+                return_value=({
+                    "resolved": True,
+                    "observations": ["fact"],
+                    "authoritative_interpretation": "ruling",
+                    "reason": "visible",
+                }, "gemini", "model"),
+            ), mock.patch(
+                "agent_factory.github_arbitration._publish_immutable"
+            ) as publish:
+                with self.assertRaisesRegex(BuilderBlocked, "handoff changed"):
                     run("o/r", 7, Path(directory), config_path)
             publish.assert_not_called()
 
