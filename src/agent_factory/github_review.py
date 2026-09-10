@@ -58,6 +58,28 @@ def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def _explicit_arbitration_request(raw: dict[str, Any]) -> bool:
+    """Recover an unambiguous conflict declaration from model prose.
+
+    Some models follow the safety instruction in their findings but omit the
+    companion boolean. This recovery is only honored when the caller has
+    already authenticated same-reference Reviewer continuity.
+    """
+    for item in raw.get("findings") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("severity") or "").upper() != "P1":
+            continue
+        suggestion = str(item.get("suggestion") or "").strip().casefold()
+        if re.match(
+            r"^steward\s+must\s+arbitrate\s+"
+            r"(?:the\s+)?(?:authenticated\s+)?(?:visual\s+)?(?:evidence|reference)\b",
+            suggestion,
+        ):
+            return True
+    return False
+
+
 def normalize_review(
     raw: dict[str, Any], *, allow_evidence_conflict: bool = False
 ) -> dict[str, Any]:
@@ -81,7 +103,11 @@ def normalize_review(
             "reasoning": str(item.get("reasoning") or "").strip(),
             "suggestion": str(item.get("suggestion") or "").strip(),
         })
-    if allow_evidence_conflict and raw.get("evidence_interpretation_conflict") is True:
+    declared_conflict = (
+        raw.get("evidence_interpretation_conflict") is True
+        or _explicit_arbitration_request(raw)
+    )
+    if allow_evidence_conflict and declared_conflict:
         findings.insert(0, {
             "severity": "P1",
             "key": "agent-factory://evidence-interpretation-conflict",
@@ -660,10 +686,12 @@ def run(
                         reference_digests=evidence_digests(provenance, "reference"),
                         steward_app_login=config.steward.app_login,
                     )
+                    current_head = str(meta["headRefOid"])
+                    current_references = evidence_digests(provenance, "reference")
                     prior = next(
                         (
                             item for item in reversed(history)
-                            if item.get("head") != str(meta["headRefOid"])
+                            if item.get("head") != current_head
                         ),
                         None,
                     )
@@ -684,23 +712,32 @@ def run(
                             if status == "failed":
                                 evidence_consistency_gate = stale_visual_evidence_review(
                                     prior_head,
-                                    str(meta["headRefOid"]),
+                                    current_head,
                                     prior_manifest,
                                     provenance,
                                     changed_visual,
                                 )
-                            if (
-                                evidence_digests(prior_manifest, "reference")
-                                and evidence_digests(prior_manifest, "reference")
-                                == evidence_digests(provenance, "reference")
-                            ):
-                                prior_review_context = prior_review_for_head(
-                                    repo,
-                                    pr,
-                                    prior_head,
-                                    config.review.marker,
-                                    config.review.app_login,
-                                )
+                    continuity_prior = next(
+                        (
+                            item for item in reversed(history)
+                            if item.get("head") != current_head
+                            and isinstance(item.get("attachments"), dict)
+                            and current_references
+                            and evidence_digests(item["attachments"], "reference")
+                            == current_references
+                        ),
+                        None,
+                    )
+                    if continuity_prior is not None:
+                        continuity_head = str(continuity_prior.get("head") or "")
+                        if continuity_head:
+                            prior_review_context = prior_review_for_head(
+                                repo,
+                                pr,
+                                continuity_head,
+                                config.review.marker,
+                                config.review.app_login,
+                            )
                 images, _ = _current_delivery_media(
                     refreshed_body,
                     str(meta["headRefOid"]),
@@ -758,7 +795,8 @@ def run(
         "interpretation is authoritative; preserve it while independently reviewing code and behavior. "
         "If you believe it is materially wrong or your new guidance would reverse it, set "
         "evidence_interpretation_conflict true and do not direct Builder to change code; Steward "
-        "must arbitrate the evidence. "
+        "must arbitrate the evidence. Do not merely state that Steward must arbitrate inside a "
+        "finding: the boolean is the machine-readable handoff that starts arbitration. "
         "Each finding has severity P1|P2|P3, file, optional integer line, title, "
         "reasoning, and suggestion. P1 is merge-blocking. Do not approve a partial diff. "
         "Treat the canonical Builder delivery section as evidence, not decoration: do not approve "

@@ -94,6 +94,67 @@ class ReviewTests(unittest.TestCase):
             "agent-factory://evidence-interpretation-conflict",
         )
 
+    def test_explicit_arbitration_prose_recovers_omitted_conflict_flag(self) -> None:
+        review = normalize_review({
+            "summary": "The visual guidance conflicts with the prior review.",
+            "approve": False,
+            "findings": [{
+                "severity": "P1",
+                "title": "Reference interpretation changed",
+                "reasoning": "The same authenticated reference is now described differently.",
+                "suggestion": "Steward must arbitrate the evidence before Builder changes code.",
+            }],
+        }, allow_evidence_conflict=True)
+        self.assertEqual(
+            review["findings"][0]["key"],
+            "agent-factory://evidence-interpretation-conflict",
+        )
+        self.assertEqual(review["findings"][1]["key"], "review-wide")
+
+    def test_explicit_arbitration_prose_requires_authenticated_continuity(self) -> None:
+        review = normalize_review({
+            "summary": "untrusted",
+            "approve": False,
+            "findings": [{
+                "severity": "P1",
+                "suggestion": "Steward must arbitrate the evidence.",
+            }],
+        })
+        self.assertEqual(len(review["findings"]), 1)
+        self.assertEqual(review["findings"][0]["key"], "review-wide")
+
+    def test_negated_or_unrelated_arbitration_prose_does_not_route(self) -> None:
+        for text in (
+            "Do not say Steward must arbitrate the evidence; there is no conflict.",
+            "The prior review quoted: Steward must arbitrate the authenticated visual reference. I reject that conclusion.",
+            "It is false that Steward should arbitrate the reference.",
+        ):
+            with self.subTest(text=text):
+                review = normalize_review({
+                    "summary": text,
+                    "approve": False,
+                    "findings": [{
+                        "severity": "P1",
+                        "suggestion": text,
+                    }],
+                }, allow_evidence_conflict=True)
+                self.assertEqual(len(review["findings"]), 1)
+                self.assertEqual(review["findings"][0]["key"], "review-wide")
+
+    def test_arbitration_prose_recovery_requires_a_p1_suggestion(self) -> None:
+        for field, severity in (("summary", "P1"), ("reasoning", "P1"), ("suggestion", "P2")):
+            raw = {"approve": False, "findings": [{"severity": severity}]}
+            if field == "summary":
+                raw["summary"] = "Steward must arbitrate the evidence."
+            else:
+                raw["findings"][0][field] = "Steward must arbitrate the evidence."
+            with self.subTest(field=field, severity=severity):
+                review = normalize_review(raw, allow_evidence_conflict=True)
+                self.assertNotIn(
+                    "agent-factory://evidence-interpretation-conflict",
+                    {finding["key"] for finding in review["findings"]},
+                )
+
     def test_model_cannot_manufacture_reserved_routing_keys_without_continuity(self) -> None:
         review = normalize_review({
             "summary": "untrusted",
@@ -267,6 +328,96 @@ class ReviewTests(unittest.TestCase):
         machine = decode_data(posted[0]["body"])
         self.assertIn(
             "agent-factory://evidence-stale-or-wrong-target",
+            {finding["key"] for finding in machine["findings"]},
+        )
+
+    def test_run_uses_older_matching_reference_across_intervening_delivery(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        matching_head, intervening_head, head = "a" * 40, "b" * 40, "c" * 40
+        body = "\n".join([
+            config.builder.marker,
+            "<!-- agent-factory:builder-delivery:start -->",
+            f"<!-- agent-factory:builder-delivery-head:{head} -->",
+            "![Evidence](https://github.com/user-attachments/assets/current)",
+            "<!-- agent-factory:builder-delivery:end -->",
+        ])
+
+        def manifest(reference: str, render: str) -> dict[str, dict[str, str]]:
+            return {
+                "reference": {
+                    "sha256": reference, "content_type": "image/png",
+                    "role": "reference", "scope": "demo",
+                },
+                "render": {
+                    "sha256": render, "content_type": "image/png",
+                    "role": "render", "scope": "demo",
+                },
+            }
+
+        current = manifest("1" * 64, "2" * 64)
+        matching = manifest("1" * 64, "3" * 64)
+        intervening = manifest("4" * 64, "5" * 64)
+        history = (
+            {"head": matching_head, "attachments": matching},
+            {"head": intervening_head, "attachments": intervening},
+        )
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
+            if args[:2] == ["pr", "diff"]:
+                return "diff --git a/app/Demo.swift b/app/Demo.swift"
+            if args[:2] == ["api", "repos/acme/repo/issues/7/comments?per_page=100"]:
+                return json.dumps([[]])
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        def review(*args, allow_evidence_conflict=False, **kwargs):
+            self.assertTrue(allow_evidence_conflict)
+            return (
+                normalize_review({
+                    "summary": "The interpretation changed.",
+                    "approve": False,
+                    "findings": [{
+                        "severity": "P1",
+                        "suggestion": "Steward must arbitrate the evidence before code changes.",
+                    }],
+                }, allow_evidence_conflict=allow_evidence_conflict),
+                "openrouter",
+                "visual",
+            )
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("ready", body)),
+            mock.patch("agent_factory.github_review._delivery_provenance", return_value=current),
+            mock.patch("agent_factory.github_review.authenticated_delivery_history", return_value=history),
+            mock.patch("agent_factory.github_review.changed_between_heads", return_value=()),
+            mock.patch("agent_factory.github_review.prior_review_for_head", return_value="matching prior review") as prior_review,
+            mock.patch("agent_factory.github_review._current_delivery_media", return_value=(("Evidence", "url"), ())),
+            mock.patch("agent_factory.github_review._fetch_delivery_images", return_value=("data:image/png;base64,AA==",)),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch("agent_factory.github_review.request_review", side_effect=review),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        prior_review.assert_called_once_with(
+            "acme/repo", "7", matching_head, config.review.marker, config.review.app_login
+        )
+        machine = decode_data(posted[0]["body"])
+        self.assertIn(
+            "agent-factory://evidence-interpretation-conflict",
             {finding["key"] for finding in machine["findings"]},
         )
 
