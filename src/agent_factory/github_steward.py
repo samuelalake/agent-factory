@@ -871,6 +871,10 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
                 config.steward.trusted_operator_logins,
             )
             plan, provider, model = shape_issue(root, config, shaping_item, issue_inventory)
+            if hold_requested and plan["decision"] in {"split", "duplicate"}:
+                raise ValueError(
+                    "a held canonical issue may be reconciled but cannot split or redirect work"
+                )
             state, next_owner, detail = apply_shape(
                 repo,
                 issue,
