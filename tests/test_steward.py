@@ -936,6 +936,52 @@ The user's rough report and product intent.
             for args, stdin in calls
         ))
 
+    def test_held_canonical_issue_cannot_create_split_children(self) -> None:
+        calls: list[tuple[list[str], str | None]] = []
+        plan = normalize_shape({
+            "decision": "split",
+            "title": "Do not split",
+            "outcome": "Keep one held work item.",
+            "subtasks": [{"title": "Invented child", "outcome": "Do unrelated work."}],
+            "feedback_resolutions": [{
+                "comment_id": 11,
+                "disposition": "incorporated",
+                "summary": "Keep the canonical issue held.",
+            }],
+        }, 3)
+
+        def fake_gh(args: list[str], *, stdin: str | None = None) -> str:
+            calls.append((args, stdin))
+            if args[:2] == ["issue", "view"]:
+                return json.dumps({
+                    "number": 83, "state": "OPEN", "title": "drag",
+                    "body": f"{SHAPED_MARKER}\n\n## Outcome\n\nOne held issue.",
+                    "labels": [{"name": "agent:steward"}],
+                    "comments": [{
+                        "author": {"login": "samuel"}, "authorAssociation": "MEMBER",
+                        "body": "Keep one issue.", "updatedAt": "2026-09-10T07:00:00Z",
+                        "databaseId": 11,
+                    }],
+                })
+            if args[:2] == ["api", "repos/owner/repo/issues?state=all&per_page=100"]:
+                return "[]"
+            if "/comments" in args[1] and "--paginate" in args:
+                return "[]"
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            "os.environ", {"GH_TOKEN": "token"}, clear=True
+        ), mock.patch("agent_factory.github_steward._gh", side_effect=fake_gh), mock.patch(
+            "agent_factory.github_steward.shape_issue", return_value=(plan, "p", "m")
+        ):
+            state = run("owner/repo", "83", self._config(Path(tmp)))
+
+        self.assertEqual(state, "needs_context")
+        self.assertFalse(any(
+            args[:2] == ["api", "repos/owner/repo/issues"] and "POST" in args
+            for args, _ in calls
+        ))
+
     def test_initial_issue_with_too_much_operator_feedback_fails_closed(self) -> None:
         calls: list[tuple[list[str], str | None]] = []
         comments = [
