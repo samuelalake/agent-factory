@@ -282,6 +282,7 @@ class ArbitrationTests(unittest.TestCase):
         workflow = (Path(__file__).parents[1] / ".github/workflows/review.yml").read_text()
         self.assertIn("if: steps.arbitration.outputs.arbitrated == 'true'", workflow)
         self.assertIn("group: agent-factory-review-${{ github.repository }}-${{ inputs.pr }}", workflow)
+        self.assertIn("permission-pull-requests: write", workflow)
         self.assertNotIn("agent:builder", workflow)
 
     def test_head_change_during_run_fails_before_publication(self) -> None:
