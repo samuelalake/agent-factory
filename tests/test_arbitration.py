@@ -15,6 +15,7 @@ from agent_factory.github_arbitration import (
     authenticated_image_labels,
     authenticated_review_history,
     current_conflict_review,
+    explicit_conflict_review_with_continuity,
     normalize_ruling,
     request_ruling,
     run,
@@ -52,7 +53,11 @@ class ArbitrationTests(unittest.TestCase):
             "state": "CHANGES_REQUESTED",
             "body": body,
         }
-        self.assertIsNone(current_conflict_review([spoof, stale], head, "<!-- reviewer:agent-factory -->", "reviewer[bot]"))
+        dismissed = dict(trusted, state="DISMISSED")
+        self.assertIsNone(current_conflict_review(
+            [spoof, stale, dismissed], head,
+            "<!-- reviewer:agent-factory -->", "reviewer[bot]",
+        ))
         self.assertIs(trusted, current_conflict_review([spoof, trusted], head, "<!-- reviewer:agent-factory -->", "reviewer[bot]"))
 
     def test_same_head_conflict_remains_sticky_until_steward_rules(self) -> None:
@@ -77,6 +82,15 @@ class ArbitrationTests(unittest.TestCase):
 
     def test_same_head_explicit_handoff_survives_later_model_rephrasing(self) -> None:
         head = "a" * 40
+        prior_head = "b" * 40
+        prior = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": prior_head,
+                "findings": [{"key": "review-wide", "severity": "P1"}],
+            }),
+        }
         explicit = {
             "user": {"login": "reviewer[bot]", "type": "Bot"},
             "state": "CHANGES_REQUESTED",
@@ -100,12 +114,39 @@ class ArbitrationTests(unittest.TestCase):
                 "findings": [{"key": "review-wide", "severity": "P1"}],
             }),
         }
-        self.assertIs(explicit, current_conflict_review(
-            [explicit, rephrased], head, "<!-- reviewer:test -->", "reviewer[bot]"
+        self.assertIs(explicit, explicit_conflict_review_with_continuity(
+            [prior, explicit, rephrased], head, (prior_head,),
+            "<!-- reviewer:test -->", "reviewer[bot]"
+        ))
+
+    def test_explicit_handoff_without_same_reference_continuity_cannot_route(self) -> None:
+        head = "a" * 40
+        explicit = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": head,
+                "findings": [{
+                    "key": "app/View.swift:12",
+                    "severity": "P1",
+                    "suggestion": "Steward must arbitrate the evidence.",
+                }],
+            }),
+        }
+        self.assertIsNone(explicit_conflict_review_with_continuity(
+            [explicit], head, (), "<!-- reviewer:test -->", "reviewer[bot]"
         ))
 
     def test_negated_same_head_handoff_does_not_become_sticky(self) -> None:
         head = "a" * 40
+        prior_head = "b" * 40
+        prior = {
+            "user": {"login": "reviewer[bot]", "type": "Bot"},
+            "state": "CHANGES_REQUESTED",
+            "body": "<!-- reviewer:test -->\n" + encode_data({
+                "head_sha": prior_head, "findings": [],
+            }),
+        }
         negated = {
             "user": {"login": "reviewer[bot]", "type": "Bot"},
             "state": "CHANGES_REQUESTED",
@@ -118,8 +159,9 @@ class ArbitrationTests(unittest.TestCase):
                 }],
             }),
         }
-        self.assertIsNone(current_conflict_review(
-            [negated], head, "<!-- reviewer:test -->", "reviewer[bot]"
+        self.assertIsNone(explicit_conflict_review_with_continuity(
+            [prior, negated], head, (prior_head,),
+            "<!-- reviewer:test -->", "reviewer[bot]"
         ))
 
     def test_image_labels_come_from_authenticated_roles(self) -> None:
