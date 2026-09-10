@@ -16,6 +16,7 @@ from agent_factory.github_builder import (
     _blocked_detail,
     _builder_summary,
     _base_sync_response,
+    _base_workflow_changes,
     _delivery_gate_requires_current_head_evidence,
     _current_delivery_media,
     _fetch_delivery_image,
@@ -25,6 +26,7 @@ from agent_factory.github_builder import (
     _reconcile_workflow_control_plane,
     _review_feedback,
     _preserve_workflow_control_plane,
+    _publish_base_sync_without_model,
     _run_gemini,
     _safe_agent_env,
     _validate_candidate,
@@ -42,6 +44,100 @@ from agent_factory.protocol import decode_data
 
 
 class BuilderTests(unittest.TestCase):
+    def test_reconciled_control_plane_publishes_before_model_work(self) -> None:
+        self.assertTrue(_publish_base_sync_without_model(
+            base_sync_changed=True,
+            base_conflicts="",
+            base_workflow_changes=(".github/workflows/agent-review.yml",),
+            feedback="material product finding remains",
+        ))
+
+    def test_unrelated_base_sync_retains_normal_builder_turn(self) -> None:
+        self.assertFalse(_publish_base_sync_without_model(
+            base_sync_changed=True,
+            base_conflicts="",
+            base_workflow_changes=(),
+            feedback="material product finding remains",
+        ))
+
+    def test_conflicted_control_plane_sync_fails_closed(self) -> None:
+        self.assertFalse(_publish_base_sync_without_model(
+            base_sync_changed=True,
+            base_conflicts=".github/workflows/agent-review.yml",
+            base_workflow_changes=(".github/workflows/agent-review.yml",),
+            feedback="",
+        ))
+
+    def test_real_base_merge_detects_workflow_pin_for_zero_model_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            workflow = root / ".github/workflows/review.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("ref: old\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+            subprocess.run(["git", "switch", "-qc", "candidate"], cwd=root, check=True)
+            (root / "Product.swift").write_text("work\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "product"], cwd=root, check=True)
+            previous = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
+                capture_output=True,
+            ).stdout.strip()
+            subprocess.run(["git", "switch", "-q", "master"], cwd=root, check=True)
+            workflow.write_text("ref: new\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "pin factory"], cwd=root, check=True)
+            subprocess.run(["git", "switch", "-q", "candidate"], cwd=root, check=True)
+            subprocess.run(["git", "merge", "--no-edit", "master"], cwd=root, check=True, capture_output=True)
+            changed = _base_workflow_changes(root, previous)
+            self.assertEqual(changed, (".github/workflows/review.yml",))
+            self.assertTrue(_publish_base_sync_without_model(
+                base_sync_changed=True,
+                base_conflicts="",
+                base_workflow_changes=changed,
+                feedback="material product finding",
+            ))
+
+    def test_preexisting_workflow_divergence_does_not_mimic_base_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            workflow = root / ".github/workflows/review.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("ref: base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+            subprocess.run(["git", "switch", "-qc", "candidate"], cwd=root, check=True)
+            workflow.write_text("ref: branch-only\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "diverge workflow"], cwd=root, check=True)
+            previous = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
+                capture_output=True,
+            ).stdout.strip()
+            subprocess.run(["git", "switch", "-q", "master"], cwd=root, check=True)
+            (root / "README.md").write_text("unrelated base update\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "docs"], cwd=root, check=True)
+            subprocess.run(["git", "switch", "-q", "candidate"], cwd=root, check=True)
+            subprocess.run(["git", "merge", "--no-edit", "master"], cwd=root, check=True, capture_output=True)
+            reconciled = _reconcile_workflow_control_plane(root, "master")
+            changed = _base_workflow_changes(root, previous)
+            self.assertEqual(reconciled, (".github/workflows/review.yml",))
+            self.assertEqual(changed, ())
+            self.assertFalse(_publish_base_sync_without_model(
+                base_sync_changed=True,
+                base_conflicts="",
+                base_workflow_changes=changed,
+                feedback="material product finding",
+            ))
+
     def test_only_deterministic_delivery_gate_allows_evidence_base_sync(self) -> None:
         feedback = """## Reviewer
 Builder delivery evidence is not ready

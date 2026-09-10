@@ -207,6 +207,38 @@ def _base_sync_response(base_branch: str) -> str:
     )
 
 
+def _publish_base_sync_without_model(
+    *,
+    base_sync_changed: bool,
+    base_conflicts: str,
+    base_workflow_changes: tuple[str, ...],
+    feedback: str,
+) -> bool:
+    """Publish a control-plane or evidence-only base sync before agent work."""
+    return bool(
+        base_sync_changed
+        and not base_conflicts
+        and (
+            base_workflow_changes
+            or _delivery_gate_requires_current_head_evidence(feedback)
+        )
+    )
+
+
+def _base_workflow_changes(root: Path, previous_head: str) -> tuple[str, ...]:
+    """Identify only workflow files introduced by the current base merge."""
+    return tuple(
+        path for path in _run(
+            [
+                "git", "diff", "--name-only", previous_head, "HEAD", "--",
+                ".github/workflows",
+            ],
+            cwd=root,
+        ).splitlines()
+        if path
+    )
+
+
 def _merge_current_base(root: Path, base_ref: str) -> str:
     result = subprocess.run(
         ["git", "merge", "--no-edit", base_ref],
@@ -952,6 +984,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     _run(["git", "config", "user.email", "agent-factory-builder[bot]@users.noreply.github.com"], cwd=root)
     base_conflicts = ""
     base_sync_changed = False
+    base_workflow_changes: tuple[str, ...] = ()
     if existing:
         previous_head = _run(["git", "rev-parse", "HEAD"], cwd=root).strip()
         base_conflicts = _merge_current_base(
@@ -960,6 +993,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         _reconcile_workflow_control_plane(
             root, f"origin/{config.builder.base_branch}"
         )
+        base_workflow_changes = _base_workflow_changes(root, previous_head)
         base_sync_changed = (
             _run(["git", "rev-parse", "HEAD"], cwd=root).strip() != previous_head
         )
@@ -1004,10 +1038,11 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             cost_budget=cost_budget,
         )
 
-    evidence_base_sync = (
-        base_sync_changed
-        and not base_conflicts
-        and _delivery_gate_requires_current_head_evidence(feedback)
+    evidence_base_sync = _publish_base_sync_without_model(
+        base_sync_changed=base_sync_changed,
+        base_conflicts=base_conflicts,
+        base_workflow_changes=base_workflow_changes,
+        feedback=feedback,
     )
     if evidence_base_sync:
         response = _base_sync_response(config.builder.base_branch)
