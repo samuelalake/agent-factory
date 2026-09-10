@@ -475,14 +475,23 @@ def trusted_operator_feedback(
 def identified_operator_feedback(comments: list[dict[str, Any]]) -> str:
     """Render authenticated pending feedback with the IDs required by the contract."""
     entries: list[str] = []
+    comment_ids: list[int] = []
     for comment in comments:
         key = _feedback_key(comment)
         body = str(comment.get("body") or "").strip()
         if key is None or not body:
             continue
         login = _comment_login(comment) or "operator"
+        comment_ids.append(key[1])
         entries.append(f"### Comment ID `{key[1]}` — @{login}\n\n{body}")
-    return "\n\n".join(entries)
+    if not entries:
+        return ""
+    contract = (
+        "Expected feedback_resolutions comment_id values, in this exact order: "
+        f"{json.dumps(comment_ids)}. Return each exactly once. Do not include IDs from "
+        "the current canonical brief or its already-consumed Operator decisions section."
+    )
+    return "\n\n".join([contract, *entries])
 
 
 def latest_trusted_operator_feedback_cursor(
