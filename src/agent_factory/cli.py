@@ -39,6 +39,8 @@ jobs:
       OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
       AGENT_FACTORY_REVIEWER_APP_ID: ${{{{ secrets.AGENT_FACTORY_REVIEWER_APP_ID }}}}
       AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY }}}}
+      AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
+      AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
   integration:
     needs: review
     uses: samuelalake/agent-factory/.github/workflows/integration.yml@{factory_ref}
@@ -159,6 +161,12 @@ def default_config(project_name: str) -> dict:
             "model": "gemini-3.6-flash",
             "fallback_provider": "nvidia",
             "fallback_model": "moonshotai/kimi-k3",
+            "arbitration_provider": "gemini",
+            "arbitration_model": "gemini-3.6-flash",
+            "arbitration_visual_evidence": False,
+            "arbitration_fallback_provider": "nvidia",
+            "arbitration_fallback_model": "moonshotai/kimi-k3",
+            "arbitration_fallback_visual_evidence": False,
             "max_subtasks": 3,
         },
         "builder": {

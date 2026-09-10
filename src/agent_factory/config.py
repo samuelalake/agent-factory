@@ -50,6 +50,12 @@ class StewardConfig:
     model: str
     fallback_provider: str | None
     fallback_model: str | None
+    arbitration_provider: str
+    arbitration_model: str
+    arbitration_visual_evidence: bool
+    arbitration_fallback_provider: str | None
+    arbitration_fallback_model: str | None
+    arbitration_fallback_visual_evidence: bool
     max_subtasks: int
 
 
@@ -205,6 +211,52 @@ def parse_config(raw: dict[str, Any]) -> Config:
         steward_fallback_model = _string(
             steward_fallback_model_value, "steward.fallback_model"
         )
+    arbitration_provider = _string(
+        steward.get("arbitration_provider", steward_provider),
+        "steward.arbitration_provider",
+    ).lower()
+    if arbitration_provider not in supported_providers:
+        raise ConfigError(f"unsupported steward.arbitration_provider: {arbitration_provider}")
+    arbitration_model = _string(
+        steward.get("arbitration_model", steward.get("model", "gemini-3.6-flash")),
+        "steward.arbitration_model",
+    )
+    arbitration_visual_evidence = steward.get("arbitration_visual_evidence", False)
+    if not isinstance(arbitration_visual_evidence, bool):
+        raise ConfigError("steward.arbitration_visual_evidence must be a boolean")
+    arbitration_fallback_provider_value = steward.get("arbitration_fallback_provider")
+    arbitration_fallback_model_value = steward.get("arbitration_fallback_model")
+    if ((arbitration_fallback_provider_value is None) !=
+            (arbitration_fallback_model_value is None)):
+        raise ConfigError(
+            "steward.arbitration_fallback_provider and "
+            "steward.arbitration_fallback_model must be set together"
+        )
+    arbitration_fallback_provider = None
+    arbitration_fallback_model = None
+    if arbitration_fallback_provider_value is not None:
+        arbitration_fallback_provider = _string(
+            arbitration_fallback_provider_value,
+            "steward.arbitration_fallback_provider",
+        ).lower()
+        if arbitration_fallback_provider not in supported_providers:
+            raise ConfigError(
+                "unsupported steward.arbitration_fallback_provider: "
+                f"{arbitration_fallback_provider}"
+            )
+        arbitration_fallback_model = _string(
+            arbitration_fallback_model_value,
+            "steward.arbitration_fallback_model",
+        )
+    arbitration_fallback_visual_evidence = steward.get(
+        "arbitration_fallback_visual_evidence", False
+    )
+    if not isinstance(arbitration_fallback_visual_evidence, bool):
+        raise ConfigError("steward.arbitration_fallback_visual_evidence must be a boolean")
+    if arbitration_fallback_visual_evidence and arbitration_fallback_provider is None:
+        raise ConfigError(
+            "steward.arbitration_fallback_visual_evidence requires an arbitration fallback provider"
+        )
     max_subtasks = steward.get("max_subtasks", 3)
     if not isinstance(max_subtasks, int) or isinstance(max_subtasks, bool) or max_subtasks < 0:
         raise ConfigError("steward.max_subtasks must be a non-negative integer")
@@ -312,6 +364,12 @@ def parse_config(raw: dict[str, Any]) -> Config:
             model=_string(steward.get("model", "gemini-3.6-flash"), "steward.model"),
             fallback_provider=steward_fallback_provider,
             fallback_model=steward_fallback_model,
+            arbitration_provider=arbitration_provider,
+            arbitration_model=arbitration_model,
+            arbitration_visual_evidence=arbitration_visual_evidence,
+            arbitration_fallback_provider=arbitration_fallback_provider,
+            arbitration_fallback_model=arbitration_fallback_model,
+            arbitration_fallback_visual_evidence=arbitration_fallback_visual_evidence,
             max_subtasks=max_subtasks,
         ),
         builder=BuilderConfig(

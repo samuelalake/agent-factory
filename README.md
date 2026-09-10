@@ -49,6 +49,19 @@ that section with Builder's App token. Reviewer waits for the section and fails
 closed on missing, stale, or failed evidence; a link or green workflow by itself
 is never treated as proof. Repository-specific rendering and interaction logic
 remain in the consumer.
+
+When authenticated Reviewer runs materially contradict one another about the
+same unchanged reference digest, Factory treats that as an exceptional evidence
+dispute rather than another Builder revision. Steward receives the labeled,
+current-head Builder images and the authenticated review history, then may
+publish one ruling bound to the repository, pull request, exact head, and
+reference digest. Reviewer reruns once with that ruling as visual continuity;
+it still owns code findings and approval. Arbitration never dispatches Builder,
+and a missing, unreadable, unresolved, or non-visual route fails closed. Set
+`steward.arbitration_provider`, `arbitration_model`, and
+`arbitration_visual_evidence` explicitly; an optional arbitration fallback has
+its own provider, model, and visual-capability flag.
+
 Media publication uses GitHub CLI 2.99 or newer's supported `--attach` flow.
 The CLI rewrites local references inside the canonical delivery section to
 GitHub-hosted user-attachment URLs: screenshots render inline and a standalone
@@ -131,7 +144,7 @@ The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
 not change the review or gate contract. Builder supports Gemini CLI plus bounded
 OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter. Reviewer and
-Steward use provider-neutral text adapters for Anthropic, Gemini, MiniMax,
+Steward use provider-neutral text and image adapters for Anthropic, Gemini, MiniMax,
 NVIDIA, and OpenRouter. The generated configuration starts with Gemini and falls
 back to NVIDIA Kimi; both are quota-limited services, so the delivery record
 names the provider and model that actually served the run instead of implying

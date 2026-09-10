@@ -30,6 +30,10 @@ on:
         required: false
       AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY:
         required: false
+      AGENT_FACTORY_STEWARD_APP_ID:
+        required: true
+      AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -38,6 +42,9 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    concurrency:
+      group: agent-factory-review-${{ github.repository }}-${{ inputs.pr }}
+      cancel-in-progress: false
     steps:
       - name: Checkout consumer
         uses: actions/checkout@v7
@@ -61,6 +68,50 @@ jobs:
           AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY || secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-
           python3 -m pip install --disable-pip-version-check 'PyJWT[crypto]>=2.8,<3' &&
+          PYTHONPATH=factory/src python3 -m agent_factory.github_review
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --root consumer
+          --config consumer/.agent-factory/config.json
+      - name: Mint Steward arbitration token
+        id: steward-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
+      - name: Arbitrate exceptional evidence conflict
+        id: arbitration
+        env:
+          GH_TOKEN: ${{ steps.steward-token.outputs.token }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_arbitration
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --root consumer
+          --config consumer/.agent-factory/config.json
+      - name: Review current pull request after Steward ruling
+        if: steps.arbitration.outputs.arbitrated == 'true'
+        env:
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_ID || secrets.AGENT_FACTORY_APP_ID }}
+          AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY || secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
+        run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.github_review
           --repo "${{ github.repository }}"
           --pr "${{ inputs.pr }}"
