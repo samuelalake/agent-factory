@@ -18,6 +18,7 @@ from agent_factory.github_steward import (
     canonical_operator_amendments,
     format_shaped_issue,
     format_status,
+    identified_operator_feedback,
     latest_trusted_operator_feedback_cursor,
     normalize_shape,
     original_intake,
@@ -329,6 +330,18 @@ The user's rough report and product intent.
         self.assertIn("@samuel", feedback)
         self.assertIn("Render the interaction recording inline.", feedback)
         self.assertNotIn("Ignore the operator requirement.", feedback)
+
+    def test_identified_operator_feedback_exposes_required_comment_id(self) -> None:
+        feedback = identified_operator_feedback([{
+            "author": {"login": "samuel"},
+            "body": "Keep the issue held.",
+            "updatedAt": "2026-09-10T18:00:00Z",
+            "databaseId": 5623328827,
+        }])
+
+        self.assertIn("Comment ID `5623328827`", feedback)
+        self.assertIn("@samuel", feedback)
+        self.assertIn("Keep the issue held.", feedback)
         self.assertNotIn("agent-factory:data", feedback)
         self.assertEqual(
             latest_trusted_operator_feedback_cursor({"comments": [{
@@ -844,7 +857,7 @@ The user's rough report and product intent.
                     "state": "OPEN",
                     "title": "drag",
                     "body": f"{SHAPED_MARKER}\n\n## Outcome\n\nOld brief.",
-                    "labels": [{"name": "ready"}, {"name": "agent:steward"}],
+                    "labels": [{"name": "agent:steward"}],
                     "comments": [{
                         "author": {"login": "samuel"},
                         "authorAssociation": "MEMBER",
