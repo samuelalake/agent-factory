@@ -82,8 +82,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: read
-          permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
       - name: Arbitrate exceptional evidence conflict
         id: arbitration
         env:

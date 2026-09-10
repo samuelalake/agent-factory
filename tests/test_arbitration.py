@@ -282,6 +282,12 @@ class ArbitrationTests(unittest.TestCase):
         workflow = (Path(__file__).parents[1] / ".github/workflows/review.yml").read_text()
         self.assertIn("if: steps.arbitration.outputs.arbitrated == 'true'", workflow)
         self.assertIn("group: agent-factory-review-${{ github.repository }}-${{ inputs.pr }}", workflow)
+        steward_token = workflow.split(
+            "- name: Mint Steward arbitration token", 1
+        )[1].split("- name: Arbitrate exceptional evidence conflict", 1)[0]
+        self.assertIn("permission-contents: read", steward_token)
+        self.assertIn("permission-pull-requests: write", steward_token)
+        self.assertNotIn("permission-issues:", steward_token)
         self.assertNotIn("agent:builder", workflow)
 
     def test_head_change_during_run_fails_before_publication(self) -> None:
