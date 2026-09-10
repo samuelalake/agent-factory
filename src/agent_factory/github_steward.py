@@ -812,6 +812,11 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         builder_blocked = bool(
             latest_builder and latest_builder.get("state") == "blocked"
         )
+        steward_hold = bool(
+            "agent:steward" in labels
+            and config.steward.retry_label not in labels
+            and config.steward.dispatch_label not in labels
+        )
         active_dispatch = bool(
             config.steward.dispatch_label in labels
             and latest_steward
@@ -819,7 +824,13 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             and latest_steward.get("dispatched_after_builder_result_id")
             == latest_builder_result_id
         )
-        if builder_blocked and config.steward.retry_label not in labels:
+        if steward_hold:
+            state, next_owner = "blocked", "Steward"
+            detail = (
+                "Steward owns this ready issue without a retry authorization. "
+                "No Builder dispatch was created."
+            )
+        elif builder_blocked and config.steward.retry_label not in labels:
             state, next_owner = "blocked", "Steward"
             detail = (
                 "Builder returned a blocked result. Steward is holding dispatch until the "
