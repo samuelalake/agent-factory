@@ -373,6 +373,17 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     refreshed = _pull_meta(repo, pr, cwd=root)
     if str(refreshed.get("headRefOid") or "") != head:
         raise BuilderBlocked("pull request head changed during Steward arbitration")
+    refreshed_reviews = _pages(_gh([
+        "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp"
+    ], cwd=root))
+    refreshed_conflict = current_conflict_review(
+        refreshed_reviews, head, config.review.marker, config.review.app_login
+    ) or explicit_conflict_review_with_continuity(
+        refreshed_reviews, head, prior_reference_heads,
+        config.review.marker, config.review.app_login,
+    )
+    if refreshed_conflict is None:
+        raise BuilderBlocked("Reviewer conflict handoff changed during Steward arbitration")
     refreshed_comments = _pages(_gh([
         "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
     ], cwd=root))
