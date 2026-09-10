@@ -15,7 +15,11 @@ from .github_builder import (
     _delivery_provenance,
     _fetch_delivery_images,
 )
-from .github_delivery import authenticated_delivery_history
+from .github_delivery import (
+    authenticated_delivery_evidence,
+    authenticated_delivery_history,
+    delivery_evidence_manifest,
+)
 from .github_review import _explicit_arbitration_request, evidence_digests
 from .model import ModelError, complete
 from .protocol import decode_data, encode_data, extract_json_reply
@@ -373,20 +377,47 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     refreshed = _pull_meta(repo, pr, cwd=root)
     if str(refreshed.get("headRefOid") or "") != head:
         raise BuilderBlocked("pull request head changed during Steward arbitration")
+    refreshed_comments = _pages(_gh([
+        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
+    ], cwd=root))
+    refreshed_manifest = delivery_evidence_manifest(
+        str(refreshed.get("body") or ""), expected_repo=repo,
+        expected_pr=pr, expected_head=head,
+    )
+    refreshed_provenance = (
+        authenticated_delivery_evidence(
+            refreshed_comments, expected_repo=repo, expected_pr=pr,
+            expected_head=head, builder_app_login=config.builder.app_login,
+            expected_manifest=refreshed_manifest,
+        )
+        if refreshed_manifest is not None else None
+    )
+    if (
+        refreshed_provenance is None
+        or evidence_digests(refreshed_provenance, "reference") != references
+    ):
+        raise BuilderBlocked("Builder evidence binding changed during Steward arbitration")
+    refreshed_history = authenticated_delivery_history(
+        refreshed_comments, expected_repo=repo, expected_pr=pr,
+        builder_app_login=config.builder.app_login,
+    )
+    refreshed_prior_reference_heads = tuple(dict.fromkeys(
+        str(item.get("head") or "") for item in refreshed_history
+        if str(item.get("head") or "") != head
+        and isinstance(item.get("attachments"), dict)
+        and evidence_digests(item["attachments"], "reference") == references
+    ))
     refreshed_reviews = _pages(_gh([
         "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp"
     ], cwd=root))
     refreshed_conflict = current_conflict_review(
         refreshed_reviews, head, config.review.marker, config.review.app_login
     ) or explicit_conflict_review_with_continuity(
-        refreshed_reviews, head, prior_reference_heads,
+        refreshed_reviews, head, refreshed_prior_reference_heads,
         config.review.marker, config.review.app_login,
     )
     if refreshed_conflict is None:
         raise BuilderBlocked("Reviewer conflict handoff changed during Steward arbitration")
-    refreshed_comments = _pages(_gh([
-        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"
-    ], cwd=root))
     if authenticated_ruling(
         refreshed_comments, app_login=config.steward.app_login, repo=repo, pr=pr,
         head=head, references=references

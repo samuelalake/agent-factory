@@ -356,6 +356,7 @@ class ArbitrationTests(unittest.TestCase):
                 json.dumps([[active]]),
                 json.dumps([[]]),
                 json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[]]),
                 json.dumps([[dismissed]]),
             ])
             provenance = {
@@ -387,6 +388,106 @@ class ArbitrationTests(unittest.TestCase):
             ), mock.patch(
                 "agent_factory.github_arbitration.authenticated_delivery_history",
                 return_value=[],
+            ), mock.patch(
+                "agent_factory.github_arbitration.delivery_evidence_manifest",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_evidence",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.request_ruling",
+                return_value=({
+                    "resolved": True,
+                    "observations": ["fact"],
+                    "authoritative_interpretation": "ruling",
+                    "reason": "visible",
+                }, "gemini", "model"),
+            ), mock.patch(
+                "agent_factory.github_arbitration._publish_immutable"
+            ) as publish:
+                with self.assertRaisesRegex(BuilderBlocked, "handoff changed"):
+                    run("o/r", 7, Path(directory), config_path)
+            publish.assert_not_called()
+
+    def test_legacy_continuity_removal_during_run_fails_before_publication(self) -> None:
+        raw = default_config("demo")
+        raw["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+        })
+        raw["steward"]["arbitration_visual_evidence"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(json.dumps(raw))
+            head = "a" * 40
+            prior_head = "b" * 40
+
+            def review(review_head: str, findings: list[dict[str, str]]) -> dict:
+                return {
+                    "user": {
+                        "login": "agent-factory-reviewer[bot]", "type": "Bot",
+                    },
+                    "state": "CHANGES_REQUESTED",
+                    "body": "<!-- reviewer:agent-factory -->\n" + encode_data({
+                        "head_sha": review_head, "findings": findings,
+                    }),
+                }
+
+            prior_review = review(prior_head, [])
+            explicit = review(head, [{
+                "key": "app/View.swift:12",
+                "severity": "P1",
+                "suggestion": "Steward must arbitrate the evidence.",
+            }])
+            responses = iter([
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[prior_review, explicit]]),
+                json.dumps([[]]),
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
+                json.dumps([[]]),
+                json.dumps([[prior_review, explicit]]),
+            ])
+            provenance = {
+                "https://github.com/user-attachments/assets/11111111-1111-1111-1111-111111111111": {
+                    "role": "render", "scope": "demo", "sha256": "1" * 64,
+                    "content_type": "image/png",
+                },
+                "https://github.com/user-attachments/assets/22222222-2222-2222-2222-222222222222": {
+                    "role": "reference", "scope": "demo", "sha256": "2" * 64,
+                    "content_type": "image/png",
+                },
+            }
+            prior_delivery = ({
+                "head": prior_head,
+                "attachments": provenance,
+                "comment_id": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+            },)
+            images = tuple(
+                ("mutable", url + "#sha256=" + item["sha256"])
+                for url, item in provenance.items()
+            )
+            with mock.patch(
+                "agent_factory.github_arbitration._gh",
+                side_effect=lambda *a, **k: next(responses),
+            ), mock.patch(
+                "agent_factory.github_arbitration._delivery_provenance",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration._current_delivery_media",
+                return_value=(images, ()),
+            ), mock.patch(
+                "agent_factory.github_arbitration._fetch_delivery_images",
+                return_value=("data:image/png;base64,AA==",) * 2,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_history",
+                side_effect=[prior_delivery, ()],
+            ), mock.patch(
+                "agent_factory.github_arbitration.delivery_evidence_manifest",
+                return_value=provenance,
+            ), mock.patch(
+                "agent_factory.github_arbitration.authenticated_delivery_evidence",
+                return_value=provenance,
             ), mock.patch(
                 "agent_factory.github_arbitration.request_ruling",
                 return_value=({
