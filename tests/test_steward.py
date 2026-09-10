@@ -382,6 +382,8 @@ The user's rough report and product intent.
         }])
 
         self.assertIn("Comment ID `5623328827`", feedback)
+        self.assertIn("exact order: [5623328827]", feedback)
+        self.assertIn("Do not include IDs", feedback)
         self.assertIn("@samuel", feedback)
         self.assertIn("Keep the issue held.", feedback)
         self.assertNotIn("agent-factory:data", feedback)
