@@ -210,13 +210,13 @@ class ArbitrationTests(unittest.TestCase):
                 "head_sha": head, "findings": [{"key": CONFLICT_KEY}],
             })
             responses = iter([
-                json.dumps({"headRefOid": head, "title": "demo", "body": "delivery"}),
+                json.dumps({"head": {"sha": head}, "title": "demo", "body": "delivery"}),
                 json.dumps([[{
                     "user": {"login": "agent-factory-reviewer[bot]", "type": "Bot"},
                     "state": "CHANGES_REQUESTED", "body": conflict_body,
                 }]]),
                 json.dumps([[]]),
-                json.dumps({"headRefOid": "b" * 40}),
+                json.dumps({"head": {"sha": "b" * 40}, "title": "demo", "body": "delivery"}),
             ])
             provenance = {
                 "https://github.com/user-attachments/assets/11111111-1111-1111-1111-111111111111": {

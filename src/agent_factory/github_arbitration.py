@@ -30,8 +30,23 @@ def _gh(args: list[str], *, stdin: str | None = None, cwd: Path | None = None) -
         ["gh", *args], input=stdin, text=True, capture_output=True, cwd=cwd
     )
     if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+        operation = " ".join(args[:2])
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"GitHub operation `{operation}` failed: {detail}")
     return result.stdout
+
+
+def _pull_meta(repo: str, pr: int, *, cwd: Path) -> dict[str, str]:
+    """Read only arbitration metadata through the App-compatible REST surface."""
+    raw = json.loads(_gh(["api", f"repos/{repo}/pulls/{pr}"], cwd=cwd))
+    head = raw.get("head") or {}
+    if not isinstance(head, dict) or not isinstance(head.get("sha"), str):
+        raise RuntimeError("GitHub pull response omitted the head SHA")
+    return {
+        "headRefOid": head["sha"],
+        "title": str(raw.get("title") or ""),
+        "body": str(raw.get("body") or ""),
+    }
 
 
 def _same_app(actual: str, expected: str) -> bool:
@@ -237,9 +252,7 @@ def _set_output(value: bool) -> None:
 
 def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
     config = load_config(config_path)
-    meta = json.loads(_gh([
-        "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid,title,body"
-    ], cwd=root))
+    meta = _pull_meta(repo, pr, cwd=root)
     head = str(meta.get("headRefOid") or "")
     reviews = _pages(_gh([
         "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp"
@@ -318,9 +331,7 @@ def run(repo: str, pr: int, root: Path, config_path: Path) -> bool:
         "provider": provider,
         "model": model,
     }
-    refreshed = json.loads(_gh([
-        "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid"
-    ], cwd=root))
+    refreshed = _pull_meta(repo, pr, cwd=root)
     if str(refreshed.get("headRefOid") or "") != head:
         raise BuilderBlocked("pull request head changed during Steward arbitration")
     refreshed_comments = _pages(_gh([
