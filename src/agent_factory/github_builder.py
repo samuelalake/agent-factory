@@ -18,11 +18,14 @@ import urllib.request
 
 from .config import Config, load_config
 from .github_delivery import (
+    DELIVERY_EVIDENCE_NOT_APPLICABLE,
     authenticated_delivery_evidence,
     delivery_evidence_manifest,
     evidence_manifests_match,
+    format_delivery,
     pending_delivery,
 )
+from .repository_paths import repository_glob_match
 from .context import discover_context
 from .protocol import encode_data
 from .nvidia_builder import (
@@ -654,12 +657,31 @@ def format_pr_body(
     cost_kind: str = "estimated",
     issue_title: str = "",
     changed_paths: tuple[str, ...] = (),
+    head: str | None = None,
 ) -> str:
     files = [f"- `{path}`" for path in changed_paths[:20]]
     if len(changed_paths) > 20:
         files.append(f"- _{len(changed_paths) - 20} more files_" )
     if not files:
         files.append("- _No changed paths reported._")
+    delivery = "_No additional Builder delivery evidence is required by this consumer._"
+    if config.review.require_builder_delivery:
+        requires_visual_delivery = not config.review.visual_evidence_paths or any(
+            repository_glob_match(path, pattern)
+            for path in changed_paths
+            for pattern in config.review.visual_evidence_paths
+        )
+        if requires_visual_delivery or not head:
+            delivery = pending_delivery()
+        else:
+            delivery = format_delivery(
+                "ready",
+                f"{DELIVERY_EVIDENCE_NOT_APPLICABLE}\n\n"
+                "Visual evidence is **not applicable**: this revision changes no "
+                "configured evidence-bearing paths. Repository checks and Reviewer "
+                "remain authoritative.",
+                head=head,
+            )
     return "\n".join([
         config.builder.marker,
         "",
@@ -677,7 +699,7 @@ def format_pr_body(
         "",
         "Repository workflows validate the committed head. Builder keeps the current-head delivery below up to date.",
         "",
-        pending_delivery() if config.review.require_builder_delivery else "_No additional Builder delivery evidence is required by this consumer._",
+        delivery,
         "",
         "<details>",
         "<summary>Execution details</summary>",
@@ -1143,6 +1165,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             cwd=root,
         ).splitlines() if path
     )
+    head = _run(["git", "rev-parse", "HEAD"], cwd=root).strip()
 
     pr_body = format_pr_body(
         config,
@@ -1155,6 +1178,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         cost_kind=cost_kind,
         issue_title=str(issue.get("title") or ""),
         changed_paths=changed_paths,
+        head=head,
     )
 
     if existing:

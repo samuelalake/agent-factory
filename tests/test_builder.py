@@ -769,6 +769,66 @@ after"""
         self.assertIn("$0.2500", body)
         self.assertIn("Model cost (estimated)", body)
 
+    def test_nonvisual_revision_publishes_exact_head_ready_delivery(self) -> None:
+        raw = default_config("demo")
+        raw["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**", "**/*.origami"],
+        })
+        head = "a" * 40
+        body = format_pr_body(
+            parse_config(raw),
+            "83",
+            "<builder_summary>Updated provider routing.</builder_summary>",
+            "openai-compatible-tool-loop",
+            "openai/gpt",
+            4,
+            0.01,
+            changed_paths=(".agent-factory/config.json",),
+            head=head,
+        )
+        self.assertIn("builder-delivery-status:ready", body)
+        self.assertIn(f"builder-delivery-head:{head}", body)
+        self.assertIn("Visual evidence is **not applicable**", body)
+
+    def test_visual_revision_remains_pending_for_runner_evidence(self) -> None:
+        raw = default_config("demo")
+        raw["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**", "**/*.origami"],
+        })
+        body = format_pr_body(
+            parse_config(raw),
+            "83",
+            "<builder_summary>Updated the interaction.</builder_summary>",
+            "openai-compatible-tool-loop",
+            "openai/gpt",
+            4,
+            0.01,
+            changed_paths=("app/Pattern.swift",),
+            head="a" * 40,
+        )
+        self.assertIn("builder-delivery-status:pending", body)
+        self.assertNotIn("builder-delivery-head:", body)
+
+    def test_missing_visual_path_configuration_remains_fail_closed(self) -> None:
+        raw = default_config("demo")
+        raw["review"]["require_builder_delivery"] = True
+        body = format_pr_body(
+            parse_config(raw),
+            "83",
+            "<builder_summary>Updated provider routing.</builder_summary>",
+            "openai-compatible-tool-loop",
+            "openai/gpt",
+            4,
+            0.01,
+            changed_paths=(".agent-factory/config.json",),
+            head="a" * 40,
+        )
+        self.assertIn("builder-delivery-status:pending", body)
+
     def test_pr_body_labels_provider_reported_model_cost(self) -> None:
         config = parse_config(default_config("demo"))
         body = format_pr_body(

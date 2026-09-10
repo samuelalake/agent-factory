@@ -19,6 +19,9 @@ from .config import load_config
 
 DELIVERY_START = "<!-- agent-factory:builder-delivery:start -->"
 DELIVERY_END = "<!-- agent-factory:builder-delivery:end -->"
+DELIVERY_EVIDENCE_NOT_APPLICABLE = (
+    "<!-- agent-factory:builder-delivery-evidence:not-applicable -->"
+)
 DELIVERY_STATUS = "<!-- agent-factory:builder-delivery-status:{status} -->"
 DELIVERY_HEAD = "<!-- agent-factory:builder-delivery-head:{head} -->"
 DELIVERY_EVIDENCE = "<!-- agent-factory:builder-evidence:{payload} -->"
