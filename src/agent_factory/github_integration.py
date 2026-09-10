@@ -91,7 +91,7 @@ def route_failure(
         if str(commit.get("messageHeadline") or "").startswith("feat: implement issue #")
     )
     if evidence_hold:
-        label = None
+        label = "agent:steward"
         route = (
             "Reviewer found stale, wrong-target, or contradictory evidence. Steward retained "
             "the blocker for evidence arbitration; Builder will not receive another code revision."
@@ -106,7 +106,7 @@ def route_failure(
         )
         next_owner = "Reviewer"
     elif attempts >= config.builder.max_revision_attempts:
-        label = None
+        label = "agent:steward"
         route = (
             f"Automatic Builder revisions reached the configured limit of "
             f"{config.builder.max_revision_attempts}; Steward retained the blocker until an "

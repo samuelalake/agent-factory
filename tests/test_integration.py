@@ -56,7 +56,10 @@ class IntegrationTests(unittest.TestCase):
         )
         self.assertIn("Steward retained", detail)
         self.assertEqual(next_owner, "Steward")
-        gh.assert_not_called()
+        gh.assert_called_once_with(
+            ["issue", "edit", "83", "--repo", "owner/repo", "--add-label", "agent:steward"],
+            token="steward",
+        )
 
     @patch("agent_factory.github_integration._gh")
     def test_user_cannot_forge_evidence_hold(self, gh) -> None:
@@ -119,7 +122,7 @@ class IntegrationTests(unittest.TestCase):
         )
 
     @patch("agent_factory.github_integration._gh")
-    def test_revision_limit_holds_without_dispatching_steward_or_builder(self, gh) -> None:
+    def test_revision_limit_returns_issue_ownership_to_steward(self, gh) -> None:
         config = parse_config(default_config("fixture"))
         detail, next_owner = route_failure(
             "owner/repo",
@@ -140,7 +143,10 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("configured limit of 3", detail)
         self.assertIn("`agent:retry`", detail)
         self.assertEqual(next_owner, "Steward")
-        gh.assert_not_called()
+        gh.assert_called_once_with(
+            ["issue", "edit", "83", "--repo", "owner/repo", "--add-label", "agent:steward"],
+            token="steward",
+        )
 
     @patch("agent_factory.github_integration._gh")
     def test_reviewer_provider_failure_holds_for_explicit_retry(self, gh) -> None:
