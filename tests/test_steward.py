@@ -95,6 +95,15 @@ class StewardTests(unittest.TestCase):
                     "ready",
                 )
 
+        self.assertEqual(
+            normalize_shape({**base, "decision": "hold"}, 3)["decision"],
+            "needs_human",
+        )
+        self.assertEqual(
+            normalize_shape({**base, "decision": "hold"}, 3, allow_hold=True)["decision"],
+            "ready",
+        )
+
         needs_human = normalize_shape({
             **base,
             "decision": "update",
