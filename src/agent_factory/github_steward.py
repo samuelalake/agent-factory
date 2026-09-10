@@ -129,12 +129,16 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
-def normalize_shape(raw: dict[str, Any], max_subtasks: int) -> dict[str, Any]:
+def normalize_shape(
+    raw: dict[str, Any], max_subtasks: int, *, allow_hold: bool = False
+) -> dict[str, Any]:
     decision = str(raw.get("decision") or "needs_human").strip().lower()
     decision_key = decision.replace("-", "_").replace(" ", "_")
     raw_subtasks = raw.get("subtasks") or []
     if decision_key == "needs_a_human_decision":
         decision = "needs_human"
+    elif decision_key == "hold":
+        decision = "ready" if allow_hold else "needs_human"
     elif decision_key in {"keep_open", "update", "intake", "dispatch"}:
         # Smaller/free models sometimes describe the tracker operation instead
         # of selecting the readiness enum. Recover the contract only from the
@@ -587,7 +591,11 @@ def shape_issue(
         api_key = os.environ.get(f"{provider.upper()}_API_KEY", "") or os.environ.get("MODEL_API_KEY", "")
         try:
             reply = complete(provider, model, system, user, api_key)
-            plan = normalize_shape(extract_json_reply(reply), config.steward.max_subtasks)
+            plan = normalize_shape(
+                extract_json_reply(reply),
+                config.steward.max_subtasks,
+                allow_hold=bool(item.get("_allow_hold_decision")),
+            )
             validate_feedback_resolutions(plan, pending_comments)
             return plan, provider, model
         except (ModelError, ValueError) as exc:
@@ -761,6 +769,12 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
         if isinstance(label, dict)
     }
     issue_was_shaped = SHAPED_MARKER in str(item.get("body") or "")
+    hold_requested = bool(
+        issue_was_shaped
+        and "agent:steward" in labels
+        and config.steward.retry_label not in labels
+        and config.steward.dispatch_label not in labels
+    )
     feedback_cursor = authenticated_steward_feedback_cursor(
         comments, config.steward.app_login, config.steward.marker
     )
@@ -790,6 +804,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             config.steward.app_login,
             config.steward.marker,
         ),
+        "_allow_hold_decision": hold_requested,
     }
     dispatched_after_builder_result_id: str | None = None
     if str(item.get("state") or "").upper() != "OPEN":
@@ -904,12 +919,7 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
             )
             print(state)
             return state
-        hold_after_shape = bool(
-            issue_was_shaped
-            and "agent:steward" in labels
-            and config.steward.retry_label not in labels
-            and config.steward.dispatch_label not in labels
-        )
+        hold_after_shape = hold_requested
         if hold_after_shape:
             state, next_owner = "blocked", "Steward"
             detail = (
