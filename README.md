@@ -135,10 +135,12 @@ caller's `runner` input while keeping the role contract unchanged.
 set whose name and description match the current task. The adopting repository
 therefore controls both the knowledge and the procedures a role receives.
 
-The [`skills/`](skills/) directory includes two optional starting points for
-adopters: project stewardship that prevents issue-sprawl, and human-facing
-writing. They are intentionally small. Domain judgment and project-specific
-verification still belong in each adopting repository.
+The [`skills/`](skills/) directory includes optional starting points for
+project stewardship that prevents issue-sprawl, human-facing writing, and
+product-design delivery that gates user-facing implementation on an approved
+design contract. They are intentionally small. Domain judgment, design-system
+authority, and project-specific verification still belong in each adopting
+repository.
 
 The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
