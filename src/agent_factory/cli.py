@@ -32,6 +32,7 @@ jobs:
       factory_ref: {factory_ref}
     secrets:
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
       ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
       MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}

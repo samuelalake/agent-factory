@@ -143,8 +143,10 @@ verification still belong in each adopting repository.
 The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
 not change the review or gate contract. Builder supports Gemini CLI plus bounded
-OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter. Reviewer and
-Steward use provider-neutral text and image adapters for Anthropic, Gemini, MiniMax,
+OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter. Reviewer supports
+those provider-neutral text and image adapters plus a text-only `claude-code`
+harness that runs the pinned Claude Code CLI with a Pro or Max subscription
+token. Steward uses the API-backed adapters for Anthropic, Gemini, MiniMax,
 NVIDIA, and OpenRouter. The generated configuration starts with Gemini and falls
 back to NVIDIA Kimi; both are quota-limited services, so the delivery record
 names the provider and model that actually served the run instead of implying
@@ -179,6 +181,11 @@ Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
 `MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`
 remains available for a single-provider caller, but a fallback setup should use
 the named secrets so credentials can never be sent to the wrong provider.
+The Reviewer-only `claude-code` provider instead requires
+`CLAUDE_CODE_OAUTH_TOKEN`, generated with `claude setup-token`; it never receives
+`ANTHROPIC_API_KEY`, because that variable would override subscription billing
+in Claude Code print mode. Configure its model with a Claude Code model name or
+alias such as `opus`.
 
 Role workflows receive dedicated `AGENT_FACTORY_STEWARD_*`,
 `AGENT_FACTORY_BUILDER_*`, and `AGENT_FACTORY_REVIEWER_*` credentials. They mint
@@ -208,6 +215,9 @@ fallback route. When exact-head Builder evidence reports a deterministic failure
 Reviewer keeps that P1 blocker and uses authenticated evidence images to provide
 specific visual corrections. Pending or missing evidence still fails closed without
 calling a model.
+The `claude-code` Reviewer is deliberately text-only in this adapter. Keep its
+visual flag false and configure a separately verified image-capable fallback for
+pull requests that require screenshot evidence.
 
 Consumers can set `review.visual_evidence_paths` to repository-relative globs such
 as `app/**` and `**/*.origami`. A matching change without a canonical Builder

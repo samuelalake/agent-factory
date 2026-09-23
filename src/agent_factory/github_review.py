@@ -559,8 +559,11 @@ def request_review(
         if image_urls and not supports_images:
             failures.append(f"{provider}/{model}: visual evidence is not enabled for this route")
             continue
-        env_name = f"{provider.upper()}_API_KEY"
-        api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
+        if provider == "claude-code":
+            api_key = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        else:
+            env_name = f"{provider.upper()}_API_KEY"
+            api_key = os.environ.get(env_name, "") or os.environ.get("MODEL_API_KEY", "")
         try:
             reply = complete(
                 provider,

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -11,6 +13,25 @@ import urllib.request
 
 class ModelError(RuntimeError):
     pass
+
+
+_CLAUDE_ENV_PASSTHROUGH = (
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "USER",
+    "CI",
+    "GITHUB_ACTIONS",
+    "RUNNER_TEMP",
+    "XDG_CONFIG_HOME",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+)
 
 
 def _split_data_url(value: str) -> tuple[str, str]:
@@ -81,6 +102,70 @@ def complete(
     image_urls: tuple[str, ...] = (),
 ) -> str:
     """Return model text while keeping the role contract provider-independent."""
+    if provider == "claude-code":
+        if image_urls:
+            raise ModelError("claude-code reviewer does not support inline image evidence")
+        if not api_key:
+            raise ModelError(
+                "CLAUDE_CODE_OAUTH_TOKEN is required for the claude-code provider"
+            )
+        # Give the subprocess only the runtime environment it needs. In
+        # particular, withhold GitHub credentials and every fallback provider
+        # key. ANTHROPIC_API_KEY must also stay absent because Claude Code gives
+        # it precedence over subscription auth in print mode.
+        env = {
+            name: os.environ[name]
+            for name in _CLAUDE_ENV_PASSTHROUGH
+            if os.environ.get(name)
+        }
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = api_key
+        args = [
+            "claude",
+            "-p",
+            "--model",
+            model,
+            "--system-prompt",
+            system,
+            "--output-format",
+            "json",
+            "--tools",
+            "",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--prompt-suggestions",
+            "false",
+        ]
+        try:
+            process = subprocess.run(
+                args,
+                input=user,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ModelError("claude cli timed out after 300 seconds") from exc
+        except FileNotFoundError as exc:
+            raise ModelError("claude cli is not installed") from exc
+        except OSError as exc:
+            raise ModelError("claude cli could not start") from exc
+        if process.returncode:
+            # stderr may contain prompt material or provider output. Keep the
+            # failure useful without reflecting arbitrary runner content.
+            raise ModelError(f"claude cli exited with status {process.returncode}")
+        try:
+            envelope = json.loads(process.stdout)
+        except json.JSONDecodeError as exc:
+            raise ModelError("claude cli returned invalid JSON") from exc
+        if not isinstance(envelope, dict):
+            raise ModelError("claude cli returned an invalid response shape")
+        if envelope.get("is_error") is True:
+            raise ModelError("claude cli reported an error")
+        result = envelope.get("result")
+        if not isinstance(result, str) or not result.strip():
+            raise ModelError("claude cli returned no review result")
+        return result
     if not api_key:
         raise ModelError("MODEL_API_KEY is required")
     if provider == "anthropic":

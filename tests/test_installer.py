@@ -34,6 +34,7 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("@new", review)
             for secret in (
                 "MODEL_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
                 "ANTHROPIC_API_KEY",
                 "GEMINI_API_KEY",
                 "MINIMAX_API_KEY",

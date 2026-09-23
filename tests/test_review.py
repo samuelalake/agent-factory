@@ -973,6 +973,27 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(complete.call_count, 2)
         self.assertEqual(complete.call_args.kwargs["image_urls"], ())
 
+    def test_claude_code_reviewer_uses_dedicated_oauth_secret(self) -> None:
+        with (
+            mock.patch(
+                "agent_factory.github_review.complete",
+                return_value='{"summary":"ok","approve":true,"findings":[]}',
+            ) as complete,
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "CLAUDE_CODE_OAUTH_TOKEN": "subscription-token",
+                    "MODEL_API_KEY": "different-provider-key",
+                },
+                clear=True,
+            ),
+        ):
+            _, provider, model = request_review(
+                [("claude-code", "opus", False)], "system", "user"
+            )
+        self.assertEqual((provider, model), ("claude-code", "opus"))
+        self.assertEqual(complete.call_args.args[4], "subscription-token")
+
     def test_review_passes_current_head_images_to_provider(self) -> None:
         with (
             mock.patch(
