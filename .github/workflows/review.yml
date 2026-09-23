@@ -58,11 +58,21 @@ jobs:
           repository: samuelalake/agent-factory
           ref: ${{ inputs.factory_ref }}
           path: factory
+      - name: Detect Claude Code reviewer
+        id: claude-code
+        run: >-
+          PYTHONPATH=factory/src python3 -c
+          'import os; from pathlib import Path; from agent_factory.config import load_config;
+          review = load_config(Path("consumer/.agent-factory/config.json")).review;
+          enabled = review.provider == "claude-code" or review.fallback_provider == "claude-code";
+          open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8").write(f"enabled={str(enabled).lower()}\n")'
       - name: Set up Node for Claude Code
+        if: steps.claude-code.outputs.enabled == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
       - name: Install Claude Code CLI
+        if: steps.claude-code.outputs.enabled == 'true'
         run: npm install -g @anthropic-ai/claude-code@2.1.236
       - name: Review current pull request
         env:
