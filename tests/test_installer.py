@@ -55,3 +55,5 @@ class InstallerTests(unittest.TestCase):
             builder = (root / ".github/workflows/agent-builder.yml").read_text()
             self.assertIn("AGENT_FACTORY_BUILDER_APP_ID", builder)
             self.assertIn("runner: ubuntu-latest", builder)
+            for secret in ("MODEL_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+                self.assertIn(secret, builder)

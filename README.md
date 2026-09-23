@@ -109,10 +109,11 @@ caller workflows; and an idempotent installer.
 GitHub's repository-level automatic branch deletion owns post-merge cleanup.
 Steward owns the integration decision, not branch housekeeping.
 
-Builder uses a pinned Gemini CLI headless harness first and can fall back to a
-bounded NVIDIA Kimi tool loop. Model credentials are withheld from publication
-steps, GitHub credentials are withheld from model tool environments, and the
-fallback refuses to mix with a partially modified primary workspace. This is
+Builder runs a headless agentic harness — a pinned Gemini CLI, a bounded
+OpenAI-compatible tool loop, or the subscription-backed Claude Code CLI — and can
+fall back to a bounded NVIDIA Kimi tool loop. Model credentials are withheld from
+publication steps, GitHub credentials are withheld from model tool environments,
+and the fallback refuses to mix with a partially modified primary workspace. This is
 still an alpha: dispatch labels should be restricted to trusted maintainers and
 the workflows should be evaluated in trusted repositories before hands-off use.
 
@@ -142,11 +143,12 @@ verification still belong in each adopting repository.
 
 The runtime is model-agnostic: a role chooses a primary harness/provider and an
 optional fallback pair through versioned configuration. Provider choice does
-not change the review or gate contract. Builder supports Gemini CLI plus bounded
-OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter. Reviewer supports
-those provider-neutral text and image adapters plus a text-only `claude-code`
-harness that runs the pinned Claude Code CLI with a Pro or Max subscription
-token. Steward uses the API-backed adapters for Anthropic, Gemini, MiniMax,
+not change the review or gate contract. Builder supports Gemini CLI, bounded
+OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter, and a `claude-code`
+harness that runs the pinned Claude Code CLI headless in edit mode with a Pro or
+Max subscription token. Reviewer supports the provider-neutral text and image
+adapters plus that same subscription-backed `claude-code` harness, run text-only.
+Steward uses the API-backed adapters for Anthropic, Gemini, MiniMax,
 NVIDIA, and OpenRouter. The generated configuration starts with Gemini and falls
 back to NVIDIA Kimi; both are quota-limited services, so the delivery record
 names the provider and model that actually served the run instead of implying
@@ -181,11 +183,15 @@ Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
 `MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`
 remains available for a single-provider caller, but a fallback setup should use
 the named secrets so credentials can never be sent to the wrong provider.
-The Reviewer-only `claude-code` provider instead requires
-`CLAUDE_CODE_OAUTH_TOKEN`, generated with `claude setup-token`; it never receives
-`ANTHROPIC_API_KEY`, because that variable would override subscription billing
-in Claude Code print mode. Configure its model with a Claude Code model name or
-alias such as `opus`.
+The `claude-code` provider — available to both Reviewer and Builder — instead
+requires `CLAUDE_CODE_OAUTH_TOKEN`, generated with `claude setup-token`; it never
+receives `ANTHROPIC_API_KEY`, because that variable would override subscription
+billing in Claude Code print mode. Configure its model with a Claude Code model
+name or alias such as `opus`. The Builder route additionally sets
+`builder.harness: "claude-code"`; because it runs on a flat subscription rather
+than metered tokens, its delivery record reports the model cost as
+`subscription` and the fallback pair stays on a metered OpenAI-compatible
+provider.
 
 Role workflows receive dedicated `AGENT_FACTORY_STEWARD_*`,
 `AGENT_FACTORY_BUILDER_*`, and `AGENT_FACTORY_REVIEWER_*` credentials. They mint

@@ -85,6 +85,31 @@ def _safe_agent_env() -> dict[str, str]:
     return env
 
 
+def _claude_agent_env() -> dict[str, str]:
+    """Runtime env for the headless Claude Code Builder, without role credentials.
+
+    The subscription token alone authenticates the CLI. Every model-provider key,
+    the GitHub installation token, and ANTHROPIC_API_KEY are withheld: the agent
+    must never reach GitHub or a fallback provider from inside its own subprocess,
+    and ANTHROPIC_API_KEY would take precedence over subscription auth in print
+    mode (the same rule the Reviewer's claude-code adapter follows).
+    """
+    allowed = {
+        "CI", "HOME", "LANG", "LC_ALL", "PATH", "RUNNER_ARCH", "RUNNER_OS",
+        "RUNNER_TEMP", "TMPDIR", "XCODE_VERSION_ACTUAL", "XDG_CONFIG_HOME",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    }
+    env = {key: value for key, value in os.environ.items() if key in allowed}
+    # Prefer the dedicated subscription token; fall back to MODEL_API_KEY only for
+    # a single-provider caller. The dedicated token must win so a multi-provider
+    # MODEL_API_KEY (e.g. an HTTP provider key) cannot shadow the subscription.
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = (
+        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+        or os.environ.get("MODEL_API_KEY", "")
+    )
+    return env
+
+
 def _clean_detail(value: str) -> str:
     """Keep issue status concise and free of terminal control sequences."""
     clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
@@ -785,6 +810,67 @@ def _run_gemini(prompt: str, *, root: Path, model: str, timeout_seconds: int) ->
     raise subprocess.TimeoutExpired("gemini", timeout_seconds)
 
 
+def _run_claude_code(
+    prompt: str, *, root: Path, model: str, timeout_seconds: int
+) -> tuple[str, int]:
+    """Run Claude Code headless in edit mode; return its summary and turn count.
+
+    Claude Code edits the working tree in place and the harness performs staging,
+    commit, and publication — the identical contract to the Gemini harness, which
+    is why the CLI is never allowed to commit or push. The prompt is delivered on
+    stdin so a large repository briefing cannot overflow the argument list.
+    """
+    env = _claude_agent_env()
+    if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        raise BuilderBlocked(
+            "CLAUDE_CODE_OAUTH_TOKEN is required for the claude-code Builder harness"
+        )
+    args = [
+        "claude", "-p",
+        "--model", model,
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "Read,Edit,Write,Grep,Glob,Bash",
+        "--output-format", "json",
+    ]
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=root,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise BuilderBlocked("claude cli is not installed") from exc
+    except OSError as exc:
+        raise BuilderBlocked("claude cli could not start") from exc
+    if proc.returncode:
+        # stderr may echo prompt material or arbitrary runner content; surface
+        # only the status, never the captured output.
+        raise BuilderBlocked(f"claude cli exited with status {proc.returncode}")
+    try:
+        envelope = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise BuilderBlocked("claude cli returned invalid JSON") from exc
+    if not isinstance(envelope, dict):
+        raise BuilderBlocked("claude cli returned an invalid response shape")
+    if envelope.get("is_error") is True:
+        raise BuilderBlocked("claude cli reported an error")
+    result = envelope.get("result")
+    if not isinstance(result, str):
+        raise BuilderBlocked("claude cli returned no result")
+    # Mirror parse_gemini_stream's proof-of-work guard: a chat-only reply that
+    # leaves the working tree untouched (including new untracked files, which
+    # `git diff --quiet` would miss) is not a build.
+    if not _run(["git", "status", "--porcelain"], cwd=root).strip():
+        raise BuilderBlocked("Claude Code completed without modifying the repository")
+    turns = envelope.get("num_turns")
+    tool_calls = turns if isinstance(turns, int) and turns > 0 else 0
+    return result, tool_calls
+
+
 def build_prompt(
     config: Config,
     issue: dict[str, Any],
@@ -1092,6 +1178,21 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                     timeout_seconds=config.builder.timeout_seconds,
                 )
                 response, tool_calls = parse_gemini_stream(output)
+            elif config.builder.provider == "claude-code":
+                if config.builder.harness != "claude-code":
+                    raise RuntimeError(
+                        f"unsupported claude-code harness: {config.builder.harness}"
+                    )
+                response, tool_calls = _run_claude_code(
+                    prompt,
+                    root=root,
+                    model=config.builder.model,
+                    timeout_seconds=config.builder.timeout_seconds,
+                )
+                # Subscription-backed: there is no per-token cost to meter, so the
+                # shared cost budget stays untouched and a fallback can still run.
+                estimated_cost = 0.0
+                cost_kind = "subscription"
             else:
                 response, tool_calls, estimated_cost = run_compatible(
                     config.builder.provider,
