@@ -154,7 +154,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError("review.delivery_wait_seconds must be a non-negative integer")
     provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
     supported_providers = {"anthropic", "gemini", "minimax", "nvidia", "openrouter"}
-    if provider not in supported_providers:
+    review_providers = supported_providers | {"claude-code"}
+    if provider not in review_providers:
         raise ConfigError(f"unsupported review.provider: {provider}")
     fallback_provider_value = review.get("fallback_provider")
     fallback_model_value = review.get("fallback_model")
@@ -164,7 +165,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
     fallback_model = None
     if fallback_provider_value is not None:
         fallback_provider = _string(fallback_provider_value, "review.fallback_provider").lower()
-        if fallback_provider not in supported_providers:
+        if fallback_provider not in review_providers:
             raise ConfigError(f"unsupported review.fallback_provider: {fallback_provider}")
         fallback_model = _string(fallback_model_value, "review.fallback_model")
     visual_evidence = review.get("visual_evidence", False)
@@ -176,6 +177,14 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError("review.visual_evidence must be a boolean")
     if not isinstance(fallback_visual_evidence, bool):
         raise ConfigError("review.fallback_visual_evidence must be a boolean")
+    if provider == "claude-code" and visual_evidence:
+        raise ConfigError(
+            "review.visual_evidence must be false for the text-only claude-code provider"
+        )
+    if fallback_provider == "claude-code" and fallback_visual_evidence:
+        raise ConfigError(
+            "review.fallback_visual_evidence must be false for the text-only claude-code provider"
+        )
     if fallback_visual_evidence and fallback_provider is None:
         raise ConfigError(
             "review.fallback_visual_evidence requires a configured fallback provider"

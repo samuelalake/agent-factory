@@ -20,6 +20,61 @@ def _response(value: dict) -> mock.MagicMock:
 
 
 class ModelAdapterTests(unittest.TestCase):
+    def test_claude_code_uses_subscription_token_without_api_key(self) -> None:
+        process = mock.MagicMock(
+            returncode=0,
+            stdout=json.dumps({"result": '{"approve":true}', "is_error": False}),
+            stderr="",
+        )
+        with (
+            mock.patch("agent_factory.model.subprocess.run", return_value=process) as run,
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PATH": "/usr/bin",
+                    "ANTHROPIC_API_KEY": "billed-key",
+                    "OPENROUTER_API_KEY": "fallback-key",
+                    "AGENT_FACTORY_APP_PRIVATE_KEY": "github-key",
+                },
+                clear=True,
+            ),
+        ):
+            text = complete("claude-code", "opus", "system", "user", "oauth-token")
+
+        self.assertEqual(text, '{"approve":true}')
+        args = run.call_args.args[0]
+        self.assertEqual(args[:2], ["claude", "-p"])
+        self.assertIn("--system-prompt", args)
+        self.assertIn("--safe-mode", args)
+        self.assertIn("--no-session-persistence", args)
+        self.assertEqual(run.call_args.kwargs["input"], "user")
+        self.assertEqual(
+            run.call_args.kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"],
+            "oauth-token",
+        )
+        self.assertNotIn("ANTHROPIC_API_KEY", run.call_args.kwargs["env"])
+        self.assertNotIn("OPENROUTER_API_KEY", run.call_args.kwargs["env"])
+        self.assertNotIn("AGENT_FACTORY_APP_PRIVATE_KEY", run.call_args.kwargs["env"])
+        self.assertEqual(run.call_args.kwargs["env"]["PATH"], "/usr/bin")
+
+    def test_claude_code_rejects_inline_images(self) -> None:
+        with self.assertRaisesRegex(ModelError, "does not support inline image"):
+            complete(
+                "claude-code",
+                "opus",
+                "system",
+                "user",
+                "oauth-token",
+                image_urls=("data:image/png;base64,aGVsbG8=",),
+            )
+
+    def test_claude_code_does_not_reflect_stderr(self) -> None:
+        process = mock.MagicMock(returncode=1, stdout="", stderr="secret prompt material")
+        with mock.patch("agent_factory.model.subprocess.run", return_value=process):
+            with self.assertRaisesRegex(ModelError, "exited with status 1") as raised:
+                complete("claude-code", "opus", "system", "user", "oauth-token")
+        self.assertNotIn("secret", str(raised.exception))
+
     def test_transient_model_capacity_retries_before_provider_fallback(self) -> None:
         def unavailable() -> urllib.error.HTTPError:
             return urllib.error.HTTPError(

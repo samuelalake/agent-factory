@@ -46,6 +46,24 @@ class ConfigTests(unittest.TestCase):
         config = parse_config(raw)
         self.assertEqual((config.review.provider, config.review.model), ("gemini", "gemini-3.5-flash"))
 
+    def test_claude_code_is_reviewer_only_and_text_only(self) -> None:
+        raw = default_config("demo")
+        raw["review"].update({
+            "provider": "claude-code",
+            "model": "opus",
+            "visual_evidence": False,
+        })
+        self.assertEqual(parse_config(raw).review.provider, "claude-code")
+
+        raw["review"]["visual_evidence"] = True
+        with self.assertRaisesRegex(ConfigError, "text-only claude-code"):
+            parse_config(raw)
+
+        raw = default_config("demo")
+        raw["steward"]["provider"] = "claude-code"
+        with self.assertRaisesRegex(ConfigError, "unsupported steward.provider"):
+            parse_config(raw)
+
     def test_reviewer_app_login_is_configurable_and_required(self) -> None:
         raw = default_config("demo")
         raw["review"]["app_login"] = "acme-reviewer[bot]"
