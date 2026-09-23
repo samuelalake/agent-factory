@@ -168,6 +168,65 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.builder.provider, "minimax")
         self.assertEqual(config.builder.input_cost_per_million, 0.3)
 
+    def test_claude_code_builder_requires_its_own_harness(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "claude-code",
+                "harness": "claude-code",
+                "model": "claude-opus-4-8",
+                "fallback_provider": "minimax",
+                "fallback_model": "MiniMax-M2.7",
+            }
+        )
+        config = parse_config(raw)
+        self.assertEqual(config.builder.provider, "claude-code")
+        self.assertEqual(config.builder.harness, "claude-code")
+        self.assertEqual(config.builder.fallback_provider, "minimax")
+
+        raw["builder"]["harness"] = "gemini-cli"
+        with self.assertRaisesRegex(ConfigError, "builder.harness must be 'claude-code'"):
+            parse_config(raw)
+
+    def test_unknown_builder_provider_fails(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["provider"] = "mystery"
+        with self.assertRaisesRegex(ConfigError, "unsupported builder.provider"):
+            parse_config(raw)
+
+    def test_builder_provider_excludes_harnessless_anthropic(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update({"provider": "anthropic", "harness": "openai-compatible"})
+        with self.assertRaisesRegex(ConfigError, "unsupported builder.provider: anthropic"):
+            parse_config(raw)
+
+    def test_claude_code_is_rejected_as_builder_fallback(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "claude-code",
+                "harness": "claude-code",
+                "model": "claude-opus-4-8",
+                "fallback_provider": "claude-code",
+                "fallback_model": "claude-opus-4-8",
+            }
+        )
+        with self.assertRaisesRegex(ConfigError, "unsupported builder.fallback_provider"):
+            parse_config(raw)
+
+    def test_claude_code_builder_cannot_enable_visual_revision_context(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "claude-code",
+                "harness": "claude-code",
+                "model": "claude-opus-4-8",
+                "visual_revision_context": True,
+            }
+        )
+        with self.assertRaisesRegex(ConfigError, "openai-compatible"):
+            parse_config(raw)
+
     def test_visual_revision_context_requires_compatible_harness(self) -> None:
         raw = default_config("demo")
         raw["builder"]["visual_revision_context"] = True

@@ -27,6 +27,8 @@ from agent_factory.github_builder import (
     _review_feedback,
     _preserve_workflow_control_plane,
     _publish_base_sync_without_model,
+    _claude_agent_env,
+    _run_claude_code,
     _run_gemini,
     _safe_agent_env,
     _validate_candidate,
@@ -276,6 +278,94 @@ Produce current-head evidence and publish a ready delivery section.
         self.assertEqual(output, success)
         sleep.assert_called_once_with(7)
         self.assertIn("--resume", run.call_args_list[1].args[0])
+
+    def test_claude_agent_environment_excludes_role_credentials(self) -> None:
+        source = {
+            "PATH": "/bin",
+            "HOME": "/tmp/home",
+            "MODEL_API_KEY": "subscription-token",
+            "ANTHROPIC_API_KEY": "anthropic",
+            "GEMINI_API_KEY": "gemini",
+            "MINIMAX_API_KEY": "minimax",
+            "GH_TOKEN": "github",
+            "AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY": "private",
+        }
+        with mock.patch.dict("os.environ", source, clear=True):
+            env = _claude_agent_env()
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "subscription-token")
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("GEMINI_API_KEY", env)
+        self.assertNotIn("MINIMAX_API_KEY", env)
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("MODEL_API_KEY", env)
+        self.assertFalse(any("PRIVATE_KEY" in key for key in env))
+
+    def test_claude_agent_env_prefers_dedicated_oauth_token(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "oauth", "MODEL_API_KEY": "generic"},
+            clear=True,
+        ):
+            env = _claude_agent_env()
+        # The dedicated token wins so a generic MODEL_API_KEY cannot shadow it.
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth")
+
+    def test_run_claude_code_returns_summary_and_leaves_edits_in_place(self) -> None:
+        envelope = json.dumps(
+            {"is_error": False, "result": "<builder_summary>Done.</builder_summary>", "num_turns": 5}
+        )
+        completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=envelope, stderr="")
+        with (
+            mock.patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "token"}, clear=True),
+            mock.patch(
+                "agent_factory.github_builder.subprocess.run", return_value=completed
+            ) as run_cli,
+            # The working tree carries an edit, so the proof-of-work guard passes.
+            mock.patch("agent_factory.github_builder._run", return_value=" M Product.swift\n"),
+        ):
+            response, tool_calls = _run_claude_code(
+                "task", root=Path("."), model="claude-opus-4-8", timeout_seconds=100
+            )
+        self.assertIn("<builder_summary>Done.</builder_summary>", response)
+        self.assertEqual(tool_calls, 5)
+        invocation = run_cli.call_args
+        self.assertEqual(invocation.kwargs["input"], "task")
+        self.assertEqual(invocation.kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "token")
+        self.assertNotIn("GH_TOKEN", invocation.kwargs["env"])
+        argv = invocation.args[0]
+        self.assertIn("--permission-mode", argv)
+        self.assertIn("acceptEdits", argv)
+        self.assertIn("Read,Edit,Write,Grep,Glob,Bash", argv)
+
+    def test_run_claude_code_rejects_chat_only_reply_without_edits(self) -> None:
+        envelope = json.dumps({"is_error": False, "result": "Nothing to do.", "num_turns": 1})
+        completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=envelope, stderr="")
+        with (
+            mock.patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "token"}, clear=True),
+            mock.patch("agent_factory.github_builder.subprocess.run", return_value=completed),
+            # An untouched working tree fails the proof-of-work guard.
+            mock.patch("agent_factory.github_builder._run", return_value=""),
+            self.assertRaisesRegex(BuilderBlocked, "without modifying the repository"),
+        ):
+            _run_claude_code("task", root=Path("."), model="m", timeout_seconds=100)
+
+    def test_run_claude_code_requires_a_subscription_token(self) -> None:
+        with (
+            mock.patch.dict("os.environ", {"PATH": "/bin"}, clear=True),
+            self.assertRaisesRegex(BuilderBlocked, "CLAUDE_CODE_OAUTH_TOKEN is required"),
+        ):
+            _run_claude_code("task", root=Path("."), model="m", timeout_seconds=100)
+
+    def test_run_claude_code_surfaces_cli_error_without_output(self) -> None:
+        envelope = json.dumps({"is_error": True, "result": "boom"})
+        completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=envelope, stderr="")
+        with (
+            mock.patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "token"}, clear=True),
+            mock.patch("agent_factory.github_builder.subprocess.run", return_value=completed),
+            self.assertRaisesRegex(BuilderBlocked, "claude cli reported an error"),
+        ):
+            _run_claude_code("task", root=Path("."), model="m", timeout_seconds=100)
 
     def test_builder_prompt_protects_workflow_control_plane(self) -> None:
         config = parse_config(default_config("demo"))

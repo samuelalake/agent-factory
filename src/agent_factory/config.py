@@ -306,10 +306,18 @@ def parse_config(raw: dict[str, Any]) -> Config:
     if max_model_cost_usd <= 0:
         raise ConfigError("builder.max_model_cost_usd must be greater than zero")
     builder_provider = _string(builder.get("provider", "gemini"), "builder.provider").lower()
-    if builder_provider not in {"gemini", "minimax", "nvidia", "openrouter"}:
+    # The Builder is agentic, so every provider needs a concrete edit harness.
+    # claude-code runs the subscription-backed Claude Code CLI headless; anthropic
+    # is a text-completion-only Reviewer provider with no Builder harness, so it is
+    # deliberately excluded from this set.
+    builder_providers = {"gemini", "minimax", "nvidia", "openrouter", "claude-code"}
+    if builder_provider not in builder_providers:
         raise ConfigError(f"unsupported builder.provider: {builder_provider}")
     builder_harness = _string(builder.get("harness", "gemini-cli"), "builder.harness")
-    expected_harness = "gemini-cli" if builder_provider == "gemini" else "openai-compatible"
+    expected_harness = {
+        "gemini": "gemini-cli",
+        "claude-code": "claude-code",
+    }.get(builder_provider, "openai-compatible")
     if builder_harness != expected_harness:
         raise ConfigError(
             f"builder.harness must be {expected_harness!r} for provider {builder_provider!r}"
@@ -317,7 +325,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
     visual_revision_context = builder.get("visual_revision_context", False)
     if not isinstance(visual_revision_context, bool):
         raise ConfigError("builder.visual_revision_context must be a boolean")
-    if visual_revision_context and builder_provider == "gemini":
+    if visual_revision_context and builder_harness != "openai-compatible":
         raise ConfigError(
             "builder.visual_revision_context requires the openai-compatible harness"
         )
@@ -336,6 +344,8 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError("builder.fallback_provider and builder.fallback_model must be set together")
     if builder_fallback_provider is not None:
         builder_fallback_provider = _string(builder_fallback_provider, "builder.fallback_provider").lower()
+        # The fallback always runs through the bounded OpenAI-compatible loop, so
+        # it must be one of those providers regardless of the primary harness.
         if builder_fallback_provider not in {"minimax", "nvidia", "openrouter"}:
             raise ConfigError(f"unsupported builder.fallback_provider: {builder_fallback_provider}")
         builder_fallback_model = _string(builder_fallback_model, "builder.fallback_model")
