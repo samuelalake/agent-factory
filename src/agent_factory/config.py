@@ -154,7 +154,9 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError("review.delivery_wait_seconds must be a non-negative integer")
     provider = _string(review.get("provider", "anthropic"), "review.provider").lower()
     supported_providers = {"anthropic", "gemini", "minimax", "nvidia", "openrouter"}
-    review_providers = supported_providers | {"claude-code"}
+    subscription_providers = {"claude-code"}
+    review_providers = supported_providers | subscription_providers
+    steward_providers = supported_providers | subscription_providers
     if provider not in review_providers:
         raise ConfigError(f"unsupported review.provider: {provider}")
     fallback_provider_value = review.get("fallback_provider")
@@ -203,7 +205,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             "review.visual_evidence_paths requires a visual-capable review route"
         )
     steward_provider = _string(steward.get("provider", "gemini"), "steward.provider").lower()
-    if steward_provider not in supported_providers:
+    if steward_provider not in steward_providers:
         raise ConfigError(f"unsupported steward.provider: {steward_provider}")
     steward_fallback_provider_value = steward.get("fallback_provider", "nvidia")
     steward_fallback_model_value = steward.get("fallback_model", "moonshotai/kimi-k3")
@@ -215,7 +217,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
         steward_fallback_provider = _string(
             steward_fallback_provider_value, "steward.fallback_provider"
         ).lower()
-        if steward_fallback_provider not in supported_providers:
+        if steward_fallback_provider not in steward_providers:
             raise ConfigError(f"unsupported steward.fallback_provider: {steward_fallback_provider}")
         steward_fallback_model = _string(
             steward_fallback_model_value, "steward.fallback_model"
@@ -224,7 +226,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
         steward.get("arbitration_provider", steward_provider),
         "steward.arbitration_provider",
     ).lower()
-    if arbitration_provider not in supported_providers:
+    if arbitration_provider not in steward_providers:
         raise ConfigError(f"unsupported steward.arbitration_provider: {arbitration_provider}")
     arbitration_model = _string(
         steward.get("arbitration_model", steward.get("model", "gemini-3.6-flash")),
@@ -233,6 +235,11 @@ def parse_config(raw: dict[str, Any]) -> Config:
     arbitration_visual_evidence = steward.get("arbitration_visual_evidence", False)
     if not isinstance(arbitration_visual_evidence, bool):
         raise ConfigError("steward.arbitration_visual_evidence must be a boolean")
+    if arbitration_provider == "claude-code" and arbitration_visual_evidence:
+        raise ConfigError(
+            "steward.arbitration_visual_evidence must be false for the text-only "
+            "claude-code provider"
+        )
     arbitration_fallback_provider_value = steward.get("arbitration_fallback_provider")
     arbitration_fallback_model_value = steward.get("arbitration_fallback_model")
     if ((arbitration_fallback_provider_value is None) !=
@@ -248,7 +255,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             arbitration_fallback_provider_value,
             "steward.arbitration_fallback_provider",
         ).lower()
-        if arbitration_fallback_provider not in supported_providers:
+        if arbitration_fallback_provider not in steward_providers:
             raise ConfigError(
                 "unsupported steward.arbitration_fallback_provider: "
                 f"{arbitration_fallback_provider}"
@@ -262,6 +269,14 @@ def parse_config(raw: dict[str, Any]) -> Config:
     )
     if not isinstance(arbitration_fallback_visual_evidence, bool):
         raise ConfigError("steward.arbitration_fallback_visual_evidence must be a boolean")
+    if (
+        arbitration_fallback_provider == "claude-code"
+        and arbitration_fallback_visual_evidence
+    ):
+        raise ConfigError(
+            "steward.arbitration_fallback_visual_evidence must be false for the "
+            "text-only claude-code provider"
+        )
     if arbitration_fallback_visual_evidence and arbitration_fallback_provider is None:
         raise ConfigError(
             "steward.arbitration_fallback_visual_evidence requires an arbitration fallback provider"

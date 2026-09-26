@@ -29,6 +29,14 @@ MARKER = "<!-- steward:agent-factory-evidence-arbitration -->"
 CONFLICT_KEY = "agent-factory://evidence-interpretation-conflict"
 
 
+def _model_key(provider: str) -> str:
+    if provider == "claude-code":
+        return os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    return os.environ.get(f"{provider.upper()}_API_KEY", "") or os.environ.get(
+        "MODEL_API_KEY", ""
+    )
+
+
 def _gh(args: list[str], *, stdin: str | None = None, cwd: Path | None = None) -> str:
     result = subprocess.run(
         ["gh", *args], input=stdin, text=True, capture_output=True, cwd=cwd
@@ -236,9 +244,7 @@ def request_ruling(
         if not supports_images:
             failures.append(f"{provider}/{model}: visual evidence is not enabled")
             continue
-        key = os.environ.get(f"{provider.upper()}_API_KEY", "") or os.environ.get(
-            "MODEL_API_KEY", ""
-        )
+        key = _model_key(provider)
         try:
             raw = extract_json_reply(complete(
                 provider, str(model), system, user, key, image_urls=image_urls

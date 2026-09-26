@@ -58,13 +58,15 @@ jobs:
           repository: samuelalake/agent-factory
           ref: ${{ inputs.factory_ref }}
           path: factory
-      - name: Detect Claude Code reviewer
+      - name: Detect Claude Code model route
         id: claude-code
         run: >-
           PYTHONPATH=factory/src python3 -c
           'import os; from pathlib import Path; from agent_factory.config import load_config;
-          review = load_config(Path("consumer/.agent-factory/config.json")).review;
-          enabled = review.provider == "claude-code" or review.fallback_provider == "claude-code";
+          config = load_config(Path("consumer/.agent-factory/config.json"));
+          routes = (config.review.provider, config.review.fallback_provider,
+          config.steward.arbitration_provider, config.steward.arbitration_fallback_provider);
+          enabled = "claude-code" in routes;
           open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8").write(f"enabled={str(enabled).lower()}\n")'
       - name: Set up Node for Claude Code
         if: steps.claude-code.outputs.enabled == 'true'
@@ -107,6 +109,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.steward-token.outputs.token }}
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}

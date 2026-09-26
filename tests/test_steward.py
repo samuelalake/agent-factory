@@ -25,6 +25,7 @@ from agent_factory.github_steward import (
     run,
     trusted_operator_feedback,
     validate_feedback_resolutions,
+    _model_key,
 )
 from agent_factory.protocol import decode_data, encode_data
 
@@ -44,6 +45,19 @@ class StewardTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", workflow)
+        self.assertIn("Install Claude Code CLI", workflow)
+
+    def test_claude_code_uses_only_dedicated_subscription_token(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "CLAUDE_CODE_OAUTH_TOKEN": "subscription-token",
+                "MODEL_API_KEY": "different-provider-key",
+            },
+            clear=True,
+        ):
+            self.assertEqual(_model_key("claude-code"), "subscription-token")
 
     def test_status_has_human_and_machine_state(self) -> None:
         body = format_status(

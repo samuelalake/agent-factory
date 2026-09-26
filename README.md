@@ -183,11 +183,15 @@ Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
 `MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`
 remains available for a single-provider caller, but a fallback setup should use
 the named secrets so credentials can never be sent to the wrong provider.
-The `claude-code` provider — available to both Reviewer and Builder — instead
+The `claude-code` provider — available to Steward, Builder, and Reviewer — instead
 requires `CLAUDE_CODE_OAUTH_TOKEN`, generated with `claude setup-token`; it never
 receives `ANTHROPIC_API_KEY`, because that variable would override subscription
 billing in Claude Code print mode. Configure its model with a Claude Code model
-name or alias such as `opus`. The Builder route additionally sets
+name or alias such as `opus`. Steward intake and text-only Reviewer work can run
+entirely on the subscription route. Visual evidence arbitration remains a
+separate, exceptional path: `claude-code` is text-only there, so configure a
+visual-capable API provider or let that rare conflict fail closed for human
+resolution. The Builder route additionally sets
 `builder.harness: "claude-code"`; because it runs on a flat subscription rather
 than metered tokens, its delivery record reports the model cost as
 `subscription` and the fallback pair stays on a metered OpenAI-compatible
