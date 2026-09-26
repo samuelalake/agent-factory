@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
@@ -1207,6 +1208,11 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     harness = config.builder.harness
     model = config.builder.model
     estimated_cost: float | None = None
+    # Records that the primary Builder provider failed and the fallback produced this
+    # delivery. Without it a successful fallback is indistinguishable from a primary
+    # success — the "why is this still running on the fallback provider?" blind spot.
+    # Surfaced both to the CI log (stderr, below) and the delivery status comment.
+    fallback_note: str | None = None
     cost_kind = "not measured"
     cost_budget = ModelCostBudget(config.builder.max_model_cost_usd)
 
@@ -1319,6 +1325,15 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                     f"origin/{config.builder.base_branch}",
                     baseline=agent_baseline,
                 )
+                # Fallback produced the delivery: make the silent provider switch
+                # visible. `_safe_provider_failure` keeps the primary's failure
+                # sanitized (no raw command output).
+                fallback_note = (
+                    f"Primary {config.builder.provider} Builder failed "
+                    f"({_safe_provider_failure(exc)}); delivered via fallback "
+                    f"{config.builder.fallback_provider}/{config.builder.fallback_model}."
+                )
+                print(f"builder-fallback: {fallback_note}", file=sys.stderr)
             except (BuilderBlocked, NvidiaBuilderError) as fallback_exc:
                 raise BuilderBlocked(
                     f"{config.builder.provider} Builder failed: {exc}; "
@@ -1379,11 +1394,17 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             stdin=pr_body,
         ).strip()
 
+    delivered_detail = (
+        f"Builder opened or updated {pr_url}. Reviewer and repository verification "
+        "own the next decision."
+    )
+    if fallback_note:
+        delivered_detail = f"{delivered_detail} {fallback_note}"
     status = format_issue_status(
         config.builder.marker,
         issue_number,
         "delivered",
-        f"Builder opened or updated {pr_url}. Reviewer and repository verification own the next decision.",
+        delivered_detail,
         pr_url,
         result_id=(
             f"github-run:{os.environ['GITHUB_RUN_ID']}:{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
