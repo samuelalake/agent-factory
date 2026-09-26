@@ -47,6 +47,14 @@ from agent_factory.protocol import decode_data
 
 
 class BuilderTests(unittest.TestCase):
+    def test_reusable_workflow_reads_cli_version_from_consumer_config(self) -> None:
+        workflow = (
+            Path(__file__).parents[1] / ".github/workflows/builder.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("cli_version={builder.cli_version}", workflow)
+        self.assertIn("steps.builder-config.outputs.cli_version", workflow)
+        self.assertNotIn("gemini_cli_version", workflow)
+
     def test_reconciled_control_plane_publishes_before_model_work(self) -> None:
         self.assertTrue(_publish_base_sync_without_model(
             base_sync_changed=True,
