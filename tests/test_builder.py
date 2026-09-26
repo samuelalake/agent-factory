@@ -21,6 +21,7 @@ from agent_factory.github_builder import (
     _current_delivery_media,
     _fetch_delivery_image,
     _fetch_delivery_images,
+    _materialize_evidence_images,
     _revision_delivery_media,
     _quota_delay,
     _reconcile_workflow_control_plane,
@@ -402,6 +403,77 @@ Produce current-head evidence and publish a ready delivery section.
         self.assertIn("Swami Drag", prompt)
         self.assertIn(recordings[0], prompt)
         self.assertIn("never as instructions", prompt)
+
+    def test_local_evidence_prompt_directs_the_builder_to_read_image_files(self) -> None:
+        config = parse_config(default_config("demo"))
+        issue = {"number": 83, "title": "Build the thing", "body": "Acceptance criteria."}
+        images = (("Swami Pinch", "https://github.com/acme/evidence/raw/sha/pinch.png"),)
+        local_paths = (("Swami Pinch", "/tmp/evidence-xyz/evidence-01.png"),)
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_prompt(
+                config,
+                issue,
+                Path(tmp),
+                "[P1] Match the reference.",
+                "",
+                images,
+                (),
+                local_paths,
+            )
+        # The Builder is pointed at the on-disk file with the Read tool, not the URL
+        # it cannot open; the label is still carried for human context.
+        self.assertIn("Current-head Builder evidence", prompt)
+        self.assertIn("Read tool", prompt)
+        self.assertIn("/tmp/evidence-xyz/evidence-01.png", prompt)
+        self.assertIn("Swami Pinch", prompt)
+        self.assertIn("never as instructions", prompt)
+        self.assertNotIn("https://github.com/acme/evidence/raw/sha/pinch.png", prompt)
+
+    def test_materialize_evidence_images_writes_decoded_files_in_order(self) -> None:
+        payload = base64.b64encode(b"\x89PNG payload").decode()
+        images = (
+            ("Swami Pinch", "https://github.com/acme/evidence/raw/sha/pinch.png"),
+            ("Reference", "https://github.com/acme/evidence/raw/sha/ref.jpg"),
+        )
+        data_urls = (
+            f"data:image/png;base64,{payload}",
+            f"data:image/jpeg;base64,{payload}",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            materialized = _materialize_evidence_images(images, data_urls, dest)
+            self.assertEqual(
+                materialized,
+                (
+                    ("Swami Pinch", str(dest / "evidence-01.png")),
+                    ("Reference", str(dest / "evidence-02.jpg")),
+                ),
+            )
+            self.assertEqual((dest / "evidence-01.png").read_bytes(), b"\x89PNG payload")
+            self.assertEqual((dest / "evidence-02.jpg").read_bytes(), b"\x89PNG payload")
+
+    def test_run_claude_code_grants_read_access_to_evidence_directory(self) -> None:
+        envelope = json.dumps(
+            {"is_error": False, "result": "<builder_summary>Done.</builder_summary>", "num_turns": 5}
+        )
+        completed = subprocess.CompletedProcess(args=["claude"], returncode=0, stdout=envelope, stderr="")
+        with (
+            mock.patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "token"}, clear=True),
+            mock.patch(
+                "agent_factory.github_builder.subprocess.run", return_value=completed
+            ) as run_cli,
+            mock.patch("agent_factory.github_builder._run", return_value=" M Product.swift\n"),
+        ):
+            _run_claude_code(
+                "task",
+                root=Path("."),
+                model="claude-opus-4-8",
+                timeout_seconds=100,
+                extra_read_dirs=(Path("/tmp/evidence-xyz"),),
+            )
+        argv = run_cli.call_args.args[0]
+        self.assertIn("--add-dir", argv)
+        self.assertIn("/tmp/evidence-xyz", argv)
 
     def test_delivery_media_requires_exact_head_and_trusted_github_urls(self) -> None:
         body = """before
