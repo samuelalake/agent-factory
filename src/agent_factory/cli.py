@@ -30,6 +30,8 @@ jobs:
     with:
       pr: ${{{{ format('{{0}}', github.event.pull_request.number || inputs.pr) }}}}
       factory_ref: {factory_ref}
+      reviewer_app_id: ${{{{ vars.AGENT_FACTORY_REVIEWER_APP_ID }}}}
+      steward_app_id: ${{{{ vars.AGENT_FACTORY_STEWARD_APP_ID }}}}
     secrets:
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
@@ -49,6 +51,7 @@ jobs:
       pr: ${{{{ format('{{0}}', github.event.pull_request.number || inputs.pr) }}}}
       factory_ref: {factory_ref}
       timeout_seconds: 1800
+      steward_app_id: ${{{{ vars.AGENT_FACTORY_STEWARD_APP_ID }}}}
     secrets:
       AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
       AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
@@ -73,6 +76,7 @@ jobs:
     with:
       issue: ${{{{ format('{{0}}', github.event.issue.number || inputs.issue) }}}}
       factory_ref: {factory_ref}
+      app_id: ${{{{ vars.AGENT_FACTORY_STEWARD_APP_ID }}}}
     secrets:
       AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
       AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
@@ -106,7 +110,7 @@ jobs:
       factory_ref: {factory_ref}
       runner: ubuntu-latest
       base_ref: main
-      gemini_cli_version: 0.55.1
+      app_id: ${{{{ vars.AGENT_FACTORY_BUILDER_APP_ID }}}}
     secrets:
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}

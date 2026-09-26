@@ -9,6 +9,14 @@ on:
       factory_ref:
         required: true
         type: string
+      reviewer_app_id:
+        required: false
+        type: string
+        default: ""
+      steward_app_id:
+        required: false
+        type: string
+        default: ""
     secrets:
       MODEL_API_KEY:
         required: false
@@ -85,7 +93,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_ID || secrets.AGENT_FACTORY_APP_ID }}
+          AGENT_FACTORY_APP_ID: ${{ inputs.reviewer_app_id || secrets.AGENT_FACTORY_REVIEWER_APP_ID || secrets.AGENT_FACTORY_APP_ID }}
           AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY || secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-
           python3 -m pip install --disable-pip-version-check 'PyJWT[crypto]>=2.8,<3' &&
@@ -98,7 +106,7 @@ jobs:
         id: steward-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}
+          app-id: ${{ inputs.steward_app_id || secrets.AGENT_FACTORY_STEWARD_APP_ID }}
           private-key: ${{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
@@ -131,7 +139,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          AGENT_FACTORY_APP_ID: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_ID || secrets.AGENT_FACTORY_APP_ID }}
+          AGENT_FACTORY_APP_ID: ${{ inputs.reviewer_app_id || secrets.AGENT_FACTORY_REVIEWER_APP_ID || secrets.AGENT_FACTORY_APP_ID }}
           AGENT_FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_FACTORY_REVIEWER_APP_PRIVATE_KEY || secrets.AGENT_FACTORY_APP_PRIVATE_KEY }}
         run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.github_review

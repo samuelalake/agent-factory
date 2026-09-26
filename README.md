@@ -204,6 +204,20 @@ identity and never relies on a long-lived personal token. The gate fails closed
 unless it finds a current-head approval carrying the factory's machine-readable
 review contract.
 
+For organization-owned consumers, provision the three public App IDs once as
+organization Actions variables (`AGENT_FACTORY_STEWARD_APP_ID`,
+`AGENT_FACTORY_BUILDER_APP_ID`, and `AGENT_FACTORY_REVIEWER_APP_ID`) and the
+three private PEM keys as organization Actions secrets with the corresponding
+`_PRIVATE_KEY` names. Restrict both sets to selected consumer repositories.
+Generated callers prefer the variables for App IDs while retaining the legacy
+same-name secret inputs as a compatibility fallback. This keeps each role's
+separate identity and least-privilege App installation without asking every
+consumer repository to duplicate six values. Provider credentials such as
+`CLAUDE_CODE_OAUTH_TOKEN` can use the same selected-repository organization
+secret pattern. Private repositories on GitHub Free may still require
+repository-level secrets because GitHub does not expose organization Actions
+secrets to them.
+
 Consumer evidence publishers that attach media must provide GitHub CLI 2.99 or
 newer plus `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN`. Prefer a fine-grained personal
 access token limited to the consumer repository with Issues and Pull requests
