@@ -22,81 +22,17 @@ Agent Factory separates three concerns:
 
 ## How work moves
 
-The factory coordinates a staged loop rather than one all-powerful bot:
-
 ```text
-Intent
-  → Steward: understand, de-duplicate, qualify, and dispatch
-  → Builder: inspect, plan, implement, and self-check
-  → Verify: run deterministic tests and collect evidence
-  → Reviewer: evaluate the current head against context and evidence
-  → Gate: compute merge readiness from trusted state
-  → Integrate: test the combined state in a preview or development lane
-  → Land and learn: promote by policy and improve repository context
+Issue → Steward → Builder → Reviewer → Gate → Steward lands
 ```
 
-Build and Review may cycle several times. Integration failures return to
-Builder rather than silently weakening the release. Verify is not a model opinion: it is
-the repository's executable evidence. Gate is not another agent: it is a
-deterministic policy reducer. The role Apps make each handoff and authority
-visible without forcing every project into the same implementation procedure.
+Steward turns intent into executable work. Builder owns implementation and its
+evidence. Reviewer evaluates the exact delivered head. A deterministic gate—not
+another agent—decides whether Steward may land it. Failed review or integration
+returns to the loop; ambiguous or exhausted work returns to Steward.
 
-Builder's pull-request description is the canonical delivery record. Consumers
-that enable `review.require_builder_delivery` receive a current-head delivery
-section with an explicit `pending`, `ready`, or `failed` state. Their trusted
-repository verification publishes documentation, media, and test evidence into
-that section with Builder's App token. Reviewer waits for the section and fails
-closed on missing, stale, or failed evidence; a link or green workflow by itself
-is never treated as proof. Repository-specific rendering and interaction logic
-remain in the consumer.
-
-When authenticated Reviewer runs materially contradict one another about the
-same unchanged reference digest, Factory treats that as an exceptional evidence
-dispute rather than another Builder revision. Steward receives the labeled,
-current-head Builder images and the authenticated review history, then may
-publish one ruling bound to the repository, pull request, exact head, and
-reference digest. Reviewer reruns once with that ruling as visual continuity;
-it still owns code findings and approval. Arbitration never dispatches Builder,
-and a missing, unreadable, unresolved, or non-visual route fails closed. Set
-`steward.arbitration_provider`, `arbitration_model`, and
-`arbitration_visual_evidence` explicitly; an optional arbitration fallback has
-its own provider, model, and visual-capability flag.
-
-Media publication uses GitHub CLI 2.99 or newer's supported `--attach` flow.
-The CLI rewrites local references inside the canonical delivery section to
-GitHub-hosted user-attachment URLs: screenshots render inline and a standalone
-video reference renders as GitHub's native player. GitHub CLI does not accept a
-GitHub App installation token for attachment uploads, so Factory uses the
-separate `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN` only to create a uniquely marked
-staging comment, capture the durable URLs, and delete that comment. Factory then
-re-reads the exact head and latest pull-request body before the Builder App makes
-the canonical delivery write, so a slow or partial upload cannot overwrite a
-newer Builder or human revision. The Builder App also maintains collapsible
-provenance records per source head. Per-head records prevent a slow stale
-publisher from overwriting newer proof; the canonical body selects its exact
-matching record, so overlapping same-head runs cannot deadlock. Each manifest binds the
-repository, pull request, exact head, ordered native URLs, media types, and
-SHA-256 digests; Reviewer and revising Builder reject copied, conflicting, or
-byte-mismatched evidence. No evidence branch is required. Factory preflights all
-media, rejects duplicates, and uses GitHub's portable 10 MB limit per image or
-video.
-
-The factory owns:
-
-- event and state contracts for stewardship, build, review, integration, and merge gating;
-- discovery and loading of relevant repository context and skills;
-- safe review publication and fail-closed degradation;
-- role-specific GitHub App authentication;
-- model-provider adapters behind provider-neutral role contracts;
-- installation and versioned updates of thin caller workflows;
-- fixture-driven contract tests.
-
-Each adopting repository owns:
-
-- build, test, and evidence commands;
-- protected paths and domain-specific verification;
-- its instructions, decisions, context, and skills;
-- deployment and product policy.
+Read [How work moves](docs/how-work-moves.md) for verification, integration,
+delivery evidence, arbitration, and failure behavior.
 
 ## Status
 
@@ -121,8 +57,7 @@ the workflows should be evaluated in trusted repositories before hands-off use.
 
 ```bash
 python3 -m pip install -e .
-agent-factory init /path/to/repository --factory-ref main
-python3 -m unittest discover -s tests -v
+agent-factory init /path/to/repository --factory-ref <factory-commit-sha>
 ```
 
 The installer creates `.agent-factory/config.json` and thin Steward, Builder,
@@ -131,150 +66,9 @@ files unless `--force` is explicit. The generated Builder caller uses
 `ubuntu-latest`; a consumer that requires a different toolchain changes the
 caller's `runner` input while keeping the role contract unchanged.
 
-`project.context_files` names the repository's durable guidance.
-`project.skill_dirs` names local skill catalogs; each role selects a bounded
-set whose name and description match the current task. The adopting repository
-therefore controls both the knowledge and the procedures a role receives.
-
-The [`skills/`](skills/) directory includes two optional starting points for
-adopters: project stewardship that prevents issue-sprawl, and human-facing
-writing. They are intentionally small. Domain judgment and project-specific
-verification still belong in each adopting repository.
-
-The runtime is model-agnostic: a role chooses a primary harness/provider and an
-optional fallback pair through versioned configuration. Provider choice does
-not change the review or gate contract. Builder supports Gemini CLI, bounded
-OpenAI-compatible loops for MiniMax, NVIDIA, and OpenRouter, and a `claude-code`
-harness that runs the pinned Claude Code CLI headless in edit mode with a Pro or
-Max subscription token. Reviewer supports the provider-neutral text and image
-adapters plus that same subscription-backed `claude-code` harness, run text-only.
-Steward uses the API-backed adapters for Anthropic, Gemini, MiniMax,
-NVIDIA, and OpenRouter. The generated configuration starts with Gemini and falls
-back to NVIDIA Kimi; both are quota-limited services, so the delivery record
-names the provider and model that actually served the run instead of implying
-that a free tier is unlimited.
-
-Builder configuration can also set `max_model_requests`, `max_output_tokens`,
-`max_model_cost_usd`, `input_cost_per_million`, and
-`output_cost_per_million`. The cost ceiling is calculated from provider-reported
-token usage. OpenRouter Builder requests also send those rates as a provider
-`max_price`, preventing routing to an endpoint that costs more than Factory's
-estimate; both rates must therefore be positive and conservative for the chosen
-model. For OpenRouter, Factory enforces the provider-reported `usage.cost` after
-every response and shares one cost budget across primary and fallback attempts,
-so cache, fallback, and other billed usage cannot escape token-only accounting.
-Keep a provider-side account or key budget as the authoritative hard stop because
-a response is billed before its usage can be evaluated.
-`max_revision_attempts` bounds the Steward-managed Builder → Reviewer repair
-loop. On each clean revision, Builder receives the current-head review findings;
-after the limit, Steward retains the blocker instead of creating an infinite loop.
-For visual consumers, `visual_revision_context: true` also gives an
-OpenAI-compatible Builder the exact rejected-head screenshots. Factory fetches
-those images with Builder App authentication, validates their repository,
-head-keyed path, format, per-image size, and aggregate size, then sends bounded
-data URLs to the model.
-Enable this only for models whose exact provider route passes the reusable
-provider smoke with `visual_input: true`; the default remains text-only.
-Fallback routes fail closed during a visual revision unless
-`fallback_visual_revision_context: true` is separately configured after the
-fallback's exact route passes the same smoke.
-
-Caller workflows pass provider-specific secrets such as `GEMINI_API_KEY`,
-`MINIMAX_API_KEY`, `NVIDIA_API_KEY`, and `OPENROUTER_API_KEY`. `MODEL_API_KEY`
-remains available for a single-provider caller, but a fallback setup should use
-the named secrets so credentials can never be sent to the wrong provider.
-The `claude-code` provider — available to Steward, Builder, and Reviewer — instead
-requires `CLAUDE_CODE_OAUTH_TOKEN`, generated with `claude setup-token`; it never
-receives `ANTHROPIC_API_KEY`, because that variable would override subscription
-billing in Claude Code print mode. Configure its model with a Claude Code model
-name or alias such as `opus`. Steward intake and text-only Reviewer work can run
-entirely on the subscription route. Visual evidence arbitration remains a
-separate, exceptional path: `claude-code` is text-only there, so configure a
-visual-capable API provider or let that rare conflict fail closed for human
-resolution. The Builder route additionally sets
-`builder.harness: "claude-code"`; because it runs on a flat subscription rather
-than metered tokens, its delivery record reports the model cost as
-`subscription` and the fallback pair stays on a metered OpenAI-compatible
-provider.
-
-Role workflows receive dedicated `AGENT_FACTORY_STEWARD_*`,
-`AGENT_FACTORY_BUILDER_*`, and `AGENT_FACTORY_REVIEWER_*` credentials. They mint
-short-lived installation tokens so agent-authored work has a distinct App
-identity and never relies on a long-lived personal token. The gate fails closed
-unless it finds a current-head approval carrying the factory's machine-readable
-review contract.
-
-For organization-owned consumers, provision the three public App IDs once as
-organization Actions variables (`AGENT_FACTORY_STEWARD_APP_ID`,
-`AGENT_FACTORY_BUILDER_APP_ID`, and `AGENT_FACTORY_REVIEWER_APP_ID`) and the
-three private PEM keys as organization Actions secrets with the corresponding
-`_PRIVATE_KEY` names. Restrict both sets to selected consumer repositories.
-Generated callers prefer the variables for App IDs while retaining the legacy
-same-name secret inputs as a compatibility fallback. This keeps each role's
-separate identity and least-privilege App installation without asking every
-consumer repository to duplicate six values. Provider credentials such as
-`CLAUDE_CODE_OAUTH_TOKEN` can use the same selected-repository organization
-secret pattern. Private repositories on GitHub Free may still require
-repository-level secrets because GitHub does not expose organization Actions
-secrets to them.
-
-Consumer evidence publishers that attach media must provide GitHub CLI 2.99 or
-newer plus `AGENT_FACTORY_MEDIA_UPLOAD_TOKEN`. Prefer a fine-grained personal
-access token limited to the consumer repository with Issues and Pull requests
-read/write; GitHub CLI uses it only for the disposable staging comment and media
-bytes. The Builder App token remains `GH_TOKEN`; it performs the final
-pull-request body patch and upserts the authenticated provenance comment.
-Configure `builder.app_login` to that App's bot login (the scaffold defaults to
-`agent-factory-builder[bot]`).
-GitHub-hosted runners can install or pin a current CLI release before calling
-`agent-factory publish-delivery`.
-
-Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
-consumer evidence. Keep it at least as long as the consumer's slowest required
-verification job.
-
-Set `review.visual_evidence: true` only when the configured Reviewer model accepts
-image input. Configure `review.fallback_visual_evidence` independently for the
-fallback route. When exact-head Builder evidence reports a deterministic failure,
-Reviewer keeps that P1 blocker and uses authenticated evidence images to provide
-specific visual corrections. Pending or missing evidence still fails closed without
-calling a model.
-The `claude-code` Reviewer is deliberately text-only in this adapter. Keep its
-visual flag false and configure a separately verified image-capable fallback for
-pull requests that require screenshot evidence.
-
-Consumers can set `review.visual_evidence_paths` to repository-relative globs such
-as `app/**` and `**/*.origami`. A matching change without a canonical Builder
-delivery is blocked deterministically, even when the model would approve it. A
-non-matching control-plane or documentation change is reviewed from its diff,
-checks, and linked evidence without manufacturing unrelated screenshots. Builder
-marks that visual delivery as not applicable and binds the decision to the exact
-commit, so Reviewer does not wait for an evidence job that correctly did not run.
-Reviewer findings must describe concrete defects in the supplied change. A
-consumer that pins a reusable workflow is not expected to duplicate that
-workflow's enforcement logic locally; dependency-pin review instead evaluates
-the consumer wiring and the supplied upstream evidence.
-
-The self-hosted Apps need these repository permissions:
-
-- **Steward:** Contents write, Issues write, and Pull requests write. Contents
-  write is required for the merge itself; Pull requests write alone is not.
-- **Builder:** Contents write, Issues write, and Pull requests write.
-- **Reviewer:** Contents read and Pull requests write.
-
-Reusable workflows request their exact subset while minting each token. Steward
-first receives only its communication permissions, then separately proves its
-landing authority. A mismatch therefore fails at authentication instead of
-after a long build or verification wait, while Steward can still replace stale
-status prose with an actionable failure record under its own identity.
-
-The alpha is self-hosted. Repositories controlled by one operator may share
-that operator's role Apps through centrally managed secrets. Independent
-adopters should create their own role Apps and keep their private keys; a
-public installation of somebody else's App is not sufficient because caller
-workflows must never receive that App owner's private key. A future hosted
-service can offer shared managed identities by minting tokens on the server
-side. Until then, consumer-owned Apps are the secure public-adoption path.
+Next, [provision the consumer and choose its providers](docs/adopting-a-repository.md).
+That guide covers GitHub Apps, organization variables and secrets, provider
+selection, cost limits, visual evidence, and updating older callers.
 
 ## Design rule
 
