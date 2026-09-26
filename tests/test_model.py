@@ -57,9 +57,17 @@ class ModelAdapterTests(unittest.TestCase):
         self.assertNotIn("AGENT_FACTORY_APP_PRIVATE_KEY", run.call_args.kwargs["env"])
         self.assertEqual(run.call_args.kwargs["env"]["PATH"], "/usr/bin")
 
-    def test_claude_code_rejects_inline_images(self) -> None:
-        with self.assertRaisesRegex(ModelError, "does not support inline image"):
-            complete(
+    def test_claude_code_reads_inline_image_evidence(self) -> None:
+        process = mock.MagicMock(
+            returncode=0,
+            stdout=json.dumps({"result": '{"approve":false}', "is_error": False}),
+            stderr="",
+        )
+        with (
+            mock.patch("agent_factory.model.subprocess.run", return_value=process) as run,
+            mock.patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True),
+        ):
+            text = complete(
                 "claude-code",
                 "opus",
                 "system",
@@ -67,6 +75,15 @@ class ModelAdapterTests(unittest.TestCase):
                 "oauth-token",
                 image_urls=("data:image/png;base64,aGVsbG8=",),
             )
+        self.assertEqual(text, '{"approve":false}')
+        args = run.call_args.args[0]
+        # The claude-code route now sees images: Read is enabled (and only Read),
+        # the evidence directory is granted, and the prompt points at the files.
+        self.assertIn("--allowedTools", args)
+        self.assertIn("Read", args)
+        self.assertIn("--add-dir", args)
+        self.assertNotIn("--tools", args)
+        self.assertIn("Read tool", run.call_args.kwargs["input"])
 
     def test_claude_code_does_not_reflect_stderr(self) -> None:
         process = mock.MagicMock(returncode=1, stdout="", stderr="secret prompt material")

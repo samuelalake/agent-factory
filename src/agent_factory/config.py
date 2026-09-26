@@ -179,14 +179,9 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError("review.visual_evidence must be a boolean")
     if not isinstance(fallback_visual_evidence, bool):
         raise ConfigError("review.fallback_visual_evidence must be a boolean")
-    if provider == "claude-code" and visual_evidence:
-        raise ConfigError(
-            "review.visual_evidence must be false for the text-only claude-code provider"
-        )
-    if fallback_provider == "claude-code" and fallback_visual_evidence:
-        raise ConfigError(
-            "review.fallback_visual_evidence must be false for the text-only claude-code provider"
-        )
+    # claude-code is a visual-capable review route: complete() decodes the evidence
+    # to local files and reads them with the Read tool, so visual_evidence may be
+    # true for it just like the openai-compatible routes.
     if fallback_visual_evidence and fallback_provider is None:
         raise ConfigError(
             "review.fallback_visual_evidence requires a configured fallback provider"
@@ -235,11 +230,6 @@ def parse_config(raw: dict[str, Any]) -> Config:
     arbitration_visual_evidence = steward.get("arbitration_visual_evidence", False)
     if not isinstance(arbitration_visual_evidence, bool):
         raise ConfigError("steward.arbitration_visual_evidence must be a boolean")
-    if arbitration_provider == "claude-code" and arbitration_visual_evidence:
-        raise ConfigError(
-            "steward.arbitration_visual_evidence must be false for the text-only "
-            "claude-code provider"
-        )
     arbitration_fallback_provider_value = steward.get("arbitration_fallback_provider")
     arbitration_fallback_model_value = steward.get("arbitration_fallback_model")
     if ((arbitration_fallback_provider_value is None) !=
@@ -269,14 +259,6 @@ def parse_config(raw: dict[str, Any]) -> Config:
     )
     if not isinstance(arbitration_fallback_visual_evidence, bool):
         raise ConfigError("steward.arbitration_fallback_visual_evidence must be a boolean")
-    if (
-        arbitration_fallback_provider == "claude-code"
-        and arbitration_fallback_visual_evidence
-    ):
-        raise ConfigError(
-            "steward.arbitration_fallback_visual_evidence must be false for the "
-            "text-only claude-code provider"
-        )
     if arbitration_fallback_visual_evidence and arbitration_fallback_provider is None:
         raise ConfigError(
             "steward.arbitration_fallback_visual_evidence requires an arbitration fallback provider"

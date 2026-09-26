@@ -46,7 +46,7 @@ class ConfigTests(unittest.TestCase):
         config = parse_config(raw)
         self.assertEqual((config.review.provider, config.review.model), ("gemini", "gemini-3.5-flash"))
 
-    def test_claude_code_supports_text_roles(self) -> None:
+    def test_claude_code_supports_text_and_visual_roles(self) -> None:
         raw = default_config("demo")
         raw["review"].update({
             "provider": "claude-code",
@@ -55,9 +55,10 @@ class ConfigTests(unittest.TestCase):
         })
         self.assertEqual(parse_config(raw).review.provider, "claude-code")
 
+        # M5: the claude-code route reads evidence via the Read tool, so it is a
+        # visual-capable reviewer — visual_evidence: true is now accepted.
         raw["review"]["visual_evidence"] = True
-        with self.assertRaisesRegex(ConfigError, "text-only claude-code"):
-            parse_config(raw)
+        self.assertTrue(parse_config(raw).review.visual_evidence)
 
         raw = default_config("demo")
         raw["steward"].update({
@@ -73,9 +74,9 @@ class ConfigTests(unittest.TestCase):
         })
         self.assertEqual(parse_config(raw).steward.provider, "claude-code")
 
+        # Arbitration on claude-code is visual-capable too.
         raw["steward"]["arbitration_visual_evidence"] = True
-        with self.assertRaisesRegex(ConfigError, "text-only claude-code"):
-            parse_config(raw)
+        self.assertTrue(parse_config(raw).steward.arbitration_visual_evidence)
 
     def test_reviewer_app_login_is_configurable_and_required(self) -> None:
         raw = default_config("demo")
