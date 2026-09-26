@@ -325,9 +325,12 @@ def parse_config(raw: dict[str, Any]) -> Config:
     visual_revision_context = builder.get("visual_revision_context", False)
     if not isinstance(visual_revision_context, bool):
         raise ConfigError("builder.visual_revision_context must be a boolean")
-    if visual_revision_context and builder_harness != "openai-compatible":
+    # Visual revision context needs a harness with an image channel: the
+    # openai-compatible tool loop sends image blocks, and the claude-code CLI
+    # Reads the evidence as local files. gemini-cli has neither, so it stays out.
+    if visual_revision_context and builder_harness not in {"openai-compatible", "claude-code"}:
         raise ConfigError(
-            "builder.visual_revision_context requires the openai-compatible harness"
+            "builder.visual_revision_context requires the openai-compatible or claude-code harness"
         )
     fallback_visual_revision_context = builder.get(
         "fallback_visual_revision_context", False
