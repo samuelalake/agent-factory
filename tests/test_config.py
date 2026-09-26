@@ -214,7 +214,9 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "unsupported builder.fallback_provider"):
             parse_config(raw)
 
-    def test_claude_code_builder_cannot_enable_visual_revision_context(self) -> None:
+    def test_claude_code_builder_can_enable_visual_revision_context(self) -> None:
+        # The claude-code CLI Reads the exact-head evidence triplet as local
+        # files, so it is a visual-capable Builder harness like the openai loop.
         raw = default_config("demo")
         raw["builder"].update(
             {
@@ -224,8 +226,7 @@ class ConfigTests(unittest.TestCase):
                 "visual_revision_context": True,
             }
         )
-        with self.assertRaisesRegex(ConfigError, "openai-compatible"):
-            parse_config(raw)
+        self.assertTrue(parse_config(raw).builder.visual_revision_context)
 
     def test_visual_revision_context_requires_compatible_harness(self) -> None:
         raw = default_config("demo")
