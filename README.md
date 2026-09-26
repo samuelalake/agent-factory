@@ -60,9 +60,10 @@ python3 -m pip install -e .
 agent-factory init /path/to/repository --factory-ref <factory-commit-sha>
 ```
 
-The installer creates `.agent-factory/config.json` and thin Steward, Builder,
-Reviewer, and Gate workflows under `.github/workflows/`. It preserves existing
-files unless `--force` is explicit. The generated Builder caller uses
+The installer creates `.agent-factory/config.json`; thin Setup, Steward, Builder,
+Reviewer, and Gate workflows under `.github/workflows/`; and an idempotent first
+push that provisions the four routing labels. It preserves existing files unless
+`--force` is explicit. The generated Builder caller uses
 `ubuntu-latest`; a consumer that requires a different toolchain changes the
 caller's `runner` input while keeping the role contract unchanged.
 

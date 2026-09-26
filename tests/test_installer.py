@@ -63,3 +63,9 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn(secret, builder)
             self.assertIn("vars.AGENT_FACTORY_REVIEWER_APP_ID", review)
             self.assertIn("vars.AGENT_FACTORY_STEWARD_APP_ID", review)
+            setup = (root / ".github/workflows/agent-setup.yml").read_text()
+            self.assertIn("issues: write", setup)
+            self.assertIn("${{ github.token }}", setup)
+            for label in ("ready", "agent:builder", "agent:steward", "agent:retry"):
+                self.assertIn(f'gh label create "{label}"', setup)
+            self.assertIn("--force", setup)
