@@ -129,6 +129,14 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
+def _model_key(provider: str) -> str:
+    if provider == "claude-code":
+        return os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    return os.environ.get(f"{provider.upper()}_API_KEY", "") or os.environ.get(
+        "MODEL_API_KEY", ""
+    )
+
+
 def normalize_shape(
     raw: dict[str, Any], max_subtasks: int, *, allow_hold: bool = False
 ) -> dict[str, Any]:
@@ -597,7 +605,7 @@ def shape_issue(
         candidates.append((config.steward.fallback_provider, config.steward.fallback_model))
     failures: list[str] = []
     for provider, model in candidates:
-        api_key = os.environ.get(f"{provider.upper()}_API_KEY", "") or os.environ.get("MODEL_API_KEY", "")
+        api_key = _model_key(provider)
         try:
             reply = complete(provider, model, system, user, api_key)
             plan = normalize_shape(

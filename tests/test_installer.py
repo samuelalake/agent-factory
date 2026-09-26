@@ -45,6 +45,7 @@ class InstallerTests(unittest.TestCase):
             steward = (root / ".github/workflows/agent-steward.yml").read_text()
             for secret in (
                 "MODEL_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
                 "ANTHROPIC_API_KEY",
                 "GEMINI_API_KEY",
                 "MINIMAX_API_KEY",

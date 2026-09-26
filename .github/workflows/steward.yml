@@ -16,6 +16,8 @@ on:
         required: true
       MODEL_API_KEY:
         required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
       ANTHROPIC_API_KEY:
         required: false
       GEMINI_API_KEY:
@@ -58,10 +60,27 @@ jobs:
           ref: ${{ inputs.factory_ref }}
           path: factory
           persist-credentials: false
+      - name: Detect Claude Code Steward
+        id: claude-code
+        run: >-
+          PYTHONPATH=factory/src python3 -c
+          'import os; from pathlib import Path; from agent_factory.config import load_config;
+          steward = load_config(Path("consumer/.agent-factory/config.json")).steward;
+          enabled = steward.provider == "claude-code" or steward.fallback_provider == "claude-code";
+          open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8").write(f"enabled={str(enabled).lower()}\n")'
+      - name: Set up Node for Claude Code
+        if: steps.claude-code.outputs.enabled == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install Claude Code CLI
+        if: steps.claude-code.outputs.enabled == 'true'
+        run: npm install -g @anthropic-ai/claude-code@2.1.236
       - name: Qualify and dispatch issue
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}

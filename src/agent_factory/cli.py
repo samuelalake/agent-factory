@@ -77,6 +77,7 @@ jobs:
       AGENT_FACTORY_STEWARD_APP_ID: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_ID }}}}
       AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY: ${{{{ secrets.AGENT_FACTORY_STEWARD_APP_PRIVATE_KEY }}}}
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
       ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
       MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}
