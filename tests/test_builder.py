@@ -483,6 +483,23 @@ Produce current-head evidence and publish a ready delivery section.
         self.assertIn("--add-dir", argv)
         self.assertIn("/tmp/evidence-xyz", argv)
 
+    def test_all_paired_platform_images_reach_review_instead_of_first_six(self) -> None:
+        entries = [
+            (f"{platform} state {state}", f"https://github.com/acme/repo/raw/{'b' * 40}/pr-7/{'a' * 40}/{platform}-{state}.png")
+            for platform in ("ios", "android") for state in range(7)
+        ]
+        body = format_delivery("ready", "\n".join(f"![{label}]({url})" for label, url in entries), head="a" * 40)
+        images, _ = _current_delivery_media(body, "a" * 40)
+        self.assertEqual(images, tuple(entries))
+        self.assertEqual(images[-1][0], "android state 6")
+
+    def test_excessive_images_fail_instead_of_silently_truncating_review(self) -> None:
+        body = format_delivery("ready", "\n".join(
+            f"![state {i}](https://github.com/acme/repo/raw/{'b' * 40}/pr-7/{'a' * 40}/{i}.png)"
+            for i in range(51)), head="a" * 40)
+        with self.assertRaisesRegex(BuilderBlocked, "silently omitting"):
+            _current_delivery_media(body, "a" * 40)
+
     def test_delivery_media_requires_exact_head_and_trusted_github_urls(self) -> None:
         body = """before
 <!-- agent-factory:builder-delivery:start -->

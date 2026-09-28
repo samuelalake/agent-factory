@@ -23,6 +23,7 @@ from .config import Config, load_config
 from .github_ci import collect_ci_failures
 from .github_delivery import (
     DELIVERY_EVIDENCE_NOT_APPLICABLE,
+    MAX_NATIVE_ATTACHMENTS,
     authenticated_delivery_evidence,
     delivery_evidence_manifest,
     evidence_manifests_match,
@@ -472,8 +473,11 @@ def _current_delivery_media(
             url = f"{url}#sha256={entry['sha256']}"
         label = re.sub(r"[^A-Za-z0-9 _.-]", "", alt).strip()[:80]
         images.append((label or f"Evidence image {len(images) + 1}", url))
-        if len(images) == 6:
-            break
+        if len(images) > MAX_NATIVE_ATTACHMENTS:
+            raise BuilderBlocked(
+                f"Builder delivery exceeds the {MAX_NATIVE_ATTACHMENTS}-image review limit; "
+                "reduce the evidence scope instead of silently omitting images"
+            )
 
     recordings: list[str] = []
     for url in re.findall(r"\((https://[^)]+\.mp4(?:\?[^)]*)?)\)", section):

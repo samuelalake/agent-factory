@@ -195,3 +195,10 @@ pull-request body patch and upserts the authenticated provenance comment.
 Configure `builder.app_login` to that App's bot login (the scaffold defaults to
 `agent-factory-builder[bot]`). GitHub-hosted runners can install or pin a current
 CLI release before calling `agent-factory publish-delivery`.
+
+Visual evidence extraction includes every declared image in delivery order, up
+to the publisher's 50-attachment limit, subject to the existing 4 MB per-image
+and 12 MB aggregate fetch bounds. Oversized sets fail closed; they are never
+silently reduced to the first few images. Consumers should publish a focused,
+clearly labeled comparison of the required states (including both platforms
+where relevant) instead of relying on image order to survive truncation.
