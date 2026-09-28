@@ -522,3 +522,52 @@ class DeliveryTests(unittest.TestCase):
         )
         self.assertEqual(status, "stale")
         self.assertEqual(delivery_head(body), old_head)
+
+    @mock.patch("agent_factory.github_delivery.time.sleep")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_wait_allows_publisher_to_replace_previous_head_delivery(self, gh, sleep) -> None:
+        head = "b" * 40
+        ready = format_delivery("ready", "New paired evidence", head=head)
+        for old_status in ("ready", "failed"):
+            with self.subTest(old_status=old_status):
+                gh.side_effect = [
+                    json.dumps({"headRefOid": head, "body": format_delivery(
+                        old_status, "Previous evidence", head="a" * 40,
+                    )}),
+                    json.dumps({"headRefOid": head, "body": ready}),
+                ]
+                sleep.reset_mock()
+                status, body = wait_for_delivery("owner/repo", "7", head, timeout_seconds=30)
+                self.assertEqual((status, body), ("ready", ready))
+                sleep.assert_called_once_with(15)
+
+    @mock.patch("agent_factory.github_delivery.time.sleep")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_wait_allows_first_delivery_to_arrive(self, gh, sleep) -> None:
+        head = "a" * 40
+        ready = format_delivery("ready", "First evidence", head=head)
+        gh.side_effect = [
+            json.dumps({"headRefOid": head, "body": "Builder summary"}),
+            json.dumps({"headRefOid": head, "body": ready}),
+        ]
+        self.assertEqual(wait_for_delivery("owner/repo", "7", head, timeout_seconds=30),
+                         ("ready", ready))
+        sleep.assert_called_once_with(15)
+
+    @mock.patch("agent_factory.github_delivery.time.sleep")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_wait_stops_immediately_when_reviewed_head_is_superseded(self, gh, sleep) -> None:
+        gh.return_value = json.dumps({"headRefOid": "b" * 40, "body": pending_delivery()})
+        status, _ = wait_for_delivery("owner/repo", "7", "a" * 40, timeout_seconds=30)
+        self.assertEqual(status, "stale")
+        sleep.assert_not_called()
+
+    @mock.patch("agent_factory.github_delivery.time.monotonic", side_effect=[0, 0, 30])
+    @mock.patch("agent_factory.github_delivery.time.sleep")
+    @mock.patch("agent_factory.github_delivery._gh")
+    def test_wait_times_out_without_accepting_stale_evidence(self, gh, sleep, monotonic) -> None:
+        body = format_delivery("ready", "Previous evidence", head="a" * 40)
+        gh.return_value = json.dumps({"headRefOid": "b" * 40, "body": body})
+        self.assertEqual(wait_for_delivery("owner/repo", "7", "b" * 40, timeout_seconds=30),
+                         ("stale", body))
+        sleep.assert_called_once_with(15)

@@ -552,7 +552,11 @@ def wait_for_delivery(
         if current_head != head:
             return "stale", body
         status = delivery_status(body, expected_head=head)
-        if status != "pending" or time.monotonic() >= deadline:
+        # Every push invalidates the previous head's delivery, including pushes
+        # made outside Builder. Give the asynchronous verification publisher the
+        # same bounded opportunity to replace stale/missing evidence as pending
+        # evidence. Never accept the old record or wait after the PR moves on.
+        if status not in {None, "pending", "stale"} or time.monotonic() >= deadline:
             return status or "missing", body
         time.sleep(poll_seconds)
 

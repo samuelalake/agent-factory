@@ -131,6 +131,18 @@ a response is billed before its usage can be evaluated.
 loop. On each clean revision, Builder receives the current-head review findings;
 after the limit, Steward retains the blocker instead of creating an infinite loop.
 
+Builder revisions also receive bounded failed-job diagnostics for the exact PR
+head, collected before base synchronization. The collector keeps only the latest
+run per workflow in a bounded scan, excludes other heads and repositories, and
+labels unavailable logs explicitly. Logs are untrusted diagnostic data, not
+instructions or proof that checks passed.
+
+When updating an existing consumer, add `actions: read` to its Builder caller's
+`permissions` alongside `contents: read`. The reusable workflow supplies its
+short-lived `github.token` as `AGENT_FACTORY_CI_READ_TOKEN` to the harness only;
+this credential is excluded from model subprocess environments. The Builder App
+continues to own publication and does not need additional Actions permissions.
+
 ## Configure visual evidence
 
 For visual consumers, `visual_revision_context: true` gives an
@@ -145,7 +157,9 @@ the fallback's exact route passes the same smoke.
 
 Set `review.delivery_wait_seconds` to bound how long Reviewer waits for trusted
 consumer evidence. Keep it at least as long as the consumer's slowest required
-verification job.
+verification job. Pending, missing, or previous-head deliveries wait within that
+bound; a superseded PR head stops the wait immediately. Stale evidence is never
+accepted, including when the wait expires.
 
 Set `review.visual_evidence: true` only when the configured Reviewer model accepts
 image input. Configure `review.fallback_visual_evidence` independently for the
@@ -181,3 +195,10 @@ pull-request body patch and upserts the authenticated provenance comment.
 Configure `builder.app_login` to that App's bot login (the scaffold defaults to
 `agent-factory-builder[bot]`). GitHub-hosted runners can install or pin a current
 CLI release before calling `agent-factory publish-delivery`.
+
+Visual evidence extraction includes every declared image in delivery order, up
+to the publisher's 50-attachment limit, subject to the existing 4 MB per-image
+and 12 MB aggregate fetch bounds. Oversized sets fail closed; they are never
+silently reduced to the first few images. Consumers should publish a focused,
+clearly labeled comparison of the required states (including both platforms
+where relevant) instead of relying on image order to survive truncation.
