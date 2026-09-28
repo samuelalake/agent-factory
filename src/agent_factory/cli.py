@@ -100,6 +100,7 @@ on:
         required: true
         type: string
 permissions:
+  actions: read
   contents: read
 jobs:
   builder:
