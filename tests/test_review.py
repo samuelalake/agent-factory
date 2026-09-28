@@ -102,7 +102,10 @@ class ReviewTests(unittest.TestCase):
                 "severity": "P1",
                 "title": "Reference interpretation changed",
                 "reasoning": "The same authenticated reference is now described differently.",
-                "suggestion": "Steward must arbitrate the evidence before Builder changes code.",
+                "suggestion": (
+                    "Do not approve this as-is. Steward should arbitrate the evidence set "
+                    "before Builder changes code."
+                ),
             }],
         }, allow_evidence_conflict=True)
         self.assertEqual(
@@ -128,6 +131,10 @@ class ReviewTests(unittest.TestCase):
             "Do not say Steward must arbitrate the evidence; there is no conflict.",
             "The prior review quoted: Steward must arbitrate the authenticated visual reference. I reject that conclusion.",
             "It is false that Steward should arbitrate the reference.",
+            "Steward should not arbitrate the evidence.",
+            "The policy explains how Steward should arbitrate the evidence.",
+            "Steward should review the evidence and decide whether arbitration is needed.",
+            "This may require Steward evidence arbitration if future renders diverge.",
         ):
             with self.subTest(text=text):
                 review = normalize_review({
@@ -140,6 +147,22 @@ class ReviewTests(unittest.TestCase):
                 }, allow_evidence_conflict=True)
                 self.assertEqual(len(review["findings"]), 1)
                 self.assertEqual(review["findings"][0]["key"], "review-wide")
+
+    def test_explicit_arbitration_prose_accepts_bounded_directive_variants(self) -> None:
+        for text in (
+            "Steward must arbitrate the authenticated visual reference.",
+            "Steward needs to reconcile this evidence conflict before implementation changes.",
+            "Steward is required to resolve the conflicting reference interpretation.",
+        ):
+            with self.subTest(text=text):
+                review = normalize_review({
+                    "approve": False,
+                    "findings": [{"severity": "P1", "suggestion": text}],
+                }, allow_evidence_conflict=True)
+                self.assertEqual(
+                    review["findings"][0]["key"],
+                    "agent-factory://evidence-interpretation-conflict",
+                )
 
     def test_arbitration_prose_recovery_requires_a_p1_suggestion(self) -> None:
         for field, severity in (("summary", "P1"), ("reasoning", "P1"), ("suggestion", "P2")):

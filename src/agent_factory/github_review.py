@@ -31,6 +31,16 @@ from .repository_paths import repository_glob_match
 
 ARBITRATION_MARKER = "<!-- steward:agent-factory-evidence-arbitration -->"
 
+_EVIDENCE_ARBITRATION_DIRECTIVE = re.compile(
+    r"^steward\s+"
+    r"(?:must|should|needs?\s+to|has\s+to|is\s+required\s+to)\s+"
+    r"(?:arbitrate|resolve|reconcile)\s+"
+    r"(?:(?:the|this|that)\s+)?"
+    r"(?:(?:authenticated|current-head|visual|conflicting|contradictory)\s+)*"
+    r"(?:evidence|reference)"
+    r"(?:\s+(?:set|conflict|interpretation|dispute))?\b"
+)
+
 
 def _gh(args: list[str], *, stdin: str | None = None) -> str:
     result = subprocess.run(["gh", *args], input=stdin, text=True, capture_output=True)
@@ -70,13 +80,14 @@ def _explicit_arbitration_request(raw: dict[str, Any]) -> bool:
             continue
         if str(item.get("severity") or "").upper() != "P1":
             continue
-        suggestion = str(item.get("suggestion") or "").strip().casefold()
-        if re.match(
-            r"^steward\s+must\s+arbitrate\s+"
-            r"(?:the\s+)?(?:authenticated\s+)?(?:visual\s+)?(?:evidence|reference)\b",
-            suggestion,
-        ):
-            return True
+        suggestion = " ".join(str(item.get("suggestion") or "").split()).casefold()
+        # Require a positive, standalone directive rather than a generic mention,
+        # quote, hypothetical, or negation. The Reviewer often gives an approval
+        # instruction first and the Steward handoff in the next sentence.
+        for sentence in re.split(r"(?<=[.!?;])\s+", suggestion):
+            candidate = sentence.lstrip(" -*_`")
+            if _EVIDENCE_ARBITRATION_DIRECTIVE.match(candidate):
+                return True
     return False
 
 

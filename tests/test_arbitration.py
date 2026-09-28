@@ -100,8 +100,8 @@ class ArbitrationTests(unittest.TestCase):
                     "key": "app/View.swift:12",
                     "severity": "P1",
                     "suggestion": (
-                        "Steward must arbitrate the evidence. Do not change code from this "
-                        "finding alone."
+                        "Do not approve this as-is. Steward should arbitrate the evidence set "
+                        "before Builder changes code."
                     ),
                 }],
             }),
