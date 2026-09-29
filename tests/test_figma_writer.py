@@ -13,7 +13,7 @@ from agent_factory.github_figma_writer import (
     format_issue_status,
     parse_result,
 )
-from agent_factory.github_figma_attest import delivery_from_manifest
+from agent_factory.github_figma_attest import attestation_detail, delivery_from_manifest
 from agent_factory.protocol import decode_data
 
 
@@ -138,6 +138,28 @@ class FigmaWriterTests(unittest.TestCase):
                     record_path="docs/checkin.md",
                     screen_prefix="Checkin-",
                 )
+
+    def test_operator_assisted_attestation_does_not_claim_hosted_authorship(self) -> None:
+        detail, metadata = attestation_detail(
+            "operator_assisted",
+            ("https://www.figma.com/design/abc123?node-id=885-1123",),
+        )
+        self.assertIn("founder-authorized authenticated interactive Figma session", detail)
+        self.assertNotIn("hosted MCP call persisted", detail)
+        self.assertEqual(metadata["attestation"], "operator_assisted_manifest")
+        self.assertEqual(metadata["delivery_mode"], "operator_assisted")
+
+    def test_hosted_writer_recovery_retains_narrow_recovery_claim(self) -> None:
+        detail, metadata = attestation_detail(
+            "hosted_writer_recovery",
+            ("https://www.figma.com/design/abc123?node-id=885-1123",),
+        )
+        self.assertIn("hosted MCP call persisted", detail)
+        self.assertEqual(metadata["delivery_mode"], "hosted_writer_recovery")
+
+    def test_attestation_rejects_unknown_delivery_mode(self) -> None:
+        with self.assertRaisesRegex(BuilderBlocked, "Unsupported"):
+            attestation_detail("pretend_writer_authored_it", ())
 
 
 if __name__ == "__main__":

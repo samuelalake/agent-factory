@@ -3,6 +3,10 @@ name: reusable-agent-figma-attest
 on:
   workflow_call:
     inputs:
+      repo:
+        required: false
+        type: string
+        default: ""
       issue:
         required: true
         type: string
@@ -26,11 +30,60 @@ on:
         required: false
         type: string
         default: ""
+      mode:
+        required: false
+        type: string
+        default: hosted_writer_recovery
     secrets:
       AGENT_FACTORY_BUILDER_APP_ID:
         required: false
       AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY:
         required: true
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Target owner/repository
+        required: true
+        type: string
+      issue:
+        description: Target issue number
+        required: true
+        type: string
+      pr:
+        description: Target pull request number
+        required: true
+        type: string
+      record_path:
+        description: Checked-in Figma delivery record
+        required: true
+        type: string
+      screen_prefix:
+        description: Manifest screen-name prefix
+        required: true
+        type: string
+      factory_ref:
+        description: Agent Factory ref containing the attester
+        required: false
+        default: main
+        type: string
+      runner:
+        description: Runner label
+        required: false
+        default: ubuntu-latest
+        type: string
+      app_id:
+        description: Optional Builder App id override
+        required: false
+        default: ""
+        type: string
+      mode:
+        description: Truthful canvas authorship mode
+        required: true
+        default: operator_assisted
+        type: choice
+        options:
+          - operator_assisted
+          - hosted_writer_recovery
 
 permissions:
   contents: read
@@ -40,21 +93,37 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     steps:
+      - name: Resolve target repository
+        id: target
+        env:
+          REQUESTED_REPO: ${{ inputs.repo }}
+          FALLBACK_REPO: ${{ github.repository }}
+        run: |
+          target="${REQUESTED_REPO:-$FALLBACK_REPO}"
+          if [[ ! "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid target repository" >&2
+            exit 1
+          fi
+          echo "repo=$target" >> "$GITHUB_OUTPUT"
+          echo "owner=${target%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${target#*/}" >> "$GITHUB_OUTPUT"
       - name: Mint Builder installation token
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ inputs.app_id || secrets.AGENT_FACTORY_BUILDER_APP_ID }}
           private-key: ${{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
       - name: Checkout exact pull-request head
         uses: actions/checkout@v7
         with:
+          repository: ${{ steps.target.outputs.repo }}
           ref: refs/pull/${{ inputs.pr }}/head
           fetch-depth: 0
           path: consumer
           persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
       - name: Checkout factory
         uses: actions/checkout@v7
         with:
@@ -67,14 +136,15 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.github_figma_attest
-          --repo "${{ github.repository }}"
+          --repo "${{ steps.target.outputs.repo }}"
           --pr "${{ inputs.pr }}"
           --issue "${{ inputs.issue }}"
           --root consumer
           --config consumer/.agent-factory/config.json
           --record-path "${{ inputs.record_path }}"
           --screen-prefix "${{ inputs.screen_prefix }}"
+          --mode "${{ inputs.mode }}"
       - name: Release attested candidate to Reviewer
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh pr ready "${{ inputs.pr }}" --repo "${{ github.repository }}"
+        run: gh pr ready "${{ inputs.pr }}" --repo "${{ steps.target.outputs.repo }}"
