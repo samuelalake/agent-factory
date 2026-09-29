@@ -13,6 +13,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import subprocess
 import urllib.error
@@ -31,6 +32,7 @@ EXPECTED_ISSUER = "https://api.figma.com"
 MCP_SCOPE = "mcp:connect"
 SECRET_NAMES = (
     "FIGMA_MCP_CLIENT_ID",
+    "FIGMA_MCP_CLIENT_SECRET",
     "FIGMA_MCP_REFRESH_TOKEN",
 )
 
@@ -48,7 +50,27 @@ def _json_request(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise FigmaMCPError(f"Figma OAuth request failed with HTTP {exc.code}") from exc
+        # OAuth error identifiers such as ``invalid_grant`` are useful for
+        # recovery and are safe to report. Never surface the response body or
+        # description: either could echo a one-time code or credential.
+        error_name = ""
+        try:
+            error_payload = json.loads(exc.read().decode("utf-8"))
+            candidate = (
+                error_payload.get("error")
+                if isinstance(error_payload, dict)
+                else ""
+            )
+            if isinstance(candidate, str) and re.fullmatch(
+                r"[A-Za-z0-9_.-]{1,64}", candidate
+            ):
+                error_name = candidate
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        suffix = f" ({error_name})" if error_name else ""
+        raise FigmaMCPError(
+            f"Figma OAuth request failed with HTTP {exc.code}{suffix}"
+        ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise FigmaMCPError("Figma OAuth request could not reach the server") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -56,11 +78,6 @@ def _json_request(
     if not isinstance(payload, dict):
         raise FigmaMCPError("Figma OAuth returned an invalid response shape")
     return payload
-
-
-def _basic_auth(client_id: str, client_secret: str) -> str:
-    encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    return f"Basic {encoded}"
 
 
 def _token_request(
@@ -74,12 +91,12 @@ def _token_request(
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    if client_secret:
-        headers["Authorization"] = _basic_auth(client_id, client_secret)
-    else:
-        # Figma registers supported CLI clients as OAuth public clients. Public
-        # clients authenticate the PKCE exchange with their client ID in-body.
-        form["client_id"] = client_id
+    # Figma's authorization-server metadata advertises client_secret_post for
+    # its MCP token endpoint. PKCE still binds the authorization code to this
+    # local run; the dynamically registered client credentials identify the
+    # cataloged Claude Code client.
+    form["client_id"] = client_id
+    form["client_secret"] = client_secret
     request = urllib.request.Request(
         TOKEN_ENDPOINT,
         data=urllib.parse.urlencode(form).encode(),
@@ -91,16 +108,15 @@ def _token_request(
 
 def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
     """Exchange the reusable refresh credential without exposing it to the model."""
-    if not client_id or not refresh_token:
+    if not client_id or not client_secret or not refresh_token:
         raise FigmaMCPError(
-            "Figma MCP is enabled but its client ID or refresh token is missing"
+            "Figma MCP is enabled but a client credential or refresh token is missing"
         )
     payload = _token_request(
         {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "scope": MCP_SCOPE,
-            "resource": MCP_RESOURCE,
         },
         client_id=client_id,
         client_secret=client_secret,
@@ -197,7 +213,7 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
                 "redirect_uris": [redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
-                "token_endpoint_auth_method": "none",
+                "token_endpoint_auth_method": "client_secret_post",
                 "application_type": "native",
                 "scope": MCP_SCOPE,
             }
@@ -207,14 +223,17 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
     )
     payload = _json_request(request)
     client_id = payload.get("client_id")
+    client_secret = payload.get("client_secret")
     if not isinstance(client_id, str) or not client_id:
         raise FigmaMCPError("Figma client registration returned no client ID")
-    if payload.get("token_endpoint_auth_method") not in (None, "none"):
+    if not isinstance(client_secret, str) or not client_secret:
+        raise FigmaMCPError("Figma client registration returned no client secret")
+    if payload.get("token_endpoint_auth_method") not in (
+        None,
+        "client_secret_post",
+    ):
         raise FigmaMCPError("Figma registered an unsupported client authentication method")
-    # Figma may include a client_secret field even though the registered native
-    # client explicitly uses token_endpoint_auth_method=none. Do not retain or
-    # send that field; PKCE plus the in-body client_id is the declared flow.
-    return client_id, ""
+    return client_id, client_secret
 
 
 def _save_secret(repo: str, name: str, value: str) -> None:
@@ -246,7 +265,6 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": MCP_SCOPE,
-            "resource": MCP_RESOURCE,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "state": state,
@@ -274,7 +292,6 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
             "code": code,
             "redirect_uri": redirect_uri,
             "code_verifier": verifier,
-            "resource": MCP_RESOURCE,
         },
         client_id=client_id,
         client_secret=client_secret,
@@ -282,14 +299,10 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
     refresh_token = payload.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
         raise FigmaMCPError("Figma authorization returned no refresh token")
-    values = (client_id, refresh_token)
+    values = (client_id, client_secret, refresh_token)
     for name, value in zip(SECRET_NAMES, values, strict=True):
         _save_secret(repo, name, value)
-    saved_names = list(SECRET_NAMES)
-    if client_secret:
-        _save_secret(repo, "FIGMA_MCP_CLIENT_SECRET", client_secret)
-        saved_names.append("FIGMA_MCP_CLIENT_SECRET")
-    print(f"Saved {', '.join(saved_names)} to {repo} without printing their values.")
+    print(f"Saved {', '.join(SECRET_NAMES)} to {repo} without printing their values.")
 
 
 def main(argv: list[str] | None = None) -> int:

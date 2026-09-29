@@ -203,10 +203,11 @@ Builder itself receives no Figma token or MCP tools.
    ```
 
 3. Approve the Figma MCP connection in the browser window. The command registers
-   the supported Claude Code public client and uses PKCE, then writes
-   `FIGMA_MCP_CLIENT_ID` and `FIGMA_MCP_REFRESH_TOKEN` directly to GitHub Actions
-   secrets. The supported native client uses PKCE and does not retain a client
-   secret. The command does not print either value.
+   the supported Claude Code client and uses PKCE, then writes
+   `FIGMA_MCP_CLIENT_ID`, `FIGMA_MCP_CLIENT_SECRET`, and
+   `FIGMA_MCP_REFRESH_TOKEN` directly to GitHub Actions secrets. Figma's MCP
+   authorization server requires the dynamically registered client secret in
+   the token request body. The command does not print any credential value.
 4. Regenerate an older Builder caller or manually forward the named credentials
    to the reusable workflow.
 
