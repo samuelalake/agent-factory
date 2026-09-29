@@ -30,7 +30,7 @@ AUTHORIZATION_ENDPOINT = "https://www.figma.com/oauth/mcp"
 TOKEN_ENDPOINT = "https://api.figma.com/v1/oauth/token"
 EXPECTED_ISSUER = "https://api.figma.com"
 MCP_SCOPE = "mcp:connect"
-ACCESS_SECRET_NAME = "FIGMA_MCP_ACCESS_TOKEN"
+OAUTH_BUNDLE_SECRET_NAME = "FIGMA_MCP_OAUTH_BUNDLE"
 
 
 class FigmaMCPError(RuntimeError):
@@ -103,6 +103,58 @@ def _token_request(
     return _json_request(request)
 
 
+def _oauth_bundle(value: str) -> dict[str, str]:
+    """Validate the single-secret OAuth record without ever reporting its values."""
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise FigmaMCPError("Figma MCP OAuth bundle is invalid; re-run authorization") from exc
+    if not isinstance(payload, dict):
+        raise FigmaMCPError("Figma MCP OAuth bundle is invalid; re-run authorization")
+    required = ("client_id", "client_secret", "refresh_token")
+    if any(not isinstance(payload.get(key), str) or not payload[key] for key in required):
+        raise FigmaMCPError("Figma MCP OAuth bundle is incomplete; re-run authorization")
+    return {key: payload[key] for key in required}
+
+
+def _validate_mcp_access(access_token: str, *, timeout: int = 30) -> None:
+    """Prove the refreshed token is accepted by the protected MCP resource."""
+    request = urllib.request.Request(
+        MCP_RESOURCE,
+        data=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "agent-factory-figma-writer",
+                        "version": "1",
+                    },
+                },
+            }
+        ).encode(),
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return
+    except urllib.error.HTTPError as exc:
+        raise FigmaMCPError(
+            f"Figma MCP rejected the refreshed access grant with HTTP {exc.code}; "
+            "re-run authorization"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise FigmaMCPError("Figma MCP access validation could not reach the server") from exc
+
+
 def write_mcp_config(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -127,12 +179,26 @@ def write_mcp_config(path: Path) -> None:
 
 
 def prepare(config_path: Path, github_env: Path) -> None:
-    access_token = os.environ.get(ACCESS_SECRET_NAME, "")
-    if not access_token:
+    raw_bundle = os.environ.get(OAUTH_BUNDLE_SECRET_NAME, "")
+    if not raw_bundle:
         raise FigmaMCPError(
-            "Figma MCP is enabled but its access grant is missing; "
+            "Figma MCP is enabled but its OAuth bundle is missing; "
             "re-run the local authorization command"
         )
+    bundle = _oauth_bundle(raw_bundle)
+    payload = _token_request(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": bundle["refresh_token"],
+            "resource": MCP_RESOURCE,
+        },
+        client_id=bundle["client_id"],
+        client_secret=bundle["client_secret"],
+    )
+    access_token = payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise FigmaMCPError("Figma OAuth refresh returned no access token")
+    _validate_mcp_access(access_token)
     write_mcp_config(config_path)
     # GitHub interprets add-mask commands without displaying their payload. The
     # token is then shared only with the subsequent Builder process.
@@ -147,6 +213,23 @@ def _pkce_pair() -> tuple[str, str]:
     digest = hashlib.sha256(verifier.encode()).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     return verifier, challenge
+
+
+def _authorization_url(
+    *, client_id: str, redirect_uri: str, challenge: str, state: str
+) -> str:
+    return AUTHORIZATION_ENDPOINT + "?" + urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": MCP_SCOPE,
+            "resource": MCP_RESOURCE,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        }
+    )
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -222,16 +305,11 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
     client_id, client_secret = _register_client(redirect_uri)
     verifier, challenge = _pkce_pair()
     state = secrets.token_urlsafe(32)
-    authorization_url = AUTHORIZATION_ENDPOINT + "?" + urllib.parse.urlencode(
-        {
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": MCP_SCOPE,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": state,
-        }
+    authorization_url = _authorization_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        challenge=challenge,
+        state=state,
     )
     print("Opening Figma. Approve the MCP connection in your browser.")
     if not webbrowser.open(authorization_url):
@@ -255,6 +333,7 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
             "code": code,
             "redirect_uri": redirect_uri,
             "code_verifier": verifier,
+            "resource": MCP_RESOURCE,
         },
         client_id=client_id,
         client_secret=client_secret,
@@ -262,8 +341,21 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
     access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
         raise FigmaMCPError("Figma authorization returned no access token")
-    _save_secret(repo, ACCESS_SECRET_NAME, access_token)
-    print(f"Saved {ACCESS_SECRET_NAME} to {repo} without printing its value.")
+    refresh_token = payload.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise FigmaMCPError("Figma authorization returned no refresh token")
+    _validate_mcp_access(access_token)
+    bundle = json.dumps(
+        {
+            "version": 1,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        },
+        separators=(",", ":"),
+    )
+    _save_secret(repo, OAUTH_BUNDLE_SECRET_NAME, bundle)
+    print(f"Saved {OAUTH_BUNDLE_SECRET_NAME} to {repo} without printing its value.")
 
 
 def main(argv: list[str] | None = None) -> int:

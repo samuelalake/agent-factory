@@ -59,7 +59,8 @@ class BuilderTests(unittest.TestCase):
         workflow = (
             Path(__file__).parents[1] / ".github/workflows/builder.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("FIGMA_MCP_ACCESS_TOKEN", workflow)
+        self.assertIn("FIGMA_MCP_OAUTH_BUNDLE", workflow)
+        self.assertNotIn("secrets.FIGMA_MCP_ACCESS_TOKEN", workflow)
         self.assertIn("agent_factory.figma_mcp prepare", workflow)
         self.assertNotIn("agent_factory.figma_mcp invalidate", workflow)
         self.assertIn("figma-writer:", workflow)
