@@ -232,6 +232,15 @@ def _validate_candidate(
     return preserved
 
 
+def _figma_writer_gate_requires_current_head(feedback: str) -> bool:
+    """Recognize the deterministic Figma Writer gate, not similar model prose."""
+    return (
+        "Model: `deterministic/figma-writer-delivery-gate`" in feedback
+        and "Current-head Figma Writer delivery is missing" in feedback
+        and "rerun the leased Figma Writer phase" in feedback
+    )
+
+
 def _delivery_gate_requires_current_head_evidence(feedback: str) -> bool:
     """Recognize Factory's deterministic delivery gates, not model failures."""
     builder_evidence_gate = (
@@ -239,12 +248,7 @@ def _delivery_gate_requires_current_head_evidence(feedback: str) -> bool:
         and "Builder delivery evidence is not ready" in feedback
         and "Produce current-head evidence" in feedback
     )
-    figma_writer_gate = (
-        "Model: `deterministic/figma-writer-delivery-gate`" in feedback
-        and "Current-head Figma Writer delivery is missing" in feedback
-        and "rerun the leased Figma Writer phase" in feedback
-    )
-    return builder_evidence_gate or figma_writer_gate
+    return builder_evidence_gate or _figma_writer_gate_requires_current_head(feedback)
 
 
 def _base_sync_response(base_branch: str) -> str:
@@ -253,6 +257,22 @@ def _base_sync_response(base_branch: str) -> str:
         f"{base_branch} branch into this existing Builder branch so repository-owned "
         "verification can regenerate evidence for the current head. No model was invoked "
         "and no additional working-tree edits were required.</builder_summary>"
+    )
+
+
+def _figma_retry_response() -> str:
+    return (
+        "<builder_summary>Released the unchanged current Builder candidate directly to the "
+        "leased Figma Writer because the sole authenticated finding requires current-head "
+        "Figma delivery. No code model was invoked and no repository edits were required in "
+        "the Builder phase.</builder_summary>"
+    )
+
+
+def _publish_figma_retry_without_model(*, base_conflicts: str, feedback: str) -> bool:
+    """Let an exact-head Figma-only retry bypass the product Builder."""
+    return bool(
+        not base_conflicts and _figma_writer_gate_requires_current_head(feedback)
     )
 
 
@@ -1387,6 +1407,11 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         base_workflow_changes=base_workflow_changes,
         feedback=feedback,
     )
+    figma_only_retry = bool(existing) and _publish_figma_retry_without_model(
+        base_conflicts=base_conflicts,
+        feedback=feedback,
+    )
+    skip_builder_model = evidence_base_sync or figma_only_retry
     # Fetch the exact-head evidence once (bounded, provenance-checked) and reuse it
     # for both harnesses: the openai-compatible route sends the data URLs as image
     # blocks; the claude-code route can only see through the Read tool, so the same
@@ -1394,7 +1419,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     delivery_image_data: tuple[str, ...] = ()
     delivery_image_paths: tuple[tuple[str, str], ...] = ()
     evidence_dir: Path | None = None
-    if delivery_images and existing and not evidence_base_sync:
+    if delivery_images and existing and not skip_builder_model:
         delivery_image_data = _fetch_delivery_images(
             repo, int(existing[0]["number"]), existing_head, delivery_images, token
         )
@@ -1452,6 +1477,13 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         response = _base_sync_response(config.builder.base_branch)
         tool_calls = 0
         harness = "current-base-sync"
+        model = "not invoked"
+        estimated_cost = 0.0
+        cost_kind = "not incurred"
+    elif figma_only_retry:
+        response = _figma_retry_response()
+        tool_calls = 0
+        harness = "current-head-figma-retry"
         model = "not invoked"
         estimated_cost = 0.0
         cost_kind = "not incurred"
@@ -1559,7 +1591,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     if _run(["git", "status", "--porcelain"], cwd=root).strip():
         _run(["git", "add", "--all"], cwd=root)
         _run(["git", "commit", "-m", f"feat: implement issue #{issue_number}"], cwd=root)
-    elif not base_sync_changed:
+    elif not base_sync_changed and not figma_only_retry:
         raise BuilderBlocked("Builder produced no publishable repository changes")
     _run(["gh", "auth", "setup-git"], cwd=root)
     _run(["git", "push", "--force-with-lease", "origin", branch], cwd=root)
