@@ -60,14 +60,22 @@ class ReviewTests(unittest.TestCase):
             "1" * 40, "2" * 40, prior, current, ("app/Demo.swift",)
         ))
 
-    def test_prior_review_requires_configured_reviewer_bot(self) -> None:
+    def test_prior_review_carries_only_authenticated_reference_interpretation(self) -> None:
         head = "a" * 40
         marker = "<!-- reviewer:test -->"
         encoded = "\n".join([
             marker,
             "trusted narrative",
             encode_data({
-                "version": 1, "head_sha": head, "verdict": "request_changes"
+                "version": 1,
+                "head_sha": head,
+                "verdict": "request_changes",
+                "reference_interpretation": "The reference uses a flat white surface.",
+                "findings": [{
+                    "severity": "P1",
+                    "title": "Old missing evidence claim",
+                    "reasoning": "The prior delivery omitted an artifact.",
+                }],
             }),
         ])
         spoof = encoded.replace("trusted narrative", "spoofed narrative")
@@ -79,8 +87,53 @@ class ReviewTests(unittest.TestCase):
             selected = prior_review_for_head(
                 "owner/repo", "7", head, marker, "reviewer[bot]"
             )
-        self.assertIn("trusted narrative", selected)
+        self.assertIn("The reference uses a flat white surface.", selected)
+        self.assertNotIn("trusted narrative", selected)
+        self.assertNotIn("Old missing evidence claim", selected)
         self.assertNotIn("spoofed narrative", selected)
+
+    def test_prior_review_without_structured_reference_interpretation_is_not_replayed(self) -> None:
+        head = "a" * 40
+        marker = "<!-- reviewer:test -->"
+        body = "\n".join([
+            marker,
+            "The current delivery is missing proof.",
+            encode_data({
+                "version": 1,
+                "head_sha": head,
+                "verdict": "request_changes",
+                "findings": [{"severity": "P1", "title": "Missing proof"}],
+            }),
+        ])
+        pages = [[{
+            "body": body,
+            "state": "CHANGES_REQUESTED",
+            "user": {"type": "Bot", "login": "reviewer[bot]"},
+        }]]
+        with mock.patch("agent_factory.github_review._gh", return_value=json.dumps(pages)):
+            selected = prior_review_for_head(
+                "owner/repo", "7", head, marker, "reviewer[bot]"
+            )
+        self.assertEqual(selected, "")
+
+    def test_review_payload_persists_reference_interpretation_separately_from_findings(self) -> None:
+        review = normalize_review({
+            "summary": "Current head needs a change.",
+            "reference_interpretation": "The reference has a flat white surface.",
+            "approve": False,
+            "findings": [{
+                "severity": "P1",
+                "title": "Current defect",
+                "reasoning": "The current head diverges.",
+            }],
+        })
+        body = format_body("<!-- reviewer:test -->", "a" * 40, review, "test", "model")
+        machine = decode_data(body)
+        self.assertEqual(
+            machine["reference_interpretation"],
+            "The reference has a flat white surface.",
+        )
+        self.assertEqual(machine["findings"][0]["title"], "Current defect")
 
     def test_reference_interpretation_conflict_is_machine_readable(self) -> None:
         review = normalize_review({
