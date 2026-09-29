@@ -203,23 +203,20 @@ Builder itself receives no Figma token or MCP tools.
    ```
 
 3. Approve the Figma MCP connection in the browser window. The command registers
-   the supported Claude Code client and uses PKCE, then writes
-   `FIGMA_MCP_CLIENT_ID`, `FIGMA_MCP_CLIENT_SECRET`, and
-   `FIGMA_MCP_REFRESH_TOKEN` directly to GitHub Actions secrets. Figma's MCP
-   authorization server requires the dynamically registered client secret in
-   the token request body. The command does not print any credential value.
+   the supported Claude Code client and uses PKCE, then writes the resulting
+   `FIGMA_MCP_ACCESS_TOKEN` directly to GitHub Actions secrets. The command does
+   not print any credential value. Re-run it only when Figma expires or revokes
+   the grant, the secret is removed, or you intentionally change identities.
 4. Regenerate an older Builder caller or manually forward the named credentials
    to the reusable workflow.
 
 After Builder opens or updates a draft pull request, the Figma Writer job waits
-for its identity lease. Only then does Factory exchange the refresh credential
-for a short-lived access token, build a private MCP config, and expose those
-temporary values to Claude Code. The refresh token and any client secret stay
-outside the model subprocess. An `always` cleanup step exchanges and discards a
-replacement access token so the Writer's token is no longer current. The pull
-request becomes ready only after cleanup succeeds. Missing credentials, a failed
-exchange, an invalid record, or a missing exact-head authenticated result leaves
-the pull request in draft and fails closed.
+for its identity lease. Only then does Factory build a private MCP config and
+expose the access grant to Claude Code for that isolated job. The token is not
+forwarded to Builder or Reviewer, and the hosted runner is discarded after the
+Writer phase. The pull request becomes ready only after the Writer succeeds.
+A missing or expired grant, an invalid record, or a missing exact-head
+authenticated result leaves the pull request in draft and fails closed.
 
 This connection is distinct from a Figma personal access token or a normal REST
 OAuth application. Those credentials support the REST API and related export or

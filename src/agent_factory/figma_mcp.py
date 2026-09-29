@@ -1,9 +1,9 @@
-"""Short-lived Figma MCP OAuth credentials for hosted Figma Writer runs.
+"""Figma MCP OAuth credentials for hosted Figma Writer runs.
 
 The authorization command is deliberately operator-run: it completes Figma's
-browser consent locally and writes the resulting client credentials straight to
-GitHub Actions secrets. The hosted prepare command exchanges only the stored
-refresh credential and gives the leased Writer phase a temporary access token.
+browser consent locally and writes the resulting MCP access grant straight to
+GitHub Actions secrets. The hosted prepare command exposes that grant only to
+the leased Writer phase; Builder and Reviewer jobs never receive it.
 """
 from __future__ import annotations
 
@@ -30,11 +30,7 @@ AUTHORIZATION_ENDPOINT = "https://www.figma.com/oauth/mcp"
 TOKEN_ENDPOINT = "https://api.figma.com/v1/oauth/token"
 EXPECTED_ISSUER = "https://api.figma.com"
 MCP_SCOPE = "mcp:connect"
-SECRET_NAMES = (
-    "FIGMA_MCP_CLIENT_ID",
-    "FIGMA_MCP_CLIENT_SECRET",
-    "FIGMA_MCP_REFRESH_TOKEN",
-)
+ACCESS_SECRET_NAME = "FIGMA_MCP_ACCESS_TOKEN"
 
 
 class FigmaMCPError(RuntimeError):
@@ -107,32 +103,6 @@ def _token_request(
     return _json_request(request)
 
 
-def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
-    """Exchange the reusable refresh credential without exposing it to the model."""
-    if not client_id or not client_secret or not refresh_token:
-        raise FigmaMCPError(
-            "Figma MCP is enabled but a client credential or refresh token is missing"
-        )
-    payload = _token_request(
-        {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "scope": MCP_SCOPE,
-        },
-        client_id=client_id,
-        client_secret=client_secret,
-    )
-    access_token = payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token:
-        raise FigmaMCPError("Figma OAuth refresh returned no access token")
-    returned_refresh = payload.get("refresh_token")
-    if returned_refresh not in (None, "", refresh_token):
-        raise FigmaMCPError(
-            "Figma rotated the refresh token; re-run the local authorization command"
-        )
-    return access_token
-
-
 def write_mcp_config(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -157,11 +127,12 @@ def write_mcp_config(path: Path) -> None:
 
 
 def prepare(config_path: Path, github_env: Path) -> None:
-    access_token = refresh_access_token(
-        os.environ.get("FIGMA_MCP_CLIENT_ID", ""),
-        os.environ.get("FIGMA_MCP_CLIENT_SECRET", ""),
-        os.environ.get("FIGMA_MCP_REFRESH_TOKEN", ""),
-    )
+    access_token = os.environ.get(ACCESS_SECRET_NAME, "")
+    if not access_token:
+        raise FigmaMCPError(
+            "Figma MCP is enabled but its access grant is missing; "
+            "re-run the local authorization command"
+        )
     write_mcp_config(config_path)
     # GitHub interprets add-mask commands without displaying their payload. The
     # token is then shared only with the subsequent Builder process.
@@ -169,15 +140,6 @@ def prepare(config_path: Path, github_env: Path) -> None:
     with github_env.open("a", encoding="utf-8") as handle:
         handle.write(f"FIGMA_MCP_ACCESS_TOKEN={access_token}\n")
         handle.write(f"AGENT_FACTORY_MCP_CONFIG={config_path}\n")
-
-
-def invalidate_job_token() -> None:
-    """Issue and discard a replacement, invalidating the Writer's access token."""
-    refresh_access_token(
-        os.environ.get("FIGMA_MCP_CLIENT_ID", ""),
-        os.environ.get("FIGMA_MCP_CLIENT_SECRET", ""),
-        os.environ.get("FIGMA_MCP_REFRESH_TOKEN", ""),
-    )
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -297,13 +259,11 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
         client_id=client_id,
         client_secret=client_secret,
     )
-    refresh_token = payload.get("refresh_token")
-    if not isinstance(refresh_token, str) or not refresh_token:
-        raise FigmaMCPError("Figma authorization returned no refresh token")
-    values = (client_id, client_secret, refresh_token)
-    for name, value in zip(SECRET_NAMES, values, strict=True):
-        _save_secret(repo, name, value)
-    print(f"Saved {', '.join(SECRET_NAMES)} to {repo} without printing their values.")
+    access_token = payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise FigmaMCPError("Figma authorization returned no access token")
+    _save_secret(repo, ACCESS_SECRET_NAME, access_token)
+    print(f"Saved {ACCESS_SECRET_NAME} to {repo} without printing its value.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -312,7 +272,6 @@ def main(argv: list[str] | None = None) -> int:
     prepare_parser = subparsers.add_parser("prepare")
     prepare_parser.add_argument("--config", type=Path, required=True)
     prepare_parser.add_argument("--github-env", type=Path, required=True)
-    subparsers.add_parser("invalidate")
     authorize_parser = subparsers.add_parser("authorize")
     authorize_parser.add_argument("--repo", required=True)
     authorize_parser.add_argument("--timeout", type=int, default=300)
@@ -320,8 +279,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "prepare":
             prepare(args.config, args.github_env)
-        elif args.command == "invalidate":
-            invalidate_job_token()
         else:
             authorize(args.repo, timeout=args.timeout)
     except FigmaMCPError as exc:

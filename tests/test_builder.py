@@ -55,27 +55,18 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("steps.builder-config.outputs.cli_version", workflow)
         self.assertNotIn("gemini_cli_version", workflow)
 
-    def test_reusable_workflow_prepares_and_invalidates_figma_mcp(self) -> None:
+    def test_reusable_workflow_prepares_leased_figma_mcp_access(self) -> None:
         workflow = (
             Path(__file__).parents[1] / ".github/workflows/builder.yml"
         ).read_text(encoding="utf-8")
-        for secret in (
-            "FIGMA_MCP_CLIENT_ID",
-            "FIGMA_MCP_CLIENT_SECRET",
-            "FIGMA_MCP_REFRESH_TOKEN",
-        ):
-            self.assertIn(secret, workflow)
+        self.assertIn("FIGMA_MCP_ACCESS_TOKEN", workflow)
         self.assertIn("agent_factory.figma_mcp prepare", workflow)
-        self.assertIn("agent_factory.figma_mcp invalidate", workflow)
-        self.assertIn("steps.figma-prepare.outcome == 'success'", workflow)
+        self.assertNotIn("agent_factory.figma_mcp invalidate", workflow)
         self.assertIn("figma-writer:", workflow)
         self.assertIn("needs: builder", workflow)
         self.assertIn("agent-factory-figma-${{ needs.builder.outputs.figma_lease_key }}", workflow)
         self.assertIn("agent_factory.github_figma_writer", workflow)
-        self.assertLess(
-            workflow.index("agent_factory.figma_mcp invalidate"),
-            workflow.index("gh pr ready"),
-        )
+        self.assertLess(workflow.index("agent_factory.github_figma_writer"), workflow.index("gh pr ready"))
 
     def test_reconciled_control_plane_does_not_skip_authenticated_feedback(self) -> None:
         self.assertFalse(_publish_base_sync_without_model(
