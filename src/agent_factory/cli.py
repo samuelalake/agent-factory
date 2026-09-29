@@ -204,6 +204,13 @@ def default_config(project_name: str) -> dict:
             "input_cost_per_million": 0.0,
             "output_cost_per_million": 0.0,
         },
+        "figma": {
+            "marker": "<!-- figma-writer:agent-factory -->",
+            "enabled": False,
+            "lease_key": "shared-oauth",
+            "model": "claude-opus-4-8",
+            "timeout_seconds": 1800,
+        },
         "review": {
             "marker": "<!-- reviewer:agent-factory -->",
             "failure_marker": "<!-- reviewer:agent-factory-failure -->",

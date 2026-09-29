@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,15 @@ class BuilderConfig:
 
 
 @dataclass(frozen=True)
+class FigmaConfig:
+    marker: str
+    enabled: bool
+    lease_key: str
+    model: str
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class IntegrationConfig:
     marker: str
     status_context: str
@@ -106,6 +116,7 @@ class Config:
     project: ProjectConfig
     steward: StewardConfig
     builder: BuilderConfig
+    figma: FigmaConfig
     review: ReviewConfig
     integration: IntegrationConfig
     gate: GateConfig
@@ -130,7 +141,9 @@ def _strings(value: Any, path: str) -> tuple[str, ...]:
 
 
 def parse_config(raw: dict[str, Any]) -> Config:
-    allowed = {"version", "project", "steward", "builder", "review", "integration", "gate"}
+    allowed = {
+        "version", "project", "steward", "builder", "figma", "review", "integration", "gate"
+    }
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ConfigError(f"unknown top-level keys: {', '.join(unknown)}")
@@ -141,6 +154,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
     project = _mapping(raw.get("project"), "project")
     steward = _mapping(raw.get("steward", {}), "steward")
     builder = _mapping(raw.get("builder", {}), "builder")
+    figma = _mapping(raw.get("figma", {}), "figma")
     review = _mapping(raw.get("review"), "review")
     integration = _mapping(raw.get("integration", {}), "integration")
     gate = _mapping(raw.get("gate"), "gate")
@@ -342,8 +356,6 @@ def parse_config(raw: dict[str, Any]) -> Config:
     figma_mcp = builder.get("figma_mcp", False)
     if not isinstance(figma_mcp, bool):
         raise ConfigError("builder.figma_mcp must be a boolean")
-    if figma_mcp and builder_harness != "claude-code":
-        raise ConfigError("builder.figma_mcp requires the claude-code harness")
     builder_fallback_provider = builder.get("fallback_provider", "nvidia")
     builder_fallback_model = builder.get("fallback_model", "moonshotai/kimi-k3")
     if (builder_fallback_provider is None) != (builder_fallback_model is None):
@@ -355,10 +367,35 @@ def parse_config(raw: dict[str, Any]) -> Config:
         if builder_fallback_provider not in {"minimax", "nvidia", "openrouter"}:
             raise ConfigError(f"unsupported builder.fallback_provider: {builder_fallback_provider}")
         builder_fallback_model = _string(builder_fallback_model, "builder.fallback_model")
-    if figma_mcp and builder_fallback_provider is not None:
-        raise ConfigError(
-            "builder.figma_mcp requires fallback_provider and fallback_model to be null"
-        )
+    figma_enabled = figma.get("enabled", figma_mcp)
+    if not isinstance(figma_enabled, bool):
+        raise ConfigError("figma.enabled must be a boolean")
+    explicit_figma_config = "figma" in raw
+    figma_lease_key = figma.get("lease_key")
+    if figma_enabled:
+        # `builder.figma_mcp` remains a compatibility alias for consumers pinned
+        # before the dedicated phase existed. New configurations must name the
+        # OAuth identity lane explicitly so Steward never infers lock scope.
+        if figma_lease_key is None and not explicit_figma_config and figma_mcp:
+            figma_lease_key = "legacy-shared-oauth"
+        figma_lease_key = _string(figma_lease_key, "figma.lease_key")
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", figma_lease_key):
+            raise ConfigError(
+                "figma.lease_key may contain only letters, numbers, dot, underscore, slash, or hyphen"
+            )
+    else:
+        figma_lease_key = str(figma_lease_key or "disabled").strip()
+    figma_timeout_seconds = figma.get("timeout_seconds", timeout_seconds)
+    if (
+        not isinstance(figma_timeout_seconds, int)
+        or isinstance(figma_timeout_seconds, bool)
+        or figma_timeout_seconds < 60
+    ):
+        raise ConfigError("figma.timeout_seconds must be an integer of at least 60")
+    figma_model = _string(
+        figma.get("model", builder.get("model", "claude-opus-4-8")),
+        "figma.model",
+    )
     integration_mode = _string(
         integration.get("mode", "pull_request_merge_ref"), "integration.mode"
     )
@@ -430,6 +467,16 @@ def parse_config(raw: dict[str, Any]) -> Config:
             visual_revision_context=visual_revision_context,
             fallback_visual_revision_context=fallback_visual_revision_context,
             figma_mcp=figma_mcp,
+        ),
+        figma=FigmaConfig(
+            marker=_string(
+                figma.get("marker", "<!-- figma-writer:agent-factory -->"),
+                "figma.marker",
+            ),
+            enabled=figma_enabled,
+            lease_key=figma_lease_key,
+            model=figma_model,
+            timeout_seconds=figma_timeout_seconds,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),

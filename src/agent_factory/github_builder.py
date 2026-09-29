@@ -869,6 +869,7 @@ def _run_claude_code(
     timeout_seconds: int,
     extra_read_dirs: tuple[Path, ...] = (),
     figma_mcp: bool = False,
+    require_repository_change: bool = True,
 ) -> tuple[str, int]:
     """Run Claude Code headless in edit mode; return its summary and turn count.
 
@@ -933,7 +934,10 @@ def _run_claude_code(
     # Mirror parse_gemini_stream's proof-of-work guard: a chat-only reply that
     # leaves the working tree untouched (including new untracked files, which
     # `git diff --quiet` would miss) is not a build.
-    if not _run(["git", "status", "--porcelain"], cwd=root).strip():
+    if (
+        require_repository_change
+        and not _run(["git", "status", "--porcelain"], cwd=root).strip()
+    ):
         raise BuilderBlocked("Claude Code completed without modifying the repository")
     turns = envelope.get("num_turns")
     tool_calls = turns if isinstance(turns, int) and turns > 0 else 0
@@ -1022,13 +1026,6 @@ current repository contracts. Remove all conflict markers; the harness will stag
             f"- Interaction recording: {url}" for url in delivery_recordings
         )
         evidence = "\n".join(lines)
-    figma_capability = (
-        "- This run has authenticated Figma MCP canvas access. Use the Figma MCP tools for "
-        "every editable Figma deliverable required by the issue, and verify the resulting "
-        "file structure before finishing.\n"
-        if config.builder.figma_mcp
-        else ""
-    )
     return f"""You are Builder for {config.project.name}.
 
 Implement GitHub issue #{issue['number']} completely in the current checkout.
@@ -1053,7 +1050,7 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 - Discover and follow repository instructions, relevant skills, history, and existing conventions.
 - Do not use operator-authored implementation branches or unrelated pull requests as implementation input.
 - Inspect source artifacts and run repository tools on this runner; do not invent values or weaken acceptance criteria.
-{figma_capability}- Implement required repository and external design deliverables as one coherent issue result.
+- Implement the repository portion of the issue completely. When editable Figma delivery is enabled, a dedicated Figma Writer phase follows this code phase and owns canvas mutation.
 - Implement the issue, run proportionate tests, and leave the complete working-tree changes in place.
 - End with one concise, plain-language delivery summary wrapped exactly in
   `<builder_summary>...</builder_summary>`. Put no analysis or work log inside it.
@@ -1141,7 +1138,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         _gh(
             [
                 "pr", "list", "--repo", repo, "--state", "open", "--head", branch,
-                "--json", "number,url,headRefOid,body",
+                "--json", "number,url,headRefOid,body,isDraft",
             ],
             cwd=root,
         )
@@ -1153,6 +1150,8 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     if existing:
         existing_head = str(existing[0].get("headRefOid") or "")
         existing_pr = int(existing[0]["number"])
+        if config.figma.enabled and not bool(existing[0].get("isDraft")):
+            _gh(["pr", "ready", str(existing_pr), "--repo", repo, "--undo"], cwd=root)
         feedback = _review_feedback(
             repo,
             existing_pr,
@@ -1316,7 +1315,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                     model=config.builder.model,
                     timeout_seconds=config.builder.timeout_seconds,
                     extra_read_dirs=(evidence_dir,) if evidence_dir else (),
-                    figma_mcp=config.builder.figma_mcp,
+                    figma_mcp=False,
                 )
                 # Subscription-backed: there is no per-token cost to meter, so the
                 # shared cost budget stays untouched and a fallback can still run.
@@ -1434,11 +1433,14 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             stdin=pr_body,
         )
     else:
-        pr_url = _gh(
-            [
+        create_args = [
                 "pr", "create", "--repo", repo, "--base", config.builder.base_branch,
                 "--head", branch, "--title", str(issue["title"]), "--body-file", "-",
-            ],
+            ]
+        if config.figma.enabled:
+            create_args.append("--draft")
+        pr_url = _gh(
+            create_args,
             cwd=root,
             stdin=pr_body,
         ).strip()
@@ -1473,9 +1475,19 @@ def main() -> int:
     parser.add_argument("--issue", required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--github-output", type=Path)
     args = parser.parse_args()
     try:
-        run(args.repo, args.issue, args.root, args.config)
+        pr_url = run(args.repo, args.issue, args.root, args.config)
+        if args.github_output is not None:
+            config = load_config(args.config)
+            pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+            if not pr_number.isdigit():
+                raise RuntimeError("Builder returned an invalid pull request URL")
+            with args.github_output.open("a", encoding="utf-8") as output:
+                output.write(f"pr={pr_number}\n")
+                output.write(f"pr_url={pr_url}\n")
+                output.write(f"branch={config.builder.branch_prefix}{args.issue}\n")
     except (BuilderBlocked, RuntimeError, subprocess.TimeoutExpired) as exc:
         config = load_config(args.config)
         detail = _blocked_detail(

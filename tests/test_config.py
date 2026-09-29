@@ -30,6 +30,8 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.builder.visual_revision_context)
         self.assertFalse(config.builder.fallback_visual_revision_context)
         self.assertFalse(config.builder.figma_mcp)
+        self.assertFalse(config.figma.enabled)
+        self.assertEqual(config.figma.lease_key, "shared-oauth")
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.app_login, "agent-factory-reviewer[bot]")
@@ -243,30 +245,30 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertTrue(parse_config(raw).builder.visual_revision_context)
 
-    def test_figma_mcp_requires_claude_code_without_fallback(self) -> None:
+    def test_legacy_figma_mcp_alias_enables_dedicated_writer(self) -> None:
         raw = default_config("demo")
-        raw["builder"].update(
-            {
-                "provider": "claude-code",
-                "harness": "claude-code",
-                "model": "claude-opus-4-8",
-                "fallback_provider": None,
-                "fallback_model": None,
-                "figma_mcp": True,
-            }
-        )
-        self.assertTrue(parse_config(raw).builder.figma_mcp)
-
-        raw["builder"].update(
-            {"fallback_provider": "nvidia", "fallback_model": "moonshotai/kimi-k3"}
-        )
-        with self.assertRaisesRegex(ConfigError, "requires fallback_provider"):
-            parse_config(raw)
-
-        raw = default_config("demo")
+        raw.pop("figma")
         raw["builder"]["figma_mcp"] = True
-        with self.assertRaisesRegex(ConfigError, "requires the claude-code harness"):
+        config = parse_config(raw)
+        self.assertTrue(config.builder.figma_mcp)
+        self.assertTrue(config.figma.enabled)
+        self.assertEqual(config.figma.lease_key, "legacy-shared-oauth")
+
+    def test_enabled_figma_writer_requires_explicit_valid_lease_key(self) -> None:
+        raw = default_config("demo")
+        raw["figma"].update({"enabled": True, "lease_key": ""})
+        with self.assertRaisesRegex(ConfigError, "figma.lease_key"):
             parse_config(raw)
+
+        raw["figma"]["lease_key"] = "samuel primary"
+        with self.assertRaisesRegex(ConfigError, "letters, numbers"):
+            parse_config(raw)
+
+        raw["figma"]["lease_key"] = "figma-oauth/samuel-primary"
+        self.assertEqual(
+            parse_config(raw).figma.lease_key,
+            "figma-oauth/samuel-primary",
+        )
 
     def test_figma_mcp_must_be_boolean(self) -> None:
         raw = default_config("demo")

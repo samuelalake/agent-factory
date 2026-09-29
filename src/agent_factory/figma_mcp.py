@@ -1,9 +1,9 @@
-"""Short-lived Figma MCP OAuth credentials for hosted Builder runs.
+"""Short-lived Figma MCP OAuth credentials for hosted Figma Writer runs.
 
 The authorization command is deliberately operator-run: it completes Figma's
 browser consent locally and writes the resulting client credentials straight to
 GitHub Actions secrets. The hosted prepare command exchanges only the stored
-refresh credential and gives the Builder a temporary access token.
+refresh credential and gives the leased Writer phase a temporary access token.
 """
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ TOKEN_ENDPOINT = "https://api.figma.com/v1/oauth/token"
 MCP_SCOPE = "mcp:connect"
 SECRET_NAMES = (
     "FIGMA_MCP_CLIENT_ID",
-    "FIGMA_MCP_CLIENT_SECRET",
     "FIGMA_MCP_REFRESH_TOKEN",
 )
 
@@ -69,24 +68,31 @@ def _token_request(
     client_id: str,
     client_secret: str,
 ) -> dict[str, Any]:
+    form = dict(form)
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    if client_secret:
+        headers["Authorization"] = _basic_auth(client_id, client_secret)
+    else:
+        # Figma registers supported CLI clients as OAuth public clients. Public
+        # clients authenticate the PKCE exchange with their client ID in-body.
+        form["client_id"] = client_id
     request = urllib.request.Request(
         TOKEN_ENDPOINT,
         data=urllib.parse.urlencode(form).encode(),
-        headers={
-            "Accept": "application/json",
-            "Authorization": _basic_auth(client_id, client_secret),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
+        headers=headers,
         method="POST",
     )
     return _json_request(request)
 
 
 def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
-    """Exchange the reusable refresh credential without exposing it to Builder."""
-    if not all((client_id, client_secret, refresh_token)):
+    """Exchange the reusable refresh credential without exposing it to the model."""
+    if not client_id or not refresh_token:
         raise FigmaMCPError(
-            "Figma MCP is enabled but its client ID, client secret, or refresh token is missing"
+            "Figma MCP is enabled but its client ID or refresh token is missing"
         )
     payload = _token_request(
         {
@@ -148,7 +154,7 @@ def prepare(config_path: Path, github_env: Path) -> None:
 
 
 def invalidate_job_token() -> None:
-    """Issue and discard a replacement, invalidating the Builder's access token."""
+    """Issue and discard a replacement, invalidating the Writer's access token."""
     refresh_access_token(
         os.environ.get("FIGMA_MCP_CLIENT_ID", ""),
         os.environ.get("FIGMA_MCP_CLIENT_SECRET", ""),
@@ -184,11 +190,15 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
         REGISTRATION_ENDPOINT,
         data=json.dumps(
             {
-                "client_name": "Agent Factory hosted Builder",
+                # Figma allows only cataloged MCP clients. The hosted phase runs
+                # the Claude Code CLI, so this is the truthful supported identity.
+                "client_name": "Claude Code",
                 "redirect_uris": [redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
-                "token_endpoint_auth_method": "client_secret_basic",
+                "token_endpoint_auth_method": "none",
+                "application_type": "native",
+                "scope": MCP_SCOPE,
             }
         ).encode(),
         headers={"Accept": "application/json", "Content-Type": "application/json"},
@@ -196,12 +206,14 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
     )
     payload = _json_request(request)
     client_id = payload.get("client_id")
-    client_secret = payload.get("client_secret")
     if not isinstance(client_id, str) or not client_id:
         raise FigmaMCPError("Figma client registration returned no client ID")
-    if not isinstance(client_secret, str) or not client_secret:
-        raise FigmaMCPError("Figma client registration returned no client secret")
-    return client_id, client_secret
+    if payload.get("token_endpoint_auth_method") not in (None, "none"):
+        raise FigmaMCPError("Figma registered an unsupported client authentication method")
+    # Figma may include a client_secret field even though the registered native
+    # client explicitly uses token_endpoint_auth_method=none. Do not retain or
+    # send that field; PKCE plus the in-body client_id is the declared flow.
+    return client_id, ""
 
 
 def _save_secret(repo: str, name: str, value: str) -> None:
@@ -266,13 +278,14 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
     refresh_token = payload.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
         raise FigmaMCPError("Figma authorization returned no refresh token")
-    for name, value in zip(
-        SECRET_NAMES,
-        (client_id, client_secret, refresh_token),
-        strict=True,
-    ):
+    values = (client_id, refresh_token)
+    for name, value in zip(SECRET_NAMES, values, strict=True):
         _save_secret(repo, name, value)
-    print(f"Saved {', '.join(SECRET_NAMES)} to {repo} without printing their values.")
+    saved_names = list(SECRET_NAMES)
+    if client_secret:
+        _save_secret(repo, "FIGMA_MCP_CLIENT_SECRET", client_secret)
+        saved_names.append("FIGMA_MCP_CLIENT_SECRET")
+    print(f"Saved {', '.join(saved_names)} to {repo} without printing their values.")
 
 
 def main(argv: list[str] | None = None) -> int:

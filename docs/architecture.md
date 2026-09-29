@@ -37,6 +37,8 @@ Steward dispatch
       |
 Builder branch and pull request
       |
+Figma Writer phase (when configured)
+      |
 repository Verify + independent Reviewer
       |
 Steward integration decision
@@ -50,6 +52,25 @@ long-lived branch. Consumers may configure a branch-backed development lane
 when they genuinely need several reviewed changes deployed together. Human
 acceptance is a repository policy for selected risk classes, not a mandatory
 hold on every change.
+
+### Shared external writers
+
+Steward owns the transition into a shared mutable external resource. The
+runtime enforces that decision with a phase-scoped lease; prompt text is not a
+lock. Builders may prepare repository changes concurrently, while a configured
+Figma Writer waits only for the named OAuth-identity lane it needs. The lease is
+acquired before refreshing Figma credentials and released after the canvas is
+verified and the temporary token is invalidated.
+
+An enabled Figma delivery keeps the Builder pull request in draft. Figma Writer
+updates the same branch with a bounded delivery record, publishes a
+Builder-App-authenticated result bound to the exact head, and marks the pull
+request ready only after credential cleanup. Reviewer rejects a missing,
+blocked, or stale Figma Writer record deterministically. The initial lease scope
+is the authenticated identity, because a token refresh invalidates that
+identity's prior access token. Narrower file-level concurrency requires separate
+credentials and an observed concurrency test; it is not inferred from repository
+layout.
 
 ## State contract
 
