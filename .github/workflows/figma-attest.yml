@@ -1,0 +1,80 @@
+name: reusable-agent-figma-attest
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: string
+      pr:
+        required: true
+        type: string
+      record_path:
+        required: true
+        type: string
+      screen_prefix:
+        required: true
+        type: string
+      factory_ref:
+        required: true
+        type: string
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+      app_id:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      AGENT_FACTORY_BUILDER_APP_ID:
+        required: false
+      AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Mint Builder installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ inputs.app_id || secrets.AGENT_FACTORY_BUILDER_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Checkout exact pull-request head
+        uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ inputs.pr }}/head
+          fetch-depth: 0
+          path: consumer
+          persist-credentials: false
+      - name: Checkout factory
+        uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - name: Attest existing Figma delivery
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_figma_attest
+          --repo "${{ github.repository }}"
+          --pr "${{ inputs.pr }}"
+          --issue "${{ inputs.issue }}"
+          --root consumer
+          --config consumer/.agent-factory/config.json
+          --record-path "${{ inputs.record_path }}"
+          --screen-prefix "${{ inputs.screen_prefix }}"
+      - name: Release attested candidate to Reviewer
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh pr ready "${{ inputs.pr }}" --repo "${{ github.repository }}"

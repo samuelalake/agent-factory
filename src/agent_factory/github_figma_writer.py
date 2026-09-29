@@ -171,6 +171,7 @@ def format_issue_status(
     pr_url: str,
     *,
     head: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     data = {
         "version": 1,
@@ -179,6 +180,7 @@ def format_issue_status(
         "state": state,
         "pull_request": pr_url,
         **({"head": head} if head else {}),
+        **(metadata or {}),
     }
     return "\n".join([
         marker,
