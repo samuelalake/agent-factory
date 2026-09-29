@@ -682,6 +682,11 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("must identify a concrete defect", system)
         self.assertIn("immutable referenced reusable workflow", system)
         self.assertIn("absence of dependency source code", system)
+        self.assertIn("Normalize each image to its own declared logical viewport", system)
+        self.assertIn(
+            "Raw PNG dimensions, capture density, and device pixel ratio are not layout differences",
+            system,
+        )
         self.assertIn("absence of a triplet is not a finding", user)
         self.assertEqual(posted[0]["event"], "APPROVE")
 
