@@ -26,6 +26,12 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
+      FIGMA_MCP_CLIENT_ID:
+        required: false
+      FIGMA_MCP_CLIENT_SECRET:
+        required: false
+      FIGMA_MCP_REFRESH_TOKEN:
+        required: false
       GEMINI_API_KEY:
         required: false
       MINIMAX_API_KEY:
@@ -80,7 +86,9 @@ jobs:
           'import os; from pathlib import Path; from agent_factory.config import load_config;
           builder = load_config(Path("consumer/.agent-factory/config.json")).builder;
           enabled = builder.provider == "claude-code";
-          output = f"claude_code={str(enabled).lower()}\ncli_version={builder.cli_version}\n";
+          output = (f"claude_code={str(enabled).lower()}\n"
+          f"cli_version={builder.cli_version}\n"
+          f"figma_mcp={str(builder.figma_mcp).lower()}\n");
           open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8").write(output)'
       - uses: actions/setup-node@v6
         with:
@@ -91,6 +99,17 @@ jobs:
       - name: Install Claude Code CLI
         if: steps.builder-config.outputs.claude_code == 'true'
         run: npm install -g @anthropic-ai/claude-code@2.1.236
+      - name: Prepare short-lived Figma MCP access
+        id: figma-prepare
+        if: steps.builder-config.outputs.figma_mcp == 'true'
+        env:
+          FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
+          FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
+          FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp prepare
+          --config "${{ runner.temp }}/agent-factory-figma-mcp.json"
+          --github-env "${GITHUB_ENV}"
       - name: Build and publish pull request
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -107,3 +126,10 @@ jobs:
           --issue "${{ inputs.issue }}"
           --root consumer
           --config consumer/.agent-factory/config.json
+      - name: Invalidate Builder Figma access
+        if: always() && steps.figma-prepare.outcome == 'success'
+        env:
+          FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
+          FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
+          FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
+        run: PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp invalidate

@@ -115,6 +115,9 @@ jobs:
     secrets:
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
+      FIGMA_MCP_CLIENT_ID: ${{{{ secrets.FIGMA_MCP_CLIENT_ID }}}}
+      FIGMA_MCP_CLIENT_SECRET: ${{{{ secrets.FIGMA_MCP_CLIENT_SECRET }}}}
+      FIGMA_MCP_REFRESH_TOKEN: ${{{{ secrets.FIGMA_MCP_REFRESH_TOKEN }}}}
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
       MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}
       NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
@@ -196,6 +199,7 @@ def default_config(project_name: str) -> dict:
             "max_revision_attempts": 3,
             "visual_revision_context": False,
             "fallback_visual_revision_context": False,
+            "figma_mcp": False,
             "max_model_cost_usd": 3.0,
             "input_cost_per_million": 0.0,
             "output_cost_per_million": 0.0,

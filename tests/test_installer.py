@@ -59,7 +59,13 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("vars.AGENT_FACTORY_BUILDER_APP_ID", builder)
             self.assertIn("runner: ubuntu-latest", builder)
             self.assertNotIn("gemini_cli_version", builder)
-            for secret in ("MODEL_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+            for secret in (
+                "MODEL_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "FIGMA_MCP_CLIENT_ID",
+                "FIGMA_MCP_CLIENT_SECRET",
+                "FIGMA_MCP_REFRESH_TOKEN",
+            ):
                 self.assertIn(secret, builder)
             self.assertIn("vars.AGENT_FACTORY_REVIEWER_APP_ID", review)
             self.assertIn("vars.AGENT_FACTORY_STEWARD_APP_ID", review)
