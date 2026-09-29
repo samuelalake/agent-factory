@@ -111,7 +111,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ inputs.app_id || secrets.AGENT_FACTORY_BUILDER_APP_ID }}
+          app-id: ${{ inputs.app_id || vars.AGENT_FACTORY_BUILDER_APP_ID || secrets.AGENT_FACTORY_BUILDER_APP_ID }}
           private-key: ${{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.owner }}
           repositories: ${{ steps.target.outputs.name }}
