@@ -29,6 +29,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.builder.max_revision_attempts, 3)
         self.assertFalse(config.builder.visual_revision_context)
         self.assertFalse(config.builder.fallback_visual_revision_context)
+        self.assertFalse(config.builder.figma_mcp)
         self.assertEqual(config.integration.mode, "pull_request_merge_ref")
         self.assertEqual(config.review.provider, "gemini")
         self.assertEqual(config.review.app_login, "agent-factory-reviewer[bot]")
@@ -241,6 +242,37 @@ class ConfigTests(unittest.TestCase):
             }
         )
         self.assertTrue(parse_config(raw).builder.visual_revision_context)
+
+    def test_figma_mcp_requires_claude_code_without_fallback(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "claude-code",
+                "harness": "claude-code",
+                "model": "claude-opus-4-8",
+                "fallback_provider": None,
+                "fallback_model": None,
+                "figma_mcp": True,
+            }
+        )
+        self.assertTrue(parse_config(raw).builder.figma_mcp)
+
+        raw["builder"].update(
+            {"fallback_provider": "nvidia", "fallback_model": "moonshotai/kimi-k3"}
+        )
+        with self.assertRaisesRegex(ConfigError, "requires fallback_provider"):
+            parse_config(raw)
+
+        raw = default_config("demo")
+        raw["builder"]["figma_mcp"] = True
+        with self.assertRaisesRegex(ConfigError, "requires the claude-code harness"):
+            parse_config(raw)
+
+    def test_figma_mcp_must_be_boolean(self) -> None:
+        raw = default_config("demo")
+        raw["builder"]["figma_mcp"] = "yes"
+        with self.assertRaisesRegex(ConfigError, "must be a boolean"):
+            parse_config(raw)
 
     def test_visual_revision_context_requires_compatible_harness(self) -> None:
         raw = default_config("demo")

@@ -81,6 +81,7 @@ class BuilderConfig:
     max_revision_attempts: int
     visual_revision_context: bool
     fallback_visual_revision_context: bool
+    figma_mcp: bool
 
 
 @dataclass(frozen=True)
@@ -338,6 +339,11 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError(
             "builder.fallback_visual_revision_context requires visual_revision_context"
         )
+    figma_mcp = builder.get("figma_mcp", False)
+    if not isinstance(figma_mcp, bool):
+        raise ConfigError("builder.figma_mcp must be a boolean")
+    if figma_mcp and builder_harness != "claude-code":
+        raise ConfigError("builder.figma_mcp requires the claude-code harness")
     builder_fallback_provider = builder.get("fallback_provider", "nvidia")
     builder_fallback_model = builder.get("fallback_model", "moonshotai/kimi-k3")
     if (builder_fallback_provider is None) != (builder_fallback_model is None):
@@ -349,6 +355,10 @@ def parse_config(raw: dict[str, Any]) -> Config:
         if builder_fallback_provider not in {"minimax", "nvidia", "openrouter"}:
             raise ConfigError(f"unsupported builder.fallback_provider: {builder_fallback_provider}")
         builder_fallback_model = _string(builder_fallback_model, "builder.fallback_model")
+    if figma_mcp and builder_fallback_provider is not None:
+        raise ConfigError(
+            "builder.figma_mcp requires fallback_provider and fallback_model to be null"
+        )
     integration_mode = _string(
         integration.get("mode", "pull_request_merge_ref"), "integration.mode"
     )
@@ -419,6 +429,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             max_revision_attempts=max_revision_attempts,
             visual_revision_context=visual_revision_context,
             fallback_visual_revision_context=fallback_visual_revision_context,
+            figma_mcp=figma_mcp,
         ),
         review=ReviewConfig(
             marker=_string(review.get("marker"), "review.marker"),

@@ -68,7 +68,8 @@ caller's `runner` input while keeping the role contract unchanged.
 
 Next, [provision the consumer and choose its providers](docs/adopting-a-repository.md).
 That guide covers GitHub Apps, organization variables and secrets, provider
-selection, cost limits, visual evidence, and updating older callers.
+selection, cost limits, visual evidence, optional authenticated Figma canvas
+work, and updating older callers.
 
 ## Design rule
 

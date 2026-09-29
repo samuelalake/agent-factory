@@ -90,7 +90,7 @@ def _safe_agent_env() -> dict[str, str]:
     return env
 
 
-def _claude_agent_env() -> dict[str, str]:
+def _claude_agent_env(*, figma_mcp: bool = False) -> dict[str, str]:
     """Runtime env for the headless Claude Code Builder, without role credentials.
 
     The subscription token alone authenticates the CLI. Every model-provider key,
@@ -112,6 +112,15 @@ def _claude_agent_env() -> dict[str, str]:
         os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
         or os.environ.get("MODEL_API_KEY", "")
     )
+    if figma_mcp:
+        access_token = os.environ.get("FIGMA_MCP_ACCESS_TOKEN", "")
+        mcp_config = os.environ.get("AGENT_FACTORY_MCP_CONFIG", "")
+        if not access_token or not mcp_config:
+            raise BuilderBlocked(
+                "Figma MCP is required but its job access token or MCP config is missing"
+            )
+        env["FIGMA_MCP_ACCESS_TOKEN"] = access_token
+        env["AGENT_FACTORY_MCP_CONFIG"] = mcp_config
     return env
 
 
@@ -859,6 +868,7 @@ def _run_claude_code(
     model: str,
     timeout_seconds: int,
     extra_read_dirs: tuple[Path, ...] = (),
+    figma_mcp: bool = False,
 ) -> tuple[str, int]:
     """Run Claude Code headless in edit mode; return its summary and turn count.
 
@@ -867,18 +877,26 @@ def _run_claude_code(
     is why the CLI is never allowed to commit or push. The prompt is delivered on
     stdin so a large repository briefing cannot overflow the argument list.
     """
-    env = _claude_agent_env()
+    env = _claude_agent_env(figma_mcp=figma_mcp)
     if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
         raise BuilderBlocked(
             "CLAUDE_CODE_OAUTH_TOKEN is required for the claude-code Builder harness"
         )
+    allowed_tools = "Read,Edit,Write,Grep,Glob,Bash"
+    if figma_mcp:
+        allowed_tools += ",mcp__figma__*"
     args = [
         "claude", "-p",
         "--model", model,
         "--permission-mode", "acceptEdits",
-        "--allowedTools", "Read,Edit,Write,Grep,Glob,Bash",
+        "--allowedTools", allowed_tools,
         "--output-format", "json",
     ]
+    if figma_mcp:
+        args += [
+            "--mcp-config", env["AGENT_FACTORY_MCP_CONFIG"],
+            "--strict-mcp-config",
+        ]
     # Evidence images live outside the checkout so they never pollute the diff or
     # the proof-of-work guard; --add-dir grants the Read tool access to them.
     for extra in extra_read_dirs:
@@ -1004,6 +1022,13 @@ current repository contracts. Remove all conflict markers; the harness will stag
             f"- Interaction recording: {url}" for url in delivery_recordings
         )
         evidence = "\n".join(lines)
+    figma_capability = (
+        "- This run has authenticated Figma MCP canvas access. Use the Figma MCP tools for "
+        "every editable Figma deliverable required by the issue, and verify the resulting "
+        "file structure before finishing.\n"
+        if config.builder.figma_mcp
+        else ""
+    )
     return f"""You are Builder for {config.project.name}.
 
 Implement GitHub issue #{issue['number']} completely in the current checkout.
@@ -1028,6 +1053,7 @@ Implement GitHub issue #{issue['number']} completely in the current checkout.
 - Discover and follow repository instructions, relevant skills, history, and existing conventions.
 - Do not use operator-authored implementation branches or unrelated pull requests as implementation input.
 - Inspect source artifacts and run repository tools on this runner; do not invent values or weaken acceptance criteria.
+{figma_capability}- Implement required repository and external design deliverables as one coherent issue result.
 - Implement the issue, run proportionate tests, and leave the complete working-tree changes in place.
 - End with one concise, plain-language delivery summary wrapped exactly in
   `<builder_summary>...</builder_summary>`. Put no analysis or work log inside it.
@@ -1290,6 +1316,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                     model=config.builder.model,
                     timeout_seconds=config.builder.timeout_seconds,
                     extra_read_dirs=(evidence_dir,) if evidence_dir else (),
+                    figma_mcp=config.builder.figma_mcp,
                 )
                 # Subscription-backed: there is no per-token cost to meter, so the
                 # shared cost budget stays untouched and a fallback can still run.

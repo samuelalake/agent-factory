@@ -55,6 +55,20 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("steps.builder-config.outputs.cli_version", workflow)
         self.assertNotIn("gemini_cli_version", workflow)
 
+    def test_reusable_workflow_prepares_and_invalidates_figma_mcp(self) -> None:
+        workflow = (
+            Path(__file__).parents[1] / ".github/workflows/builder.yml"
+        ).read_text(encoding="utf-8")
+        for secret in (
+            "FIGMA_MCP_CLIENT_ID",
+            "FIGMA_MCP_CLIENT_SECRET",
+            "FIGMA_MCP_REFRESH_TOKEN",
+        ):
+            self.assertIn(secret, workflow)
+        self.assertIn("agent_factory.figma_mcp prepare", workflow)
+        self.assertIn("agent_factory.figma_mcp invalidate", workflow)
+        self.assertIn("steps.figma-prepare.outcome == 'success'", workflow)
+
     def test_reconciled_control_plane_publishes_before_model_work(self) -> None:
         self.assertTrue(_publish_base_sync_without_model(
             base_sync_changed=True,
@@ -320,6 +334,30 @@ Produce current-head evidence and publish a ready delivery section.
         # The dedicated token wins so a generic MODEL_API_KEY cannot shadow it.
         self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth")
 
+    def test_claude_agent_env_passes_only_short_lived_figma_access(self) -> None:
+        source = {
+            "CLAUDE_CODE_OAUTH_TOKEN": "claude",
+            "FIGMA_MCP_ACCESS_TOKEN": "short-lived",
+            "AGENT_FACTORY_MCP_CONFIG": "/tmp/figma.json",
+            "FIGMA_MCP_REFRESH_TOKEN": "long-lived",
+            "FIGMA_MCP_CLIENT_SECRET": "client-secret",
+        }
+        with mock.patch.dict("os.environ", source, clear=True):
+            env = _claude_agent_env(figma_mcp=True)
+        self.assertEqual(env["FIGMA_MCP_ACCESS_TOKEN"], "short-lived")
+        self.assertEqual(env["AGENT_FACTORY_MCP_CONFIG"], "/tmp/figma.json")
+        self.assertNotIn("FIGMA_MCP_REFRESH_TOKEN", env)
+        self.assertNotIn("FIGMA_MCP_CLIENT_SECRET", env)
+
+    def test_claude_agent_env_fails_closed_without_figma_job_access(self) -> None:
+        with (
+            mock.patch.dict(
+                "os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "claude"}, clear=True
+            ),
+            self.assertRaisesRegex(BuilderBlocked, "Figma MCP is required"),
+        ):
+            _claude_agent_env(figma_mcp=True)
+
     def test_run_claude_code_returns_summary_and_leaves_edits_in_place(self) -> None:
         envelope = json.dumps(
             {"is_error": False, "result": "<builder_summary>Done.</builder_summary>", "num_turns": 5}
@@ -346,6 +384,58 @@ Produce current-head evidence and publish a ready delivery section.
         self.assertIn("--permission-mode", argv)
         self.assertIn("acceptEdits", argv)
         self.assertIn("Read,Edit,Write,Grep,Glob,Bash", argv)
+
+    def test_run_claude_code_enables_only_configured_figma_mcp(self) -> None:
+        envelope = json.dumps(
+            {"is_error": False, "result": "<builder_summary>Done.</builder_summary>"}
+        )
+        completed = subprocess.CompletedProcess(
+            args=["claude"], returncode=0, stdout=envelope, stderr=""
+        )
+        env = {
+            "CLAUDE_CODE_OAUTH_TOKEN": "claude",
+            "FIGMA_MCP_ACCESS_TOKEN": "short-lived",
+            "AGENT_FACTORY_MCP_CONFIG": "/tmp/figma.json",
+        }
+        with (
+            mock.patch.dict("os.environ", env, clear=True),
+            mock.patch(
+                "agent_factory.github_builder.subprocess.run", return_value=completed
+            ) as run_cli,
+            mock.patch("agent_factory.github_builder._run", return_value=" M Product.swift\n"),
+        ):
+            _run_claude_code(
+                "task",
+                root=Path("."),
+                model="opus",
+                timeout_seconds=100,
+                figma_mcp=True,
+            )
+        argv = run_cli.call_args.args[0]
+        self.assertIn("mcp__figma__*", argv[argv.index("--allowedTools") + 1])
+        self.assertEqual(
+            argv[argv.index("--mcp-config") + 1], "/tmp/figma.json"
+        )
+        self.assertIn("--strict-mcp-config", argv)
+
+    def test_builder_prompt_announces_authenticated_figma_capability(self) -> None:
+        raw = default_config("demo")
+        raw["builder"].update(
+            {
+                "provider": "claude-code",
+                "harness": "claude-code",
+                "model": "opus",
+                "fallback_provider": None,
+                "fallback_model": None,
+                "figma_mcp": True,
+            }
+        )
+        prompt = build_prompt(
+            parse_config(raw),
+            {"number": 1, "title": "Design", "body": "Edit Figma"},
+            Path("."),
+        )
+        self.assertIn("authenticated Figma MCP canvas access", prompt)
 
     def test_run_claude_code_rejects_chat_only_reply_without_edits(self) -> None:
         envelope = json.dumps({"is_error": False, "result": "Nothing to do.", "num_turns": 1})

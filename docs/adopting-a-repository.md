@@ -172,6 +172,43 @@ The `claude-code` Reviewer can inspect authenticated screenshots through the
 CLI's read-only image tool. It receives local evidence files rather than inline
 API image blocks and cannot edit the checkout in this role.
 
+## Enable authenticated Figma canvas work
+
+The Claude Code Builder can use Figma's remote MCP server to create or edit
+native canvas content. This is opt-in because it grants the Builder access as a
+Figma user. Enable it only for a consumer that requires editable Figma delivery:
+
+1. Configure the Builder with `provider: "claude-code"`,
+   `harness: "claude-code"`, `figma_mcp: true`, and no fallback provider. A
+   fallback without the same authenticated canvas capability would make the
+   delivery contract dishonest, so configuration fails closed instead.
+2. From a trusted Agent Factory checkout, run:
+
+   ```bash
+   PYTHONPATH=src python3 -m agent_factory.figma_mcp authorize --repo OWNER/REPOSITORY
+   ```
+
+3. Approve the Figma MCP connection in the browser window. The command uses
+   dynamic client registration and PKCE, then writes
+   `FIGMA_MCP_CLIENT_ID`, `FIGMA_MCP_CLIENT_SECRET`, and
+   `FIGMA_MCP_REFRESH_TOKEN` directly to GitHub Actions secrets. It does not
+   print their values.
+4. Regenerate an older Builder caller or manually forward those three named
+   secrets to the reusable workflow.
+
+At the start of an enabled job, Factory exchanges the refresh credential for a
+short-lived access token, builds a private MCP config, and exposes only those
+temporary values to Claude Code. The client secret and refresh token stay
+outside the model subprocess. An `always` cleanup step exchanges and discards a
+replacement access token so the token used by Builder is no longer current.
+Missing credentials, a failed exchange, or a missing MCP config stops the run
+before Builder starts.
+
+This connection is distinct from a Figma personal access token or a normal REST
+OAuth application. Those credentials support the REST API and related export or
+metadata workflows; they do not supply the MCP server's `mcp:connect` grant or
+an authenticated native canvas-write session.
+
 Consumers can set `review.visual_evidence_paths` to repository-relative globs such
 as `app/**` and `**/*.origami`. A matching change without a canonical Builder
 delivery is blocked deterministically, even when the model would approve it. A
