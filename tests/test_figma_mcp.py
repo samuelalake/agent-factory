@@ -162,6 +162,7 @@ class FigmaMCPTests(unittest.TestCase):
         _save_secret("owner/repo", OAUTH_BUNDLE_SECRET_NAME, "private-value")
         invocation = run.call_args
         self.assertNotIn("private-value", invocation.args[0])
+        self.assertNotIn("--body", invocation.args[0])
         self.assertEqual(invocation.kwargs["input"], "private-value")
         self.assertTrue(invocation.kwargs["capture_output"])
 
