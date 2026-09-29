@@ -696,7 +696,24 @@ def run(
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body",
     ]))
-    if config.figma.enabled:
+    has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
+    changed_paths: tuple[str, ...] = ()
+    paths_loaded = False
+    if config.figma.enabled and config.review.visual_evidence_paths:
+        changed_paths = changed_file_paths(repo, pr)
+        paths_loaded = True
+    figma_paths = tuple(
+        path
+        for path in changed_paths
+        if any(
+            repository_glob_match(path, pattern)
+            for pattern in config.review.visual_evidence_paths
+        )
+    )
+    # A configured Figma phase is a delivery requirement for product/visual
+    # changes, not for every maintenance PR in the repository. The consumer's
+    # existing visual path contract owns that boundary.
+    if config.figma.enabled and figma_paths:
         issue_match = re.search(r"(?im)^Closes\s+#(\d+)\s*$", str(meta.get("body") or ""))
         figma_delivery = (
             authenticated_figma_delivery(
@@ -723,13 +740,13 @@ def run(
                 "api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-",
             ], stdin=payload)
             return
-    has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
-    changed_paths = (
-        changed_file_paths(repo, pr)
-        if config.review.visual_evidence_paths
+    if (
+        config.review.visual_evidence_paths
         and not has_builder_delivery
-        else ()
-    )
+        and not paths_loaded
+    ):
+        changed_paths = changed_file_paths(repo, pr)
+        paths_loaded = True
     visual_paths = tuple(
         path
         for path in changed_paths
@@ -766,7 +783,9 @@ def run(
             and DELIVERY_EVIDENCE_NOT_APPLICABLE in refreshed_body
         )
         if claims_nonvisual_delivery:
-            changed_paths = changed_file_paths(repo, pr)
+            if not paths_loaded:
+                changed_paths = changed_file_paths(repo, pr)
+                paths_loaded = True
             visual_paths = tuple(
                 path
                 for path in changed_paths

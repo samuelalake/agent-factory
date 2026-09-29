@@ -56,6 +56,97 @@ class ReviewTests(unittest.TestCase):
         self.assertFalse(review["approve"])
         self.assertEqual(review["findings"][0]["severity"], "P1")
 
+    def test_nonvisual_pr_does_not_require_figma_delivery(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["figma"]["enabled"] = True
+        raw_config["figma"]["lease_key"] = "figma-oauth/test"
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Pin workflow dependency",
+                    "body": "Control-plane maintenance.",
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[{"filename": ".github/workflows/agent-builder.yml"}]])
+            if args[:2] == ["pr", "diff"]:
+                return "diff --git a/.github/workflows/agent-builder.yml"
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.discover_context", return_value=[]),
+            mock.patch(
+                "agent_factory.github_review.request_review",
+                return_value=(
+                    normalize_review({"summary": "Safe pin update.", "approve": True}),
+                    "openrouter",
+                    "review-model",
+                ),
+            ),
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        self.assertEqual(posted[0]["event"], "APPROVE")
+        self.assertNotIn("Figma Writer delivery is missing", posted[0]["body"])
+
+    def test_visual_pr_requires_exact_head_figma_delivery(self) -> None:
+        raw_config = default_config("fixture")
+        raw_config["figma"]["enabled"] = True
+        raw_config["figma"]["lease_key"] = "figma-oauth/test"
+        raw_config["review"].update({
+            "require_builder_delivery": True,
+            "visual_evidence": True,
+            "visual_evidence_paths": ["app/**"],
+        })
+        config = parse_config(raw_config)
+        head = "a" * 40
+        posted: list[dict] = []
+
+        def gh(args, *, stdin=None):
+            if args[:2] == ["pr", "view"]:
+                return json.dumps({
+                    "headRefOid": head,
+                    "title": "Build screen",
+                    "body": "Closes #12",
+                })
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
+                return json.dumps([[{"filename": "app/Screen.swift"}]])
+            if args[:2] == ["api", "repos/acme/repo/issues/12/comments?per_page=100"]:
+                return json.dumps([[]])
+            if args[:2] == ["pr", "diff"]:
+                return "diff --git a/app/Screen.swift b/app/Screen.swift"
+            if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
+                posted.append(json.loads(stdin))
+                return ""
+            raise AssertionError(args)
+
+        with (
+            mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
+            mock.patch("agent_factory.github_review.load_config", return_value=config),
+            mock.patch("agent_factory.github_review.request_review") as request,
+            mock.patch("agent_factory.github_review._gh", side_effect=gh),
+        ):
+            run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
+
+        request.assert_not_called()
+        self.assertEqual(posted[0]["event"], "REQUEST_CHANGES")
+        self.assertIn("Current-head Figma Writer delivery is missing", posted[0]["body"])
+
     def test_unchanged_render_after_visual_source_change_holds_for_steward(self) -> None:
         prior = {"old": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
         current = {"new": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
