@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ from agent_factory.github_builder import (
     _publish_base_sync_without_model,
     _claude_agent_env,
     _run_claude_code,
+    _run_claude_code_streaming,
     _run_gemini,
     _safe_agent_env,
     _validate_candidate,
@@ -449,11 +451,127 @@ Please rerun the leased Figma Writer phase after fixing the product finding.
                 figma_mcp=True,
             )
         argv = run_cli.call_args.args[0]
-        self.assertIn("mcp__figma__*", argv[argv.index("--allowedTools") + 1])
+        allowed_tools = argv[argv.index("--allowedTools") + 1]
+        self.assertIn("mcp__figma", allowed_tools)
+        self.assertNotIn("mcp__figma__*", allowed_tools)
         self.assertEqual(
             argv[argv.index("--mcp-config") + 1], "/tmp/figma.json"
         )
         self.assertIn("--strict-mcp-config", argv)
+
+    def test_streaming_figma_run_proves_canvas_tool_without_logging_payload(self) -> None:
+        stream = tempfile.TemporaryFile(mode="w+t")
+        stream.write(json.dumps({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "name": "mcp__figma__use_figma",
+                "input": {"secret": "private-canvas-payload"},
+            }]},
+        }) + "\n")
+        stream.write(json.dumps({
+            "type": "result",
+            "is_error": False,
+            "result": "<figma_writer_result>{}</figma_writer_result>",
+            "num_turns": 2,
+        }) + "\n")
+        stream.seek(0)
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = io.StringIO()
+                self.stdout = stream
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                return None
+
+            def kill(self):
+                return None
+
+        env = {
+            "CLAUDE_CODE_OAUTH_TOKEN": "claude",
+            "FIGMA_MCP_ACCESS_TOKEN": "short-lived",
+            "AGENT_FACTORY_MCP_CONFIG": "/tmp/figma.json",
+        }
+        with (
+            mock.patch.dict("os.environ", env, clear=True),
+            mock.patch(
+                "agent_factory.github_builder.subprocess.Popen",
+                return_value=FakeProcess(),
+            ) as popen,
+            mock.patch("builtins.print") as progress,
+        ):
+            response, turns = _run_claude_code_streaming(
+                "task",
+                root=Path("."),
+                model="opus",
+                timeout_seconds=100,
+                required_tool="mcp__figma__use_figma",
+                first_tool_timeout_seconds=5,
+            )
+        stream.close()
+        self.assertIn("figma_writer_result", response)
+        self.assertEqual(turns, 2)
+        argv = popen.call_args.args[0]
+        self.assertIn("stream-json", argv)
+        self.assertIn("--verbose", argv)
+        self.assertIn("mcp__figma", argv[argv.index("--allowedTools") + 1])
+        rendered_progress = repr(progress.call_args_list)
+        self.assertIn("authenticated canvas tool invoked", rendered_progress)
+        self.assertNotIn("private-canvas-payload", rendered_progress)
+
+    def test_streaming_figma_run_fails_closed_before_silent_full_timeout(self) -> None:
+        class WaitingProcess:
+            def __init__(self) -> None:
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO()
+                self.stopped = False
+
+            def poll(self):
+                return 0 if self.stopped else None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                self.stopped = True
+
+            def kill(self):
+                self.stopped = True
+
+        process = WaitingProcess()
+        env = {
+            "CLAUDE_CODE_OAUTH_TOKEN": "claude",
+            "FIGMA_MCP_ACCESS_TOKEN": "short-lived",
+            "AGENT_FACTORY_MCP_CONFIG": "/tmp/figma.json",
+        }
+        with (
+            mock.patch.dict("os.environ", env, clear=True),
+            mock.patch(
+                "agent_factory.github_builder.subprocess.Popen",
+                return_value=process,
+            ),
+            mock.patch(
+                "agent_factory.github_builder.time.monotonic",
+                side_effect=[0.0, 6.0],
+            ),
+            self.assertRaisesRegex(BuilderBlocked, "within 5 seconds"),
+        ):
+            _run_claude_code_streaming(
+                "task",
+                root=Path("."),
+                model="opus",
+                timeout_seconds=100,
+                required_tool="mcp__figma__use_figma",
+                first_tool_timeout_seconds=5,
+            )
+        self.assertTrue(process.stopped)
 
     def test_builder_prompt_delegates_canvas_mutation_to_figma_writer(self) -> None:
         raw = default_config("demo")

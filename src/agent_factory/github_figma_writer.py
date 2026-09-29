@@ -16,7 +16,7 @@ from .github_builder import (
     _blocked_detail,
     _claude_agent_env,
     _run,
-    _run_claude_code,
+    _run_claude_code_streaming,
     _validate_candidate,
     _workspace_snapshot,
 )
@@ -55,6 +55,13 @@ def build_prompt(
 
 Builder has already prepared the repository candidate for GitHub issue #{issue['number']} on
 pull request #{pr['number']}. You own only the editable Figma delivery phase.
+
+## Immediate canvas handshake
+
+Within five minutes, invoke `mcp__figma__use_figma` to inspect the canonical Figma file identified
+by the issue or repository briefing. You may first read only the minimum repository file needed to
+locate that file. Do not perform broad repository discovery before this canvas handshake. Continue
+the full delivery only after the live file is reachable.
 
 ## Issue
 
@@ -231,13 +238,13 @@ def run(repo: str, pr_number: str, issue_number: str, root: Path, config_path: P
         "agent-factory-builder[bot]@users.noreply.github.com",
     ], cwd=root)
     baseline = _workspace_snapshot(root)
-    response, _ = _run_claude_code(
+    response, _ = _run_claude_code_streaming(
         build_prompt(config, issue, pr, root),
         root=root,
         model=config.figma.model,
         timeout_seconds=config.figma.timeout_seconds,
-        figma_mcp=True,
-        require_repository_change=False,
+        required_tool="mcp__figma__use_figma",
+        first_tool_timeout_seconds=300,
         allow_bash=False,
     )
     result = parse_result(response)

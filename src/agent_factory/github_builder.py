@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -900,7 +901,10 @@ def _run_claude_code(
     if allow_bash:
         allowed_tools += ",Bash"
     if figma_mcp:
-        allowed_tools += ",mcp__figma__*"
+        # Claude Code does not support wildcard MCP tool names. Allowing the
+        # configured server name is the documented way to grant all tools from
+        # that server without an interactive permission prompt.
+        allowed_tools += ",mcp__figma"
     args = [
         "claude", "-p",
         "--model", model,
@@ -957,6 +961,150 @@ def _run_claude_code(
     turns = envelope.get("num_turns")
     tool_calls = turns if isinstance(turns, int) and turns > 0 else 0
     return result, tool_calls
+
+
+def _claude_stream_event(event: object) -> tuple[tuple[str, ...], str | None, int, bool]:
+    """Extract only safe control data from one Claude stream event.
+
+    Tool inputs and results can contain private canvas or repository content, so
+    the hosted log path deliberately retains only tool names and the final text.
+    """
+    if not isinstance(event, dict):
+        return (), None, 0, False
+    names: list[str] = []
+    if event.get("type") == "assistant":
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name")
+                if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", name):
+                    names.append(name)
+    if event.get("type") != "result":
+        return tuple(names), None, len(names), False
+    result = event.get("result")
+    turns = event.get("num_turns")
+    return (
+        tuple(names),
+        result if isinstance(result, str) else None,
+        turns if isinstance(turns, int) and turns > 0 else len(names),
+        event.get("is_error") is True,
+    )
+
+
+def _stop_process(proc: subprocess.Popen[str]) -> None:
+    """Bounded cleanup for a headless agent that missed a delivery deadline."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _run_claude_code_streaming(
+    prompt: str,
+    *,
+    root: Path,
+    model: str,
+    timeout_seconds: int,
+    required_tool: str,
+    first_tool_timeout_seconds: int,
+    allow_bash: bool = False,
+) -> tuple[str, int]:
+    """Run a Figma-capable Claude turn with safe progress and a first-tool SLA."""
+    env = _claude_agent_env(figma_mcp=True)
+    if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        raise BuilderBlocked(
+            "CLAUDE_CODE_OAUTH_TOKEN is required for the claude-code Builder harness"
+        )
+    allowed_tools = "Read,Edit,Write,Grep,Glob,mcp__figma"
+    if allow_bash:
+        allowed_tools += ",Bash"
+    args = [
+        "claude", "-p",
+        "--model", model,
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", allowed_tools,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--mcp-config", env["AGENT_FACTORY_MCP_CONFIG"],
+        "--strict-mcp-config",
+    ]
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise BuilderBlocked("claude cli is not installed") from exc
+    except OSError as exc:
+        raise BuilderBlocked("claude cli could not start") from exc
+    if proc.stdin is None or proc.stdout is None:
+        _stop_process(proc)
+        raise BuilderBlocked("claude cli streaming pipes were unavailable")
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    first_tool_deadline = started + min(first_tool_timeout_seconds, timeout_seconds)
+    saw_required_tool = False
+    final_result: str | None = None
+    turns = 0
+    while True:
+        now = time.monotonic()
+        if not saw_required_tool and now >= first_tool_deadline:
+            _stop_process(proc)
+            raise BuilderBlocked(
+                f"Figma Writer did not invoke {required_tool} within "
+                f"{first_tool_timeout_seconds} seconds"
+            )
+        if now >= deadline:
+            _stop_process(proc)
+            raise BuilderBlocked("Figma Writer exceeded its configured runtime")
+        wait_until = deadline if saw_required_tool else min(deadline, first_tool_deadline)
+        readable, _, _ = select.select([proc.stdout], [], [], max(0.0, wait_until - now))
+        if not readable:
+            continue
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                break
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        tool_names, result, event_turns, is_error = _claude_stream_event(event)
+        if required_tool in tool_names and not saw_required_tool:
+            saw_required_tool = True
+            print("Figma Writer progress: authenticated canvas tool invoked.", flush=True)
+        if result is not None:
+            final_result = result
+            turns = max(turns, event_turns)
+        if is_error:
+            _stop_process(proc)
+            raise BuilderBlocked("claude cli reported an error")
+
+    returncode = proc.wait(timeout=5)
+    if returncode:
+        raise BuilderBlocked(f"claude cli exited with status {returncode}")
+    if not saw_required_tool:
+        raise BuilderBlocked(f"Figma Writer completed without invoking {required_tool}")
+    if final_result is None:
+        raise BuilderBlocked("claude cli returned no result")
+    return final_result, turns
 
 
 def build_prompt(
