@@ -285,7 +285,7 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
 def _save_secret(repo: str, name: str, value: str) -> None:
     try:
         subprocess.run(
-            ["gh", "secret", "set", name, "--repo", repo, "--body", "-"],
+            ["gh", "secret", "set", name, "--repo", repo],
             input=value,
             text=True,
             check=True,
