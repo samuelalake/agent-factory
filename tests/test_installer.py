@@ -62,9 +62,7 @@ class InstallerTests(unittest.TestCase):
             for secret in (
                 "MODEL_API_KEY",
                 "CLAUDE_CODE_OAUTH_TOKEN",
-                "FIGMA_MCP_CLIENT_ID",
-                "FIGMA_MCP_CLIENT_SECRET",
-                "FIGMA_MCP_REFRESH_TOKEN",
+                "FIGMA_MCP_ACCESS_TOKEN",
             ):
                 self.assertIn(secret, builder)
             self.assertIn("vars.AGENT_FACTORY_REVIEWER_APP_ID", review)

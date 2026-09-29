@@ -26,11 +26,7 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
-      FIGMA_MCP_CLIENT_ID:
-        required: false
-      FIGMA_MCP_CLIENT_SECRET:
-        required: false
-      FIGMA_MCP_REFRESH_TOKEN:
+      FIGMA_MCP_ACCESS_TOKEN:
         required: false
       GEMINI_API_KEY:
         required: false
@@ -166,9 +162,7 @@ jobs:
       - name: Prepare leased Figma MCP access
         id: figma-prepare
         env:
-          FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
-          FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
-          FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
+          FIGMA_MCP_ACCESS_TOKEN: ${{ secrets.FIGMA_MCP_ACCESS_TOKEN }}
         run: >-
           PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp prepare
           --config "${{ runner.temp }}/agent-factory-figma-mcp.json"
@@ -184,13 +178,6 @@ jobs:
           --issue "${{ inputs.issue }}"
           --root consumer
           --config consumer/.agent-factory/config.json
-      - name: Invalidate leased Figma access
-        if: always() && steps.figma-prepare.outcome == 'success'
-        env:
-          FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
-          FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
-          FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
-        run: PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp invalidate
       - name: Release completed candidate to Reviewer
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

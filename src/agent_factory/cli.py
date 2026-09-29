@@ -115,9 +115,7 @@ jobs:
     secrets:
       MODEL_API_KEY: ${{{{ secrets.MODEL_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
-      FIGMA_MCP_CLIENT_ID: ${{{{ secrets.FIGMA_MCP_CLIENT_ID }}}}
-      FIGMA_MCP_CLIENT_SECRET: ${{{{ secrets.FIGMA_MCP_CLIENT_SECRET }}}}
-      FIGMA_MCP_REFRESH_TOKEN: ${{{{ secrets.FIGMA_MCP_REFRESH_TOKEN }}}}
+      FIGMA_MCP_ACCESS_TOKEN: ${{{{ secrets.FIGMA_MCP_ACCESS_TOKEN }}}}
       GEMINI_API_KEY: ${{{{ secrets.GEMINI_API_KEY }}}}
       MINIMAX_API_KEY: ${{{{ secrets.MINIMAX_API_KEY }}}}
       NVIDIA_API_KEY: ${{{{ secrets.NVIDIA_API_KEY }}}}
