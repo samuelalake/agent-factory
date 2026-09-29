@@ -1033,7 +1033,10 @@ class ReviewTests(unittest.TestCase):
         with (
             mock.patch(
                 "agent_factory.github_review.complete",
-                side_effect=["not json", '{"summary":"caught it","approve":false,"findings":[]}'],
+                side_effect=[
+                    "not json",
+                    '{"summary":"caught it","approve":false,"findings":[{"severity":"P1","title":"Blocking defect"}]}',
+                ],
             ) as complete,
             mock.patch.dict(
                 "os.environ",
@@ -1196,6 +1199,17 @@ normalized SSIM unavailable · catastrophic sanity **fail**
         self.assertFalse(review["approve"])
         self.assertEqual(review["findings"][0]["path"], "x.py")
         self.assertEqual(review["findings"][0]["line"], 3)
+
+    def test_only_p1_findings_block_the_verdict(self) -> None:
+        review = normalize_review({
+            "approve": False,
+            "summary": "Advisory follow-up remains.",
+            "findings": [
+                {"severity": "P2", "title": "Document the layout choice"},
+                {"severity": "P3", "title": "Polish native chrome"},
+            ],
+        })
+        self.assertTrue(review["approve"])
 
     def test_body_carries_human_and_machine_contracts(self) -> None:
         review = normalize_review({"approve": True, "summary": "ok", "findings": []})

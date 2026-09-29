@@ -133,7 +133,10 @@ def normalize_review(
                 "Steward must resolve the evidence interpretation before Builder changes code."
             ),
         })
-    approve = bool(raw.get("approve")) and not any(f["severity"] == "P1" for f in findings)
+    # Severity is the machine contract for mergeability. Models sometimes return
+    # approve=false while classifying every observation as advisory P2/P3, which
+    # otherwise turns non-blocking feedback into an undeclared merge gate.
+    approve = not any(f["severity"] == "P1" for f in findings)
     return {
         "summary": str(raw.get("summary") or "").strip(),
         "reference_interpretation": str(
@@ -845,7 +848,9 @@ def run(
         "must arbitrate the evidence. Do not merely state that Steward must arbitrate inside a "
         "finding: the boolean is the machine-readable handoff that starts arbitration. "
         "Each finding has severity P1|P2|P3, file, optional integer line, title, "
-        "reasoning, and suggestion. P1 is merge-blocking. Do not approve a partial diff. "
+        "reasoning, and suggestion. P1 is merge-blocking; P2 and P3 are advisory. Set "
+        "approve=false if and only if at least one finding is P1. If a partial diff has a "
+        "material defect, describe that defect as P1 rather than blocking with only P2/P3. "
         "Treat the canonical Builder delivery section as evidence, not decoration: do not approve "
         "material visual, behavioral, framing, documentation, or current-head mismatches. The "
         "existence of a URL is not proof. Before claiming evidence is missing, name the required "
