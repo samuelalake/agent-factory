@@ -174,35 +174,52 @@ API image blocks and cannot edit the checkout in this role.
 
 ## Enable authenticated Figma canvas work
 
-The Claude Code Builder can use Figma's remote MCP server to create or edit
-native canvas content. This is opt-in because it grants the Builder access as a
-Figma user. Enable it only for a consumer that requires editable Figma delivery:
+The dedicated Claude Code Figma Writer can use Figma's remote MCP server to
+create or edit native canvas content after Builder prepares the repository
+candidate. This is opt-in because it grants the phase access as a Figma user.
+Builder itself receives no Figma token or MCP tools.
 
-1. Configure the Builder with `provider: "claude-code"`,
-   `harness: "claude-code"`, `figma_mcp: true`, and no fallback provider. A
-   fallback without the same authenticated canvas capability would make the
-   delivery contract dishonest, so configuration fails closed instead.
+1. Add an explicit Figma phase configuration. `lease_key` is a non-secret name
+   for the OAuth identity lane; every consumer sharing the same credential set
+   must use the same centrally enforced lane or separate credentials.
+
+   ```json
+   "figma": {
+     "marker": "<!-- figma-writer:agent-factory -->",
+     "enabled": true,
+     "lease_key": "figma-oauth/samuel-primary",
+     "model": "claude-opus-4-8",
+     "timeout_seconds": 1800
+   }
+   ```
+
+   The older `builder.figma_mcp: true` setting remains a temporary compatibility
+   alias and receives the conservative `legacy-shared-oauth` lane. New consumers
+   should use the explicit phase configuration.
 2. From a trusted Agent Factory checkout, run:
 
    ```bash
    PYTHONPATH=src python3 -m agent_factory.figma_mcp authorize --repo OWNER/REPOSITORY
    ```
 
-3. Approve the Figma MCP connection in the browser window. The command uses
-   dynamic client registration and PKCE, then writes
+3. Approve the Figma MCP connection in the browser window. The command registers
+   the supported Claude Code client and uses PKCE, then writes
    `FIGMA_MCP_CLIENT_ID`, `FIGMA_MCP_CLIENT_SECRET`, and
-   `FIGMA_MCP_REFRESH_TOKEN` directly to GitHub Actions secrets. It does not
-   print their values.
-4. Regenerate an older Builder caller or manually forward those three named
-   secrets to the reusable workflow.
+   `FIGMA_MCP_REFRESH_TOKEN` directly to GitHub Actions secrets. Figma's MCP
+   authorization server requires the dynamically registered client secret in
+   the token request body. The command does not print any credential value.
+4. Regenerate an older Builder caller or manually forward the named credentials
+   to the reusable workflow.
 
-At the start of an enabled job, Factory exchanges the refresh credential for a
-short-lived access token, builds a private MCP config, and exposes only those
-temporary values to Claude Code. The client secret and refresh token stay
+After Builder opens or updates a draft pull request, the Figma Writer job waits
+for its identity lease. Only then does Factory exchange the refresh credential
+for a short-lived access token, build a private MCP config, and expose those
+temporary values to Claude Code. The refresh token and any client secret stay
 outside the model subprocess. An `always` cleanup step exchanges and discards a
-replacement access token so the token used by Builder is no longer current.
-Missing credentials, a failed exchange, or a missing MCP config stops the run
-before Builder starts.
+replacement access token so the Writer's token is no longer current. The pull
+request becomes ready only after cleanup succeeds. Missing credentials, a failed
+exchange, an invalid record, or a missing exact-head authenticated result leaves
+the pull request in draft and fails closed.
 
 This connection is distinct from a Figma personal access token or a normal REST
 OAuth application. Those credentials support the REST API and related export or

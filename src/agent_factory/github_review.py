@@ -68,6 +68,65 @@ def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def authenticated_figma_delivery(
+    repo: str,
+    issue: int,
+    head: str,
+    marker: str,
+    builder_app_login: str,
+) -> dict[str, Any] | None:
+    """Return the Builder-App-authored Figma phase result for this exact head."""
+    raw = json.loads(_gh([
+        "api", f"repos/{repo}/issues/{issue}/comments?per_page=100",
+        "--paginate", "--slurp",
+    ]))
+    pages = raw if isinstance(raw, list) and raw and isinstance(raw[0], list) else [raw]
+    matches: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, list):
+            continue
+        for comment in page:
+            if not isinstance(comment, dict) or marker not in str(comment.get("body") or ""):
+                continue
+            user = comment.get("user") or {}
+            if not (
+                isinstance(user, dict)
+                and user.get("type") == "Bot"
+                and user.get("login") == builder_app_login
+            ):
+                continue
+            data = decode_data(str(comment.get("body") or ""))
+            if (
+                data
+                and data.get("role") == "figma_writer"
+                and data.get("issue") == issue
+                and data.get("state") == "delivered"
+                and data.get("head") == head
+            ):
+                matches.append(data)
+    if len(matches) > 1:
+        raise RuntimeError("multiple authenticated Figma Writer deliveries match this head")
+    return matches[0] if matches else None
+
+
+def missing_figma_delivery_review(head: str) -> dict[str, Any]:
+    return normalize_review({
+        "summary": "The dedicated Figma Writer phase has not authenticated this pull-request head.",
+        "findings": [{
+            "severity": "P1",
+            "file": "",
+            "title": "Current-head Figma Writer delivery is missing",
+            "reasoning": (
+                f"Figma delivery is enabled, but no Builder-App-authored Figma Writer record "
+                f"matches head {head[:7]}."
+            ),
+            "suggestion": (
+                "Keep the pull request in draft and rerun the leased Figma Writer phase."
+            ),
+        }],
+    })
+
+
 def _explicit_arbitration_request(raw: dict[str, Any]) -> bool:
     """Recover an unambiguous conflict declaration from model prose.
 
@@ -637,6 +696,33 @@ def run(
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body",
     ]))
+    if config.figma.enabled:
+        issue_match = re.search(r"(?im)^Closes\s+#(\d+)\s*$", str(meta.get("body") or ""))
+        figma_delivery = (
+            authenticated_figma_delivery(
+                repo,
+                int(issue_match.group(1)),
+                str(meta["headRefOid"]),
+                config.figma.marker,
+                config.builder.app_login,
+            )
+            if issue_match
+            else None
+        )
+        if figma_delivery is None:
+            raw = missing_figma_delivery_review(str(meta["headRefOid"]))
+            payload = json.dumps(review_payload(
+                config.review.marker,
+                meta["headRefOid"],
+                raw,
+                "deterministic",
+                "figma-writer-delivery-gate",
+                _gh(["pr", "diff", pr, "--repo", repo]),
+            ))
+            _gh([
+                "api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-",
+            ], stdin=payload)
+            return
     has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
     changed_paths = (
         changed_file_paths(repo, pr)

@@ -12,11 +12,13 @@ from agent_factory.github_delivery import (
     format_delivery,
 )
 from agent_factory.github_review import (
+    authenticated_figma_delivery,
     diff_right_lines,
     failed_review,
     failed_delivery_review,
     format_body,
     normalize_review,
+    missing_figma_delivery_review,
     prior_review_for_head,
     request_review,
     repository_glob_match,
@@ -28,6 +30,32 @@ from agent_factory.protocol import decode_data, encode_data
 
 
 class ReviewTests(unittest.TestCase):
+    @mock.patch("agent_factory.github_review._gh")
+    def test_figma_delivery_requires_builder_app_and_exact_head(self, gh) -> None:
+        head = "a" * 40
+        data = encode_data({
+            "version": 1,
+            "role": "figma_writer",
+            "issue": 12,
+            "state": "delivered",
+            "head": head,
+        })
+        gh.return_value = json.dumps([[{
+            "body": "<!-- figma:test -->\n" + data,
+            "user": {"type": "Bot", "login": "builder[bot]"},
+        }]])
+        self.assertIsNotNone(authenticated_figma_delivery(
+            "o/r", 12, head, "<!-- figma:test -->", "builder[bot]"
+        ))
+        self.assertIsNone(authenticated_figma_delivery(
+            "o/r", 12, "b" * 40, "<!-- figma:test -->", "builder[bot]"
+        ))
+
+    def test_missing_figma_delivery_is_merge_blocking(self) -> None:
+        review = missing_figma_delivery_review("a" * 40)
+        self.assertFalse(review["approve"])
+        self.assertEqual(review["findings"][0]["severity"], "P1")
+
     def test_unchanged_render_after_visual_source_change_holds_for_steward(self) -> None:
         prior = {"old": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}
         current = {"new": {"sha256": "a" * 64, "content_type": "image/png", "role": "render", "scope": "demo"}}

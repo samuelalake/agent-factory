@@ -4,13 +4,18 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 import urllib.parse
+import urllib.request
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
 from agent_factory.figma_mcp import (
     FigmaMCPError,
     MCP_RESOURCE,
+    _json_request,
+    _register_client,
     invalidate_job_token,
     prepare,
     refresh_access_token,
@@ -20,7 +25,22 @@ from agent_factory.figma_mcp import (
 
 class FigmaMCPTests(unittest.TestCase):
     @mock.patch("agent_factory.figma_mcp._json_request")
-    def test_refresh_uses_refresh_grant_and_resource(self, request_json) -> None:
+    def test_registration_uses_supported_claude_code_client(self, request_json) -> None:
+        request_json.return_value = {
+            "client_id": "client",
+            "client_secret": "secret",
+            "token_endpoint_auth_method": "client_secret_post",
+        }
+        client_id, client_secret = _register_client("http://127.0.0.1:19876/callback")
+        self.assertEqual((client_id, client_secret), ("client", "secret"))
+        request = request_json.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual(body["client_name"], "Claude Code")
+        self.assertEqual(body["token_endpoint_auth_method"], "client_secret_post")
+        self.assertEqual(body["application_type"], "native")
+
+    @mock.patch("agent_factory.figma_mcp._json_request")
+    def test_refresh_uses_refresh_grant_and_post_client_auth(self, request_json) -> None:
         request_json.return_value = {"access_token": "job-token"}
         token = refresh_access_token("client", "secret", "refresh")
         self.assertEqual(token, "job-token")
@@ -28,12 +48,41 @@ class FigmaMCPTests(unittest.TestCase):
         body = urllib.parse.parse_qs(request.data.decode())
         self.assertEqual(body["grant_type"], ["refresh_token"])
         self.assertEqual(body["refresh_token"], ["refresh"])
-        self.assertEqual(body["resource"], [MCP_RESOURCE])
-        self.assertTrue(request.headers["Authorization"].startswith("Basic "))
+        self.assertEqual(body["client_id"], ["client"])
+        self.assertEqual(body["client_secret"], ["secret"])
+        self.assertNotIn("resource", body)
+        self.assertNotIn("Authorization", request.headers)
 
     def test_refresh_fails_without_all_long_lived_credentials(self) -> None:
         with self.assertRaisesRegex(FigmaMCPError, "missing"):
+            refresh_access_token("", "", "refresh")
+
+    def test_refresh_fails_without_client_secret(self) -> None:
+        with self.assertRaisesRegex(FigmaMCPError, "missing"):
             refresh_access_token("client", "", "refresh")
+
+    @mock.patch("agent_factory.figma_mcp.urllib.request.urlopen")
+    def test_http_error_reports_only_safe_oauth_identifier(self, urlopen) -> None:
+        response_body = json.dumps(
+            {
+                "error": "invalid_grant",
+                "error_description": "authorization code private-code was rejected",
+            }
+        ).encode()
+        urlopen.side_effect = urllib.error.HTTPError(
+            "https://api.figma.com/v1/oauth/token",
+            400,
+            "Bad Request",
+            {},
+            BytesIO(response_body),
+        )
+        request = urllib.request.Request("https://api.figma.com/v1/oauth/token")
+        with self.assertRaisesRegex(
+            FigmaMCPError,
+            r"HTTP 400 \(invalid_grant\)",
+        ) as raised:
+            _json_request(request)
+        self.assertNotIn("private-code", str(raised.exception))
 
     @mock.patch("agent_factory.figma_mcp._json_request")
     def test_refresh_fails_closed_if_server_rotates_refresh_token(self, request_json) -> None:

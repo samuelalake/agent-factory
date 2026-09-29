@@ -6,6 +6,7 @@ Agent Factory coordinates a staged loop rather than one all-powerful bot:
 Intent
   → Steward: understand, de-duplicate, qualify, and dispatch
   → Builder: inspect, plan, implement, and self-check
+  → Figma Writer: mutate and verify the canvas under a Steward-owned lease when configured
   → Verify: run deterministic tests and collect evidence
   → Reviewer: evaluate the current head against context and evidence
   → Gate: compute merge readiness from trusted state
@@ -19,6 +20,13 @@ opinion: it is the repository's executable evidence. Gate is not another agent:
 it is a deterministic policy reducer. The role Apps make each handoff and
 authority visible without forcing every project into the same implementation
 procedure.
+
+Figma Writer is a specialized delivery phase rather than a second orchestrator.
+Builder owns repository implementation; Figma Writer owns only native canvas
+mutation and its durable delivery record. Different issues may build in
+parallel, but their Figma phases queue on the configured OAuth-identity lease.
+Per-issue delivery concurrency prevents a revision Builder from racing the prior
+Figma phase on the same branch.
 
 ## Delivery evidence
 

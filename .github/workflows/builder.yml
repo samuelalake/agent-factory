@@ -45,6 +45,11 @@ on:
       AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY:
         required: true
 
+concurrency:
+  group: agent-factory-delivery-${{ github.repository }}-${{ inputs.issue }}
+  cancel-in-progress: false
+  queue: max
+
 permissions:
   actions: read
   contents: read
@@ -53,9 +58,11 @@ jobs:
   builder:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 40
-    concurrency:
-      group: agent-factory-builder-${{ github.repository }}-${{ inputs.issue }}
-      cancel-in-progress: false
+    outputs:
+      pr: ${{ steps.build.outputs.pr }}
+      branch: ${{ steps.build.outputs.branch }}
+      figma_enabled: ${{ steps.builder-config.outputs.figma_enabled }}
+      figma_lease_key: ${{ steps.builder-config.outputs.figma_lease_key }}
     steps:
       - name: Mint Builder installation token
         id: app-token
@@ -84,11 +91,12 @@ jobs:
         run: >-
           PYTHONPATH=factory/src python3 -c
           'import os; from pathlib import Path; from agent_factory.config import load_config;
-          builder = load_config(Path("consumer/.agent-factory/config.json")).builder;
+          config = load_config(Path("consumer/.agent-factory/config.json")); builder = config.builder;
           enabled = builder.provider == "claude-code";
           output = (f"claude_code={str(enabled).lower()}\n"
           f"cli_version={builder.cli_version}\n"
-          f"figma_mcp={str(builder.figma_mcp).lower()}\n");
+          f"figma_enabled={str(config.figma.enabled).lower()}\n"
+          f"figma_lease_key={config.figma.lease_key}\n");
           open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8").write(output)'
       - uses: actions/setup-node@v6
         with:
@@ -99,18 +107,8 @@ jobs:
       - name: Install Claude Code CLI
         if: steps.builder-config.outputs.claude_code == 'true'
         run: npm install -g @anthropic-ai/claude-code@2.1.236
-      - name: Prepare short-lived Figma MCP access
-        id: figma-prepare
-        if: steps.builder-config.outputs.figma_mcp == 'true'
-        env:
-          FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
-          FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
-          FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
-        run: >-
-          PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp prepare
-          --config "${{ runner.temp }}/agent-factory-figma-mcp.json"
-          --github-env "${GITHUB_ENV}"
       - name: Build and publish pull request
+        id: build
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           AGENT_FACTORY_CI_READ_TOKEN: ${{ github.token }}
@@ -126,10 +124,74 @@ jobs:
           --issue "${{ inputs.issue }}"
           --root consumer
           --config consumer/.agent-factory/config.json
-      - name: Invalidate Builder Figma access
+          --github-output "${GITHUB_OUTPUT}"
+
+  figma-writer:
+    needs: builder
+    if: needs.builder.outputs.figma_enabled == 'true'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 40
+    concurrency:
+      group: agent-factory-figma-${{ needs.builder.outputs.figma_lease_key }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Mint Builder installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ inputs.app_id || secrets.AGENT_FACTORY_BUILDER_APP_ID }}
+          private-key: ${{ secrets.AGENT_FACTORY_BUILDER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Checkout Builder candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.builder.outputs.branch }}
+          fetch-depth: 0
+          path: consumer
+          persist-credentials: false
+      - name: Checkout factory
+        uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.236
+      - name: Prepare leased Figma MCP access
+        id: figma-prepare
+        env:
+          FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
+          FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
+          FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp prepare
+          --config "${{ runner.temp }}/agent-factory-figma-mcp.json"
+          --github-env "${GITHUB_ENV}"
+      - name: Write and verify Figma delivery
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: >-
+          PYTHONPATH=factory/src python3 -m agent_factory.github_figma_writer
+          --repo "${{ github.repository }}"
+          --pr "${{ needs.builder.outputs.pr }}"
+          --issue "${{ inputs.issue }}"
+          --root consumer
+          --config consumer/.agent-factory/config.json
+      - name: Invalidate leased Figma access
         if: always() && steps.figma-prepare.outcome == 'success'
         env:
           FIGMA_MCP_CLIENT_ID: ${{ secrets.FIGMA_MCP_CLIENT_ID }}
           FIGMA_MCP_CLIENT_SECRET: ${{ secrets.FIGMA_MCP_CLIENT_SECRET }}
           FIGMA_MCP_REFRESH_TOKEN: ${{ secrets.FIGMA_MCP_REFRESH_TOKEN }}
         run: PYTHONPATH=factory/src python3 -m agent_factory.figma_mcp invalidate
+      - name: Release completed candidate to Reviewer
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh pr ready "${{ needs.builder.outputs.pr }}" --repo "${{ github.repository }}"

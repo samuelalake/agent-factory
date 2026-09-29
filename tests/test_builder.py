@@ -68,6 +68,14 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("agent_factory.figma_mcp prepare", workflow)
         self.assertIn("agent_factory.figma_mcp invalidate", workflow)
         self.assertIn("steps.figma-prepare.outcome == 'success'", workflow)
+        self.assertIn("figma-writer:", workflow)
+        self.assertIn("needs: builder", workflow)
+        self.assertIn("agent-factory-figma-${{ needs.builder.outputs.figma_lease_key }}", workflow)
+        self.assertIn("agent_factory.github_figma_writer", workflow)
+        self.assertLess(
+            workflow.index("agent_factory.figma_mcp invalidate"),
+            workflow.index("gh pr ready"),
+        )
 
     def test_reconciled_control_plane_publishes_before_model_work(self) -> None:
         self.assertTrue(_publish_base_sync_without_model(
@@ -418,7 +426,7 @@ Produce current-head evidence and publish a ready delivery section.
         )
         self.assertIn("--strict-mcp-config", argv)
 
-    def test_builder_prompt_announces_authenticated_figma_capability(self) -> None:
+    def test_builder_prompt_delegates_canvas_mutation_to_figma_writer(self) -> None:
         raw = default_config("demo")
         raw["builder"].update(
             {
@@ -435,7 +443,8 @@ Produce current-head evidence and publish a ready delivery section.
             {"number": 1, "title": "Design", "body": "Edit Figma"},
             Path("."),
         )
-        self.assertIn("authenticated Figma MCP canvas access", prompt)
+        self.assertIn("dedicated Figma Writer phase", prompt)
+        self.assertNotIn("authenticated Figma MCP canvas access", prompt)
 
     def test_run_claude_code_rejects_chat_only_reply_without_edits(self) -> None:
         envelope = json.dumps({"is_error": False, "result": "Nothing to do.", "num_turns": 1})
