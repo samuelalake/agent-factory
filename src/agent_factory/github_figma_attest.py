@@ -1,9 +1,9 @@
-"""Deterministic recovery receipt for a live Figma delivery.
+"""Deterministic exact-head receipt for an already-completed live Figma delivery.
 
-This is an explicit operator recovery path for the narrow case where the hosted
-Figma MCP call persisted its canvas mutation but never returned a terminal tool
-result. It does not mutate Figma. It binds a checked-in manifest and delivery
-record to the pull request's exact head using the Builder GitHub App identity.
+This does not mutate Figma. It binds a checked-in manifest and delivery record
+to the pull request's exact head using the Builder GitHub App identity. The mode
+records who actually performed the canvas write rather than treating App-signed
+attestation as proof of hosted-Writer authorship.
 """
 from __future__ import annotations
 
@@ -23,6 +23,31 @@ from .github_figma_writer import _gh, _upsert_issue_comment, format_issue_status
 SAFE_RECORD_PREFIXES = ("docs/", ".agent-factory/figma-deliveries/")
 NODE_RE = re.compile(r"^[0-9]+:[0-9]+$")
 PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}$")
+ATTESTATION_MODES = ("hosted_writer_recovery", "operator_assisted")
+
+
+def attestation_detail(mode: str, node_urls: tuple[str, ...]) -> tuple[str, dict[str, str]]:
+    urls = " ".join(node_urls)
+    if mode == "hosted_writer_recovery":
+        return (
+            "Operator-attested recovery: the live editable canvas was read back after the hosted "
+            "MCP call persisted its mutation but did not return a terminal result. " + urls,
+            {
+                "attestation": "operator_verified_manifest",
+                "delivery_mode": mode,
+            },
+        )
+    if mode == "operator_assisted":
+        return (
+            "Operator-assisted delivery: a founder-authorized authenticated interactive Figma "
+            "session completed the live canvas changes, and the editable nodes were read back "
+            "against the checked-in delivery record. " + urls,
+            {
+                "attestation": "operator_assisted_manifest",
+                "delivery_mode": mode,
+            },
+        )
+    raise BuilderBlocked("Unsupported Figma attestation mode")
 
 
 def _safe_repo_path(root: Path, value: str) -> Path:
@@ -94,6 +119,7 @@ def run(
     *,
     record_path: str,
     screen_prefix: str,
+    mode: str = "hosted_writer_recovery",
 ) -> str:
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("GH_TOKEN must be a Builder App installation token")
@@ -122,11 +148,7 @@ def run(
         record_path=record_path,
         screen_prefix=screen_prefix,
     )
-    detail = (
-        "Operator-attested recovery: the live editable canvas was read back after the hosted MCP "
-        "call persisted its mutation but did not return a terminal result. "
-        + " ".join(node_urls)
-    )
+    detail, attestation_metadata = attestation_detail(mode, node_urls)
     body = format_issue_status(
         config.figma.marker,
         issue_number,
@@ -135,7 +157,7 @@ def run(
         str(pr["url"]),
         head=head,
         metadata={
-            "attestation": "operator_verified_manifest",
+            **attestation_metadata,
             "record_path": record_path,
             "screen_prefix": screen_prefix,
             "file_url": file_url,
@@ -155,6 +177,7 @@ def main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--record-path", required=True)
     parser.add_argument("--screen-prefix", required=True)
+    parser.add_argument("--mode", choices=ATTESTATION_MODES, default="hosted_writer_recovery")
     args = parser.parse_args()
     try:
         run(
@@ -165,6 +188,7 @@ def main() -> int:
             args.config,
             record_path=args.record_path,
             screen_prefix=args.screen_prefix,
+            mode=args.mode,
         )
     except (BuilderBlocked, RuntimeError, subprocess.TimeoutExpired) as exc:
         detail = _blocked_detail(str(exc), "deterministic-figma-attestation", None)
