@@ -19,6 +19,8 @@ from agent_factory.github_builder import (
     _base_sync_response,
     _base_workflow_changes,
     _delivery_gate_requires_current_head_evidence,
+    _figma_retry_response,
+    _figma_writer_gate_requires_current_head,
     _current_delivery_media,
     _fetch_delivery_image,
     _fetch_delivery_images,
@@ -29,6 +31,7 @@ from agent_factory.github_builder import (
     _review_feedback,
     _preserve_workflow_control_plane,
     _publish_base_sync_without_model,
+    _publish_figma_retry_without_model,
     _claude_agent_env,
     _run_claude_code,
     _run_claude_code_streaming,
@@ -207,10 +210,19 @@ Model: `deterministic/figma-writer-delivery-gate`
   - _suggestion:_ Keep the pull request in draft and rerun the leased Figma Writer phase.
 """
         self.assertTrue(_delivery_gate_requires_current_head_evidence(feedback))
+        self.assertTrue(_figma_writer_gate_requires_current_head(feedback))
         self.assertTrue(_publish_base_sync_without_model(
             base_sync_changed=True,
             base_conflicts="",
             base_workflow_changes=(".github/workflows/agent-builder.yml",),
+            feedback=feedback,
+        ))
+        self.assertTrue(_publish_figma_retry_without_model(
+            base_conflicts="",
+            feedback=feedback,
+        ))
+        self.assertFalse(_publish_figma_retry_without_model(
+            base_conflicts="docs/contracts/onboarding-checkin.md",
             feedback=feedback,
         ))
 
@@ -221,6 +233,18 @@ Current-head Figma Writer delivery is missing.
 Please rerun the leased Figma Writer phase after fixing the product finding.
 """
         self.assertFalse(_delivery_gate_requires_current_head_evidence(feedback))
+        self.assertFalse(_figma_writer_gate_requires_current_head(feedback))
+        self.assertFalse(_publish_figma_retry_without_model(
+            base_conflicts="",
+            feedback=feedback,
+        ))
+
+    def test_figma_retry_summary_is_explicit_about_agent_no_op(self) -> None:
+        summary = _figma_retry_response()
+        self.assertIn("leased Figma Writer", summary)
+        self.assertIn("No code model was invoked", summary)
+        self.assertIn("no repository edits", summary)
+        self.assertIn("<builder_summary>", summary)
 
     def test_base_sync_summary_is_explicit_about_agent_no_op(self) -> None:
         summary = _base_sync_response("development")
