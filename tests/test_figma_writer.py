@@ -13,6 +13,7 @@ from agent_factory.github_figma_writer import (
     format_issue_status,
     parse_result,
 )
+from agent_factory.github_figma_attest import delivery_from_manifest
 from agent_factory.protocol import decode_data
 
 
@@ -87,6 +88,56 @@ class FigmaWriterTests(unittest.TestCase):
         data = decode_data(body)
         self.assertEqual(data["role"], "figma_writer")
         self.assertEqual(data["head"], head)
+
+    def test_operator_attestation_binds_manifest_nodes_to_delivery_record(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs/contracts").mkdir(parents=True)
+            (root / "tools/design-sync").mkdir(parents=True)
+            (root / "docs/contracts/checkin.md").write_text(
+                "Default 885:1123 and Saved node-id=885-1352",
+                encoding="utf-8",
+            )
+            (root / "tools/design-sync/manifest.json").write_text(
+                '{"figmaFileKey":"abc123","screens":['
+                '{"name":"Checkin-default-light","node":"885:1123"},'
+                '{"name":"Checkin-saved-light","node":"885:1352"},'
+                '{"name":"Consent-default-light","node":"777:248"}]}',
+                encoding="utf-8",
+            )
+            file_url, node_urls = delivery_from_manifest(
+                root,
+                record_path="docs/contracts/checkin.md",
+                screen_prefix="Checkin-",
+            )
+            self.assertEqual(file_url, "https://www.figma.com/design/abc123")
+            self.assertEqual(node_urls, (
+                "https://www.figma.com/design/abc123?node-id=885-1123",
+                "https://www.figma.com/design/abc123?node-id=885-1352",
+            ))
+
+    def test_operator_attestation_rejects_incomplete_record(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs").mkdir()
+            (root / "tools/design-sync").mkdir(parents=True)
+            (root / "docs/checkin.md").write_text("Only 885:1123", encoding="utf-8")
+            (root / "tools/design-sync/manifest.json").write_text(
+                '{"figmaFileKey":"abc123","screens":['
+                '{"name":"Checkin-default-light","node":"885:1123"},'
+                '{"name":"Checkin-saved-light","node":"885:1352"}]}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BuilderBlocked, "cite every"):
+                delivery_from_manifest(
+                    root,
+                    record_path="docs/checkin.md",
+                    screen_prefix="Checkin-",
+                )
 
 
 if __name__ == "__main__":
