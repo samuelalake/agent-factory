@@ -232,12 +232,18 @@ def _validate_candidate(
 
 
 def _delivery_gate_requires_current_head_evidence(feedback: str) -> bool:
-    """Recognize Factory's deterministic evidence gate, not model failures."""
-    return (
+    """Recognize Factory's deterministic delivery gates, not model failures."""
+    builder_evidence_gate = (
         "Model: `deterministic/builder-delivery-gate`" in feedback
         and "Builder delivery evidence is not ready" in feedback
         and "Produce current-head evidence" in feedback
     )
+    figma_writer_gate = (
+        "Model: `deterministic/figma-writer-delivery-gate`" in feedback
+        and "Current-head Figma Writer delivery is missing" in feedback
+        and "rerun the leased Figma Writer phase" in feedback
+    )
+    return builder_evidence_gate or figma_writer_gate
 
 
 def _base_sync_response(base_branch: str) -> str:

@@ -191,6 +191,35 @@ Produce current-head evidence and publish a ready delivery section.
             )
         )
 
+    def test_figma_writer_gate_allows_control_plane_sync_without_builder_model(self) -> None:
+        feedback = """<!-- reviewer:agent-factory -->
+
+## Reviewer
+**Changes requested** for current head `20f0741`
+
+The dedicated Figma Writer phase has not authenticated this pull-request head.
+
+Model: `deterministic/figma-writer-delivery-gate`
+
+- **[P1] `review-wide`** Current-head Figma Writer delivery is missing
+  - _suggestion:_ Keep the pull request in draft and rerun the leased Figma Writer phase.
+"""
+        self.assertTrue(_delivery_gate_requires_current_head_evidence(feedback))
+        self.assertTrue(_publish_base_sync_without_model(
+            base_sync_changed=True,
+            base_conflicts="",
+            base_workflow_changes=(".github/workflows/agent-builder.yml",),
+            feedback=feedback,
+        ))
+
+    def test_figma_writer_text_from_non_deterministic_review_does_not_skip_model(self) -> None:
+        feedback = """## Reviewer
+Model: `claude-code/claude-opus-4-8`
+Current-head Figma Writer delivery is missing.
+Please rerun the leased Figma Writer phase after fixing the product finding.
+"""
+        self.assertFalse(_delivery_gate_requires_current_head_evidence(feedback))
+
     def test_base_sync_summary_is_explicit_about_agent_no_op(self) -> None:
         summary = _base_sync_response("development")
         self.assertIn("current development branch", summary)
