@@ -203,19 +203,23 @@ Builder itself receives no Figma token or MCP tools.
    ```
 
 3. Approve the Figma MCP connection in the browser window. The command registers
-   the supported Claude Code client and uses PKCE, then writes the resulting
-   `FIGMA_MCP_ACCESS_TOKEN` directly to GitHub Actions secrets. The command does
-   not print any credential value. Re-run it only when Figma expires or revokes
-   the grant, the secret is removed, or you intentionally change identities.
+   the supported Claude Code client and uses PKCE with the Figma MCP resource
+   audience, validates the issued grant against the protected MCP endpoint, then
+   writes one atomic `FIGMA_MCP_OAUTH_BUNDLE` directly to GitHub Actions secrets.
+   The command does not print any credential value. The leased Writer refreshes
+   and validates a short-lived access token for each run, so browser approval is
+   needed again only when Figma revokes the refresh grant, the secret is removed,
+   or you intentionally change identities.
 4. Regenerate an older Builder caller or manually forward the named credentials
    to the reusable workflow.
 
 After Builder opens or updates a draft pull request, the Figma Writer job waits
-for its identity lease. Only then does Factory build a private MCP config and
-expose the access grant to Claude Code for that isolated job. The token is not
-forwarded to Builder or Reviewer, and the hosted runner is discarded after the
-Writer phase. The pull request becomes ready only after the Writer succeeds.
-A missing or expired grant, an invalid record, or a missing exact-head
+for its identity lease. Only then does Factory refresh and validate a short-lived
+access token, build a private MCP config, and expose that token to Claude Code for
+the isolated job. The refresh bundle is never forwarded to Claude Code, Builder,
+or Reviewer, and the hosted runner is discarded after the Writer phase. The pull
+request becomes ready only after the Writer succeeds. A missing or revoked grant,
+an invalid record, or a missing exact-head
 authenticated result leaves the pull request in draft and fails closed.
 
 This connection is distinct from a Figma personal access token or a normal REST
