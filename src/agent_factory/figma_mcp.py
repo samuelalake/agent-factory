@@ -91,12 +91,13 @@ def _token_request(
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    # Figma's authorization-server metadata advertises client_secret_post for
-    # its MCP token endpoint. PKCE still binds the authorization code to this
-    # local run; the dynamically registered client credentials identify the
-    # cataloged Claude Code client.
-    form["client_id"] = client_id
-    form["client_secret"] = client_secret
+    # Figma documents HTTP Basic client authentication for both authorization
+    # code exchange and refresh. Keep the secret out of the request body and
+    # pair this with the registration method declared below.
+    credentials = base64.b64encode(
+        f"{client_id}:{client_secret}".encode()
+    ).decode("ascii")
+    headers["Authorization"] = f"Basic {credentials}"
     request = urllib.request.Request(
         TOKEN_ENDPOINT,
         data=urllib.parse.urlencode(form).encode(),
@@ -213,7 +214,7 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
                 "redirect_uris": [redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
-                "token_endpoint_auth_method": "client_secret_post",
+                "token_endpoint_auth_method": "client_secret_basic",
                 "application_type": "native",
                 "scope": MCP_SCOPE,
             }
@@ -230,7 +231,7 @@ def _register_client(redirect_uri: str) -> tuple[str, str]:
         raise FigmaMCPError("Figma client registration returned no client secret")
     if payload.get("token_endpoint_auth_method") not in (
         None,
-        "client_secret_post",
+        "client_secret_basic",
     ):
         raise FigmaMCPError("Figma registered an unsupported client authentication method")
     return client_id, client_secret

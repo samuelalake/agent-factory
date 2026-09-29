@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -29,18 +30,18 @@ class FigmaMCPTests(unittest.TestCase):
         request_json.return_value = {
             "client_id": "client",
             "client_secret": "secret",
-            "token_endpoint_auth_method": "client_secret_post",
+            "token_endpoint_auth_method": "client_secret_basic",
         }
         client_id, client_secret = _register_client("http://127.0.0.1:19876/callback")
         self.assertEqual((client_id, client_secret), ("client", "secret"))
         request = request_json.call_args.args[0]
         body = json.loads(request.data)
         self.assertEqual(body["client_name"], "Claude Code")
-        self.assertEqual(body["token_endpoint_auth_method"], "client_secret_post")
+        self.assertEqual(body["token_endpoint_auth_method"], "client_secret_basic")
         self.assertEqual(body["application_type"], "native")
 
     @mock.patch("agent_factory.figma_mcp._json_request")
-    def test_refresh_uses_refresh_grant_and_post_client_auth(self, request_json) -> None:
+    def test_refresh_uses_refresh_grant_and_basic_client_auth(self, request_json) -> None:
         request_json.return_value = {"access_token": "job-token"}
         token = refresh_access_token("client", "secret", "refresh")
         self.assertEqual(token, "job-token")
@@ -48,10 +49,13 @@ class FigmaMCPTests(unittest.TestCase):
         body = urllib.parse.parse_qs(request.data.decode())
         self.assertEqual(body["grant_type"], ["refresh_token"])
         self.assertEqual(body["refresh_token"], ["refresh"])
-        self.assertEqual(body["client_id"], ["client"])
-        self.assertEqual(body["client_secret"], ["secret"])
+        self.assertNotIn("client_id", body)
+        self.assertNotIn("client_secret", body)
         self.assertNotIn("resource", body)
-        self.assertNotIn("Authorization", request.headers)
+        self.assertEqual(
+            request.headers["Authorization"],
+            "Basic " + base64.b64encode(b"client:secret").decode("ascii"),
+        )
 
     def test_refresh_fails_without_all_long_lived_credentials(self) -> None:
         with self.assertRaisesRegex(FigmaMCPError, "missing"):
