@@ -77,12 +77,20 @@ class BuilderTests(unittest.TestCase):
             workflow.index("gh pr ready"),
         )
 
-    def test_reconciled_control_plane_publishes_before_model_work(self) -> None:
-        self.assertTrue(_publish_base_sync_without_model(
+    def test_reconciled_control_plane_does_not_skip_authenticated_feedback(self) -> None:
+        self.assertFalse(_publish_base_sync_without_model(
             base_sync_changed=True,
             base_conflicts="",
             base_workflow_changes=(".github/workflows/agent-review.yml",),
             feedback="material product finding remains",
+        ))
+
+    def test_reconciled_control_plane_can_publish_without_feedback(self) -> None:
+        self.assertTrue(_publish_base_sync_without_model(
+            base_sync_changed=True,
+            base_conflicts="",
+            base_workflow_changes=(".github/workflows/agent-review.yml",),
+            feedback="",
         ))
 
     def test_unrelated_base_sync_retains_normal_builder_turn(self) -> None:
@@ -128,7 +136,7 @@ class BuilderTests(unittest.TestCase):
             subprocess.run(["git", "merge", "--no-edit", "master"], cwd=root, check=True, capture_output=True)
             changed = _base_workflow_changes(root, previous)
             self.assertEqual(changed, (".github/workflows/review.yml",))
-            self.assertTrue(_publish_base_sync_without_model(
+            self.assertFalse(_publish_base_sync_without_model(
                 base_sync_changed=True,
                 base_conflicts="",
                 base_workflow_changes=changed,

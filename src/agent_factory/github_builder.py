@@ -256,12 +256,18 @@ def _publish_base_sync_without_model(
     base_workflow_changes: tuple[str, ...],
     feedback: str,
 ) -> bool:
-    """Publish a control-plane or evidence-only base sync before agent work."""
+    """Publish a control-plane or evidence-only base sync before agent work.
+
+    A workflow-only base change is safe to publish without a model only when
+    there is no authenticated product feedback to resolve. The deterministic
+    delivery gate is the sole exception: merging the base is itself the action
+    that lets repository-owned evidence regenerate for the new head.
+    """
     return bool(
         base_sync_changed
         and not base_conflicts
         and (
-            base_workflow_changes
+            (base_workflow_changes and not feedback)
             or _delivery_gate_requires_current_head_evidence(feedback)
         )
     )
