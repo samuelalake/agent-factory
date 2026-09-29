@@ -238,6 +238,7 @@ def run(repo: str, pr_number: str, issue_number: str, root: Path, config_path: P
         timeout_seconds=config.figma.timeout_seconds,
         figma_mcp=True,
         require_repository_change=False,
+        allow_bash=False,
     )
     result = parse_result(response)
     paths = _changed_paths(root)

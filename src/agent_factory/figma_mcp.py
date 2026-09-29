@@ -27,6 +27,7 @@ MCP_RESOURCE = "https://mcp.figma.com/mcp"
 REGISTRATION_ENDPOINT = "https://api.figma.com/v1/oauth/mcp/register"
 AUTHORIZATION_ENDPOINT = "https://www.figma.com/oauth/mcp"
 TOKEN_ENDPOINT = "https://api.figma.com/v1/oauth/token"
+EXPECTED_ISSUER = "https://api.figma.com"
 MCP_SCOPE = "mcp:connect"
 SECRET_NAMES = (
     "FIGMA_MCP_CLIENT_ID",
@@ -259,6 +260,9 @@ def authorize(repo: str, *, timeout: int = 300) -> None:
     query = _CallbackHandler.query
     if query.get("state", [""])[0] != state:
         raise FigmaMCPError("Figma OAuth callback state did not match")
+    issuer = query.get("iss", [""])[0]
+    if issuer and issuer != EXPECTED_ISSUER:
+        raise FigmaMCPError("Figma OAuth callback issuer did not match")
     if query.get("error"):
         raise FigmaMCPError("Figma authorization was denied or failed")
     code = query.get("code", [""])[0]

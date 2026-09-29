@@ -870,6 +870,7 @@ def _run_claude_code(
     extra_read_dirs: tuple[Path, ...] = (),
     figma_mcp: bool = False,
     require_repository_change: bool = True,
+    allow_bash: bool = True,
 ) -> tuple[str, int]:
     """Run Claude Code headless in edit mode; return its summary and turn count.
 
@@ -883,7 +884,9 @@ def _run_claude_code(
         raise BuilderBlocked(
             "CLAUDE_CODE_OAUTH_TOKEN is required for the claude-code Builder harness"
         )
-    allowed_tools = "Read,Edit,Write,Grep,Glob,Bash"
+    allowed_tools = "Read,Edit,Write,Grep,Glob"
+    if allow_bash:
+        allowed_tools += ",Bash"
     if figma_mcp:
         allowed_tools += ",mcp__figma__*"
     args = [
