@@ -134,7 +134,14 @@ def normalize_review(
             ),
         })
     approve = bool(raw.get("approve")) and not any(f["severity"] == "P1" for f in findings)
-    return {"summary": str(raw.get("summary") or "").strip(), "approve": approve, "findings": findings}
+    return {
+        "summary": str(raw.get("summary") or "").strip(),
+        "reference_interpretation": str(
+            raw.get("reference_interpretation") or ""
+        ).strip()[:2000],
+        "approve": approve,
+        "findings": findings,
+    }
 
 
 def changed_between_heads(repo: str, before: str, after: str) -> tuple[str, ...]:
@@ -228,7 +235,12 @@ def prior_review_for_head(
     marker: str,
     reviewer_app_login: str,
 ) -> str:
-    """Return the latest non-dismissed authenticated Reviewer narrative for a prior head."""
+    """Return only the prior head's authenticated visual-reference interpretation.
+
+    Findings are deliberately excluded. They describe an older implementation and
+    evidence packet, so replaying them into a current-head review can turn a fixed
+    defect or newly supplied artifact into a false continuity requirement.
+    """
     raw = json.loads(_gh([
         "api", f"repos/{repo}/pulls/{pr}/reviews?per_page=100", "--paginate", "--slurp",
     ]))
@@ -249,9 +261,22 @@ def prior_review_for_head(
                 continue
             body = str(review.get("body") or "")
             data = decode_data(body)
-            if marker in body and isinstance(data, dict) and data.get("head_sha") == head:
-                matches.append(body)
-    return matches[-1][-12000:] if matches else ""
+            interpretation = (
+                str(data.get("reference_interpretation") or "").strip()
+                if isinstance(data, dict)
+                else ""
+            )
+            if (
+                marker in body
+                and isinstance(data, dict)
+                and data.get("head_sha") == head
+                and interpretation
+            ):
+                matches.append(
+                    f"Reference interpretation from `{head[:7]}`: "
+                    f"{interpretation[:2000]}"
+                )
+    return matches[-1] if matches else ""
 
 
 def authenticated_arbitration_for_head(
@@ -426,6 +451,7 @@ def format_body(
         "version": 1,
         "head_sha": head_sha,
         "verdict": "approve" if review["approve"] else "request_changes",
+        "reference_interpretation": review.get("reference_interpretation", ""),
         "findings": [
             {
                 "severity": f["severity"],
@@ -802,9 +828,16 @@ def run(
     ]
     system = (
         f"You are the required code reviewer for {config.project.name}. "
-        "Return only JSON with summary:string, approve:boolean, and findings:array. "
-        "Also return evidence_interpretation_conflict:boolean. When the supplied authenticated "
-        "prior review describes the same unchanged reference digest, preserve that interpretation. "
+        "Return only JSON with summary:string, reference_interpretation:string, approve:boolean, "
+        "findings:array, and evidence_interpretation_conflict:boolean. Reference interpretation "
+        "must contain only durable observations about the unchanged visual reference itself, such "
+        "as composition, typography, color, spacing, and state appearance; never put findings, "
+        "missing-evidence claims, implementation advice, or API preferences in that field. When "
+        "the supplied authenticated prior interpretation describes the same unchanged reference "
+        "digest, preserve that visual interpretation. Prior-head findings are historical and are "
+        "never current-head requirements: reproduce a finding only when the current diff and "
+        "current-head evidence independently demonstrate it. Current-head delivery supersedes "
+        "older statements that an artifact was absent. "
         "When an authenticated same-head Steward evidence ruling is supplied, its observable visual "
         "interpretation is authoritative; preserve it while independently reviewing code and behavior. "
         "If you believe it is materially wrong or your new guidance would reverse it, set "
@@ -815,7 +848,12 @@ def run(
         "reasoning, and suggestion. P1 is merge-blocking. Do not approve a partial diff. "
         "Treat the canonical Builder delivery section as evidence, not decoration: do not approve "
         "material visual, behavioral, framing, documentation, or current-head mismatches. The "
-        "existence of a URL is not proof. For every file-specific finding, cite an exact integer "
+        "existence of a URL is not proof. Before claiming evidence is missing, name the required "
+        "artifact and verify it is absent from the canonical current-head delivery. Authenticated "
+        "structured evidence such as per-scope render/reference links, editable node identifiers, "
+        "structure results, and interaction graphs counts when the consumer contract accepts that "
+        "artifact; do not demand a duplicate image for a fact already established by that evidence. "
+        "For every file-specific finding, cite an exact integer "
         "line that appears on the right side of the supplied diff; omit file and line only for a "
         "genuinely repository-wide finding. When current-head evidence images are supplied, compare "
         "all labeled renders and supplied references in their PR-body order against the consumer "
@@ -827,8 +865,11 @@ def run(
         "the consumer supports visual review. Review non-visual control-plane, documentation, and "
         "policy changes from their diff, executable checks, and directly linked prior evidence."
         " A finding must identify a concrete defect caused or preserved by the supplied diff. Do "
-        "not block on a hypothetical failure that the shown code explicitly guards against, and "
-        "do not require a consumer wrapper to duplicate enforcement implemented by an immutable "
+        "not block on a hypothetical failure that the shown code explicitly guards against. A "
+        "public API comment is valid documentation evidence; do not demand a redundant wrapper or "
+        "rename solely to restate a contract that the API documentation and behavior already make "
+        "explicit. Also do not require a consumer wrapper to duplicate enforcement implemented by "
+        "an immutable "
         "referenced reusable workflow. For dependency-pin changes, review the consumer wiring and "
         "supplied dependency evidence; absence of dependency source code from the consumer diff is "
         "not itself a defect."
@@ -849,7 +890,7 @@ def run(
         f"## Evidence scope\n\n{evidence_scope}",
         *(
             [
-                "## Authenticated prior-head Reviewer continuity\n\n"
+                "## Authenticated prior visual-reference interpretation\n\n"
                 + prior_review_context
             ]
             if prior_review_context else []
