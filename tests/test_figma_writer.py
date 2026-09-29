@@ -6,6 +6,7 @@ from pathlib import Path
 from agent_factory.cli import default_config
 from agent_factory.config import parse_config
 from agent_factory.github_builder import BuilderBlocked
+from agent_factory.github_builder import _claude_stream_event
 from agent_factory.github_figma_writer import (
     _validate_record_paths,
     build_prompt,
@@ -56,8 +57,26 @@ class FigmaWriterTests(unittest.TestCase):
             Path("."),
         )
         self.assertIn("own only the editable Figma delivery phase", prompt)
+        self.assertIn("Within five minutes", prompt)
+        self.assertIn("mcp__figma__use_figma", prompt)
         self.assertIn("Read the resulting nodes back", prompt)
         self.assertIn("issue-12.md", prompt)
+
+    def test_stream_event_exposes_tool_name_without_tool_input(self) -> None:
+        event = {
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "name": "mcp__figma__use_figma",
+                "input": {"token": "private", "code": "private-canvas-code"},
+            }]},
+        }
+        names, result, turns, is_error = _claude_stream_event(event)
+        self.assertEqual(names, ("mcp__figma__use_figma",))
+        self.assertIsNone(result)
+        self.assertEqual(turns, 1)
+        self.assertFalse(is_error)
+        self.assertNotIn("private", repr((names, result, turns, is_error)))
 
     def test_issue_status_binds_authenticated_role_to_exact_head(self) -> None:
         head = "a" * 40
