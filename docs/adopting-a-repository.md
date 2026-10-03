@@ -31,6 +31,11 @@ Provisioning and provider selection are separate steps:
 5. Select the primary and optional fallback provider/model pairs in
    `.agent-factory/config.json`.
 
+The generated `agent-setup.yml` provisions `ready`, `agent:builder`,
+`agent:steward`, and `agent:retry` when it first lands on `main`. It is
+idempotent and can be run manually after a label is deleted or renamed. Create
+equivalent labels yourself only when replacing the generated setup workflow.
+
 A credential being present does not activate its provider. All three conditions
 must hold: GitHub exposes the credential to the repository, the caller forwards
 the corresponding named secret, and the role config selects that provider as a
