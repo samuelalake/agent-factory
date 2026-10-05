@@ -21,6 +21,15 @@ it is a deterministic policy reducer. The role Apps make each handoff and
 authority visible without forcing every project into the same implementation
 procedure.
 
+Each dispatch carries a bounded acceptance contract: intended outcome,
+in-scope behavior and artifacts, required evidence, and material non-goals.
+Reviewer checks the delivered head against that contract and durable repository
+decisions. It may identify concrete defects in changed behavior, but it does not
+invent product direction, propose alternative architecture, expand the issue,
+or require optional polish. Those observations return to Steward's ledger for
+human triage. A review cycle exists to verify a correction, not to search for a
+new interpretation of the task.
+
 Figma Writer is a specialized delivery phase rather than a second orchestrator.
 Builder owns repository implementation; Figma Writer owns only native canvas
 mutation and its durable delivery record. Different issues may build in

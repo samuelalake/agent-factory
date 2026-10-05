@@ -52,8 +52,10 @@ Agent Factory separates those identities by role:
   work.
 - **Builder** inspects the repository, selects relevant skills, changes code,
   runs verification, and opens a pull request with evidence.
-- **Reviewer** evaluates the current head against repository decisions and
-  submitted evidence, then approves or leaves testable findings.
+- **Reviewer** evaluates the current head against the bounded acceptance
+  contract, repository decisions, and submitted evidence, then approves or
+  leaves concrete, testable findings. It does not redesign the product or turn
+  optional follow-up into revision requirements.
 
 Separate GitHub Apps make the activity legible to people and constrain each
 role to least privilege. A reviewer does not need branch-write access. A
