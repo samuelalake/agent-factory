@@ -799,6 +799,9 @@ class ReviewTests(unittest.TestCase):
         user = request.call_args.args[2]
         self.assertIn("do not request a screenshot triplet", system)
         self.assertIn("must identify a concrete defect", system)
+        self.assertIn("Keep review bounded", system)
+        self.assertIn("must not become a Builder requirement", system)
+        self.assertIn("Do not request another revision merely to explore a preference", system)
         self.assertIn("immutable referenced reusable workflow", system)
         self.assertIn("absence of dependency source code", system)
         self.assertIn("Normalize each image to its own declared logical viewport", system)
