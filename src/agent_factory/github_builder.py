@@ -1671,6 +1671,10 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument(
+        "--suppress-failure-escalation", action="store_true",
+        help="Report a blocked result without adding the Steward routing label",
+    )
     args = parser.parse_args()
     try:
         pr_url = run(args.repo, args.issue, args.root, args.config)
@@ -1700,15 +1704,16 @@ def main() -> int:
             ),
         )
         _upsert_issue_comment(args.repo, args.issue, config.builder.marker, body, root=args.root)
-        _gh(
-            [
-                "label", "create", "agent:steward", "--repo", args.repo,
-                "--color", "8250DF", "--description", "Builder needs Steward routing",
-                "--force",
-            ],
-            cwd=args.root,
-        )
-        _gh(["issue", "edit", args.issue, "--repo", args.repo, "--add-label", "agent:steward"], cwd=args.root)
+        if not args.suppress_failure_escalation:
+            _gh(
+                [
+                    "label", "create", "agent:steward", "--repo", args.repo,
+                    "--color", "8250DF", "--description", "Builder needs Steward routing",
+                    "--force",
+                ],
+                cwd=args.root,
+            )
+            _gh(["issue", "edit", args.issue, "--repo", args.repo, "--add-label", "agent:steward"], cwd=args.root)
         try:
             _gh(
                 ["issue", "edit", args.issue, "--repo", args.repo, "--remove-label", config.steward.dispatch_label],
