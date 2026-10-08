@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: main
+      suppress_failure_escalation:
+        description: Keep Builder failures on the current issue without dispatching Steward
+        required: false
+        type: boolean
+        default: false
       app_id:
         required: false
         type: string
@@ -121,6 +126,7 @@ jobs:
           --root consumer
           --config consumer/.agent-factory/config.json
           --github-output "${GITHUB_OUTPUT}"
+          ${{ inputs.suppress_failure_escalation && '--suppress-failure-escalation' || '' }}
 
   figma-writer:
     needs: builder
