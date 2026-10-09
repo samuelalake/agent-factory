@@ -9,6 +9,14 @@ on:
       factory_ref:
         required: true
         type: string
+      validated_routing:
+        required: false
+        type: boolean
+        default: false
+      base_ref:
+        required: false
+        type: string
+        default: ""
       app_id:
         required: false
         type: string
@@ -33,11 +41,21 @@ on:
       OPENROUTER_API_KEY:
         required: false
 
-permissions:
-  contents: read
-
 jobs:
+  route:
+    if: inputs.validated_routing
+    uses: ./.github/workflows/task-route.yml
+    with:
+      issue: ${{ inputs.issue }}
+      base_ref: ${{ inputs.base_ref }}
+      factory_ref: ${{ inputs.factory_ref }}
   steward:
+    permissions:
+      contents: read
+    needs: route
+    if: always() && (!inputs.validated_routing || needs.route.result == 'success')
+    env:
+      AGENT_FACTORY_TASK_ROUTE: ${{ needs.route.outputs.route }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -55,6 +73,7 @@ jobs:
       - name: Checkout consumer
         uses: actions/checkout@v7
         with:
+          ref: ${{ needs.route.outputs.controller_sha || github.sha }}
           path: consumer
           persist-credentials: false
       - name: Checkout factory

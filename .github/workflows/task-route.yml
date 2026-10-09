@@ -1,0 +1,51 @@
+name: reusable-task-route
+on:
+  workflow_call:
+    inputs:
+      issue:
+        type: string
+        required: true
+      base_ref:
+        type: string
+        default: ''
+      factory_ref:
+        type: string
+        required: true
+    outputs:
+      route:
+        value: ${{ jobs.resolve.outputs.route }}
+      source_sha:
+        value: ${{ jobs.resolve.outputs.source_sha }}
+      controller_sha:
+        value: ${{ jobs.resolve.outputs.controller_sha }}
+# Inherit the caller's read permissions. Opted-in callers grant issues: read.
+# Do not raise the permission ceiling of legacy callers that skip preflight.
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      route: ${{ steps.route.outputs.route }}
+      source_sha: ${{ steps.route.outputs.source_sha }}
+      controller_sha: ${{ steps.route.outputs.controller_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: samuelalake/agent-factory
+          ref: ${{ inputs.factory_ref }}
+          path: factory
+          persist-credentials: false
+      - name: Resolve authorized code target using trusted controller policy
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue }}
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          PYTHONPATH=factory/src python3 -m agent_factory.task_route \
+            --config controller/.agent-factory/config.json --repo "$GITHUB_REPOSITORY" \
+            --issue "$ISSUE" --base-ref "$BASE_REF" --output "$RUNNER_TEMP/route.json"

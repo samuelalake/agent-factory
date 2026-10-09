@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .app_auth import get_installation_token
+from . import task_route
 from .config import load_config
 from .context import discover_context
 from .github_delivery import (
@@ -696,6 +697,8 @@ def run(
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body",
     ]))
+    if config.validated_routing:
+        task_route.check_pr_route(repo, pr, config_path, expected_head=meta['headRefOid'])
     has_builder_delivery = config.builder.marker in str(meta.get("body") or "")
     changed_paths: tuple[str, ...] = ()
     paths_loaded = False
@@ -1057,6 +1060,8 @@ def run(
             "title": f"Reviewer input omitted {omitted} bytes", "reasoning": "The full diff was not reviewed.",
             "suggestion": "Split the pull request or raise the configured review limit.",
         })
+    if config.validated_routing:
+        task_route.check_pr_route(repo, pr, config_path, expected_head=meta['headRefOid'])
     payload = json.dumps(review_payload(
         marker, meta["headRefOid"], raw, provider, model, diff
     ))

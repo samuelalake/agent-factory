@@ -16,7 +16,16 @@ on:
       base_ref:
         required: false
         type: string
-        default: main
+        default: ""
+      suppress_failure_escalation:
+        description: Keep failures on the current issue without dispatching Steward
+        required: false
+        type: boolean
+        default: false
+      validated_routing:
+        required: false
+        type: boolean
+        default: false
       app_id:
         required: false
         type: string
@@ -46,12 +55,22 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
-permissions:
-  actions: read
-  contents: read
-
 jobs:
+  route:
+    if: inputs.validated_routing
+    uses: ./.github/workflows/task-route.yml
+    with:
+      issue: ${{ inputs.issue }}
+      base_ref: ${{ inputs.base_ref }}
+      factory_ref: ${{ inputs.factory_ref }}
   builder:
+    permissions:
+      actions: read
+      contents: read
+    needs: route
+    if: always() && (!inputs.validated_routing || needs.route.result == 'success')
+    env:
+      AGENT_FACTORY_TASK_ROUTE: ${{ needs.route.outputs.route }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 40
     outputs:
@@ -71,7 +90,7 @@ jobs:
       - name: Checkout consumer base
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.base_ref }}
+          ref: ${{ needs.route.outputs.source_sha || inputs.base_ref || 'main' }}
           fetch-depth: 0
           path: consumer
           persist-credentials: false
@@ -82,12 +101,19 @@ jobs:
           ref: ${{ inputs.factory_ref }}
           path: factory
           persist-credentials: false
+      - name: Checkout trusted consumer policy
+        if: inputs.validated_routing
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.route.outputs.controller_sha }}
+          path: controller
+          persist-credentials: false
       - name: Read Builder harness configuration
         id: builder-config
         run: >-
           PYTHONPATH=factory/src python3 -c
           'import os; from pathlib import Path; from agent_factory.config import load_config;
-          config = load_config(Path("consumer/.agent-factory/config.json")); builder = config.builder;
+          config = load_config(Path("${{ inputs.validated_routing && 'controller' || 'consumer' }}/.agent-factory/config.json")); builder = config.builder;
           enabled = builder.provider == "claude-code";
           output = (f"claude_code={str(enabled).lower()}\n"
           f"cli_version={builder.cli_version}\n"
@@ -119,10 +145,14 @@ jobs:
           --repo "${{ github.repository }}"
           --issue "${{ inputs.issue }}"
           --root consumer
-          --config consumer/.agent-factory/config.json
+          --config "${{ inputs.validated_routing && 'controller' || 'consumer' }}/.agent-factory/config.json"
           --github-output "${GITHUB_OUTPUT}"
+          ${{ inputs.suppress_failure_escalation && '--suppress-failure-escalation' || '' }}
 
   figma-writer:
+    permissions:
+      actions: read
+      contents: read
     needs: builder
     if: needs.builder.outputs.figma_enabled == 'true'
     runs-on: ${{ inputs.runner }}

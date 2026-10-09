@@ -14,6 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import task_route
 from .config import load_config
 
 
@@ -570,10 +571,13 @@ def publish(
     attachments: tuple[Path, ...] = (),
     *,
     builder_app_login: str = "agent-factory-builder[bot]",
+    route_config: Path | None = None,
 ) -> None:
     meta = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
     ]))
+    if route_config is not None:
+        task_route.validate_pr(repo, pr, route_config, expected_head=head)
     current_head = str(meta.get("headRefOid") or "")
     if current_head != head:
         raise RuntimeError(
@@ -606,6 +610,8 @@ def publish(
             raise RuntimeError(
                 f"refusing stale Builder evidence for {head[:7]}; current head is {current_head[:7]}"
             )
+    if route_config is not None:
+        task_route.validate_pr(repo, pr, route_config, expected_head=head)
     delivery = format_delivery(status, content, head=head)
     updated = replace_delivery(str(meta.get("body") or ""), delivery)
     _gh(
@@ -615,6 +621,8 @@ def publish(
     published = json.loads(_gh([
         "pr", "view", pr, "--repo", repo, "--json", "headRefOid,body",
     ]))
+    if route_config is not None:
+        task_route.validate_pr(repo, pr, route_config, expected_head=head)
     published_head = str(published.get("headRefOid") or "")
     published_body = str(published.get("body") or "")
     if published_head != head or delivery_head(published_body) != head:
@@ -643,6 +651,7 @@ def main() -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pr", required=True)
     parser.add_argument("--head", required=True)
+    parser.add_argument("--route-config", type=Path)
     parser.add_argument("--status", required=True, choices=sorted(VALID_STATUSES))
     parser.add_argument("--body-file", type=Path, required=True)
     parser.add_argument("--attach", type=Path, action="append", default=[])
@@ -661,6 +670,7 @@ def main() -> int:
         args.body_file.read_text(encoding="utf-8"),
         tuple(args.attach),
         builder_app_login=builder_app_login,
+        route_config=args.route_config,
     )
     return 0
 
