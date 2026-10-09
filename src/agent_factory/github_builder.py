@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 
 from .config import Config, load_config
+from . import task_route
 from .github_ci import collect_ci_failures
 from .github_delivery import (
     DELIVERY_EVIDENCE_NOT_APPLICABLE,
@@ -1307,6 +1308,14 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     if not token:
         raise RuntimeError("GH_TOKEN must be a Builder App installation token")
     config = load_config(config_path)
+    route = json.loads(os.environ['AGENT_FACTORY_TASK_ROUTE']) if os.environ.get('AGENT_FACTORY_TASK_ROUTE') else None
+    if config.validated_routing and not route:
+        raise ValueError('validated routing requires a preflight task route')
+    if route:
+        data, _ = task_route.policy(config_path, repo)
+        task_route.validate(route, data, repo, issue_number)
+        config = task_route.routed_config(config, route)
+    base_source = route['source_sha'] if route else f"origin/{config.builder.base_branch}"
     issue = json.loads(
         _gh(
             ["issue", "view", issue_number, "--repo", repo, "--json", "number,title,body,state"],
@@ -1330,6 +1339,12 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     ci_diagnostics = ""
     delivery_images: tuple[tuple[str, str], ...] = ()
     delivery_recordings: tuple[str, ...] = ()
+    if route and existing:
+        task_route.validate_pr(repo, str(existing[0]['number']), config_path,
+                               expected_head=existing[0]['headRefOid'], expected_route=route)
+        task_route.authenticate_candidate(route, existing[0]['number'], existing[0]['headRefOid'], data)
+    if route:
+        task_route.record(route)
     if existing:
         existing_head = str(existing[0].get("headRefOid") or "")
         existing_pr = int(existing[0]["number"])
@@ -1373,10 +1388,10 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             provenance=provenance,
         )
         _run(["gh", "auth", "setup-git"], cwd=root)
-        _run(["git", "fetch", "origin", branch], cwd=root)
-        start_ref = "FETCH_HEAD"
+        _run(["git", "fetch", "origin", existing_head if route else branch], cwd=root)
+        start_ref = existing_head if route else "FETCH_HEAD"
     else:
-        start_ref = f"origin/{config.builder.base_branch}"
+        start_ref = base_source
     _run(["git", "checkout", "-B", branch, start_ref], cwd=root)
     _run(["git", "config", "user.name", "Agent Factory Builder"], cwd=root)
     _run(["git", "config", "user.email", "agent-factory-builder[bot]@users.noreply.github.com"], cwd=root)
@@ -1386,10 +1401,10 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     if existing:
         previous_head = _run(["git", "rev-parse", "HEAD"], cwd=root).strip()
         base_conflicts = _merge_current_base(
-            root, f"origin/{config.builder.base_branch}"
+            root, base_source
         )
         _reconcile_workflow_control_plane(
-            root, f"origin/{config.builder.base_branch}"
+            root, base_source
         )
         base_workflow_changes = _base_workflow_changes(root, previous_head)
         base_sync_changed = (
@@ -1526,7 +1541,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 cost_kind = cost_budget.kind_label
             _validate_candidate(
                 root,
-                f"origin/{config.builder.base_branch}",
+                base_source,
                 baseline=agent_baseline,
             )
         except (
@@ -1565,7 +1580,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 cost_kind = cost_budget.kind_label
                 _validate_candidate(
                     root,
-                    f"origin/{config.builder.base_branch}",
+                    base_source,
                     baseline=agent_baseline,
                 )
                 # Fallback produced the delivery: make the silent provider switch
@@ -1594,10 +1609,13 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
     elif not base_sync_changed and not figma_only_retry:
         raise BuilderBlocked("Builder produced no publishable repository changes")
     _run(["gh", "auth", "setup-git"], cwd=root)
-    _run(["git", "push", "--force-with-lease", "origin", branch], cwd=root)
+    if route and task_route.saved_route(repo, issue_number, data) != route:
+        raise BuilderBlocked('task route changed during execution; refusing publication')
+    lease = f"--force-with-lease=refs/heads/{branch}:{existing_head if existing else ''}" if route else "--force-with-lease"
+    _run(["git", "push", lease, "origin", branch], cwd=root)
     changed_paths = tuple(
         path for path in _run(
-            ["git", "diff", "--name-only", f"origin/{config.builder.base_branch}...HEAD"],
+            ["git", "diff", "--name-only", f"{base_source}...HEAD"],
             cwd=root,
         ).splitlines() if path
     )
@@ -1617,6 +1635,9 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
         head=head,
     )
 
+    if route:
+        pr_body += "\n" + task_route.encode(route) + "\n"
+
     if existing:
         pr_url = str(existing[0]["url"])
         _gh(
@@ -1632,7 +1653,7 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
                 "pr", "create", "--repo", repo, "--base", config.builder.base_branch,
                 "--head", branch, "--title", str(issue["title"]), "--body-file", "-",
             ]
-        if config.figma.enabled:
+        if config.figma.enabled or route:
             create_args.append("--draft")
         pr_url = _gh(
             create_args,
@@ -1640,6 +1661,8 @@ def run(repo: str, issue_number: str, root: Path, config_path: Path) -> str:
             stdin=pr_body,
         ).strip()
 
+    if route:
+        task_route.record_candidate(route, pr_url.rstrip('/').rsplit('/', 1)[-1], head)
     delivered_detail = (
         f"Builder opened or updated {pr_url}. Reviewer and repository verification "
         "own the next decision."
@@ -1671,6 +1694,10 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument(
+        "--suppress-failure-escalation", action="store_true",
+        help="Report a blocked result without adding the Steward routing label",
+    )
     args = parser.parse_args()
     try:
         pr_url = run(args.repo, args.issue, args.root, args.config)
@@ -1700,15 +1727,16 @@ def main() -> int:
             ),
         )
         _upsert_issue_comment(args.repo, args.issue, config.builder.marker, body, root=args.root)
-        _gh(
-            [
-                "label", "create", "agent:steward", "--repo", args.repo,
-                "--color", "8250DF", "--description", "Builder needs Steward routing",
-                "--force",
-            ],
-            cwd=args.root,
-        )
-        _gh(["issue", "edit", args.issue, "--repo", args.repo, "--add-label", "agent:steward"], cwd=args.root)
+        if not args.suppress_failure_escalation:
+            _gh(
+                [
+                    "label", "create", "agent:steward", "--repo", args.repo,
+                    "--color", "8250DF", "--description", "Builder needs Steward routing",
+                    "--force",
+                ],
+                cwd=args.root,
+            )
+            _gh(["issue", "edit", args.issue, "--repo", args.repo, "--add-label", "agent:steward"], cwd=args.root)
         try:
             _gh(
                 ["issue", "edit", args.issue, "--repo", args.repo, "--remove-label", config.steward.dispatch_label],

@@ -6,6 +6,9 @@ on:
       pr:
         required: true
         type: string
+      validated_routing:
+        type: boolean
+        default: false
       factory_ref:
         required: true
         type: string
@@ -23,6 +26,8 @@ jobs:
       - name: Checkout consumer
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.validated_routing && github.event.repository.default_branch || github.sha }}
+          persist-credentials: false
           path: consumer
       - name: Checkout factory
         uses: actions/checkout@v7

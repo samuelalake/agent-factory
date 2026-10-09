@@ -7,6 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from . import task_route
 from .config import load_config
 from .gate import Check, Finding, GateDecision, GateInput, Review, evaluate_gate
 from .protocol import decode_data
@@ -59,6 +60,8 @@ def evaluate_and_publish(repo: str, pr: str, config_path: Path) -> GateDecision:
         "headRefOid,mergeable,statusCheckRollup,body",
     ]))
     head = meta["headRefOid"]
+    if config.validated_routing:
+        task_route.check_pr_route(repo, pr, config_path, expected_head=head)
     checks = tuple(
         Check(str(item.get("name") or item.get("context") or ""), str(item.get("conclusion") or item.get("state") or "pending"))
         for item in meta.get("statusCheckRollup") or []
@@ -69,7 +72,10 @@ def evaluate_and_publish(repo: str, pr: str, config_path: Path) -> GateDecision:
     for candidate in reviews:
         body = str(candidate.get("body") or "")
         decoded = decode_data(body)
-        if config.review.marker in body and decoded is not None and candidate.get("state") != "DISMISSED":
+        if (config.review.marker in body and decoded is not None
+                and candidate.get("state") != "DISMISSED"
+                and candidate.get("user", {}).get("login") == config.review.app_login
+                and candidate.get("commit_id") == decoded.get("head_sha") == head):
             selected, data = candidate, decoded
 
     review = None

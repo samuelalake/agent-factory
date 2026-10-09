@@ -120,6 +120,7 @@ class Config:
     review: ReviewConfig
     integration: IntegrationConfig
     gate: GateConfig
+    validated_routing: bool = False
 
 
 def _mapping(value: Any, path: str) -> dict[str, Any]:
@@ -142,7 +143,7 @@ def _strings(value: Any, path: str) -> tuple[str, ...]:
 
 def parse_config(raw: dict[str, Any]) -> Config:
     allowed = {
-        "version", "project", "steward", "builder", "figma", "review", "integration", "gate"
+        "version", "project", "steward", "builder", "figma", "review", "integration", "gate", "routing"
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -158,6 +159,27 @@ def parse_config(raw: dict[str, Any]) -> Config:
     review = _mapping(raw.get("review"), "review")
     integration = _mapping(raw.get("integration", {}), "integration")
     gate = _mapping(raw.get("gate"), "gate")
+    if 'routing' in raw:
+        from .task_route import branch
+        routing = _mapping(raw['routing'], 'routing')
+        repository = routing.get('repository', '')
+        if not isinstance(repository, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
+            raise ConfigError('routing.repository must be an owner/repository')
+        allowed_branches = _strings(routing.get('allowed_base_branches'), 'routing.allowed_base_branches')
+        try:
+            for ref in allowed_branches:
+                branch(ref)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        if builder.get('base_branch', 'main') not in allowed_branches:
+            raise ConfigError('builder.base_branch must be allowed by routing policy')
+        legacy = routing.get('legacy_publication_heads', {})
+        if not isinstance(legacy, dict) or any(
+                not re.fullmatch(r'[1-9][0-9]*', str(pr)) or not isinstance(head, str)
+                or not re.fullmatch(r'[0-9a-f]{40}', head) for pr, head in legacy.items()):
+            raise ConfigError('routing.legacy_publication_heads must map PR numbers to full SHAs')
+        if not steward.get('trusted_operator_logins'):
+            raise ConfigError('routing requires steward.trusted_operator_logins')
     max_diff = review.get("max_diff_bytes", 200_000)
     if not isinstance(max_diff, int) or max_diff < 1:
         raise ConfigError("review.max_diff_bytes must be a positive integer")
@@ -403,6 +425,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
         raise ConfigError(f"unsupported integration.mode: {integration_mode}")
 
     return Config(
+        validated_routing="routing" in raw,
         version=1,
         project=ProjectConfig(
             name=_string(project.get("name"), "project.name"),

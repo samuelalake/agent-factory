@@ -43,6 +43,7 @@ from agent_factory.github_builder import (
     format_issue_status,
     format_pr_body,
     run,
+    main,
     parse_gemini_stream,
 )
 from agent_factory.github_delivery import DELIVERY_EVIDENCE, format_delivery
@@ -52,6 +53,29 @@ from agent_factory.protocol import decode_data
 
 
 class BuilderTests(unittest.TestCase):
+    def test_blocked_cli_escalates_by_default_but_isolates_when_requested(self) -> None:
+        for failure in (BuilderBlocked("needs input"), RuntimeError("provider failed"),
+                        subprocess.TimeoutExpired("builder", 10)):
+            for suppress in (False, True):
+                with self.subTest(failure=type(failure).__name__, suppress=suppress):
+                    args = ["builder", "--repo", "owner/repo", "--issue", "72",
+                            "--root", ".", "--config", "config.json"]
+                    if suppress:
+                        args.append("--suppress-failure-escalation")
+                    config = parse_config(default_config("settings-test"))
+                    with mock.patch("sys.argv", args), \
+                         mock.patch("agent_factory.github_builder.run", side_effect=failure), \
+                         mock.patch("agent_factory.github_builder.load_config", return_value=config), \
+                         mock.patch("agent_factory.github_builder._upsert_issue_comment") as comment, \
+                         mock.patch("agent_factory.github_builder._gh") as gh, \
+                         mock.patch("sys.stdout", new_callable=io.StringIO):
+                        self.assertEqual(main(), 1)
+                    comment.assert_called_once()
+                    calls = [call.args[0] for call in gh.call_args_list]
+                    routes = [call for call in calls if "agent:steward" in call]
+                    self.assertEqual(len(routes), 0 if suppress else 2)
+                    self.assertTrue(any("--remove-label" in call for call in calls))
+
     def test_reusable_workflow_reads_cli_version_from_consumer_config(self) -> None:
         workflow = (
             Path(__file__).parents[1] / ".github/workflows/builder.yml"

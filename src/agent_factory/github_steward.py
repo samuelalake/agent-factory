@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import task_route
 from .config import load_config
 from .context import discover_context
 from .model import ModelError, complete
@@ -756,6 +757,13 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("GH_TOKEN must be a Steward App installation token")
     config = load_config(config_path)
+    route = json.loads(os.environ['AGENT_FACTORY_TASK_ROUTE']) if os.environ.get('AGENT_FACTORY_TASK_ROUTE') else None
+    if config.validated_routing and not route:
+        raise ValueError('validated routing requires a preflight task route')
+    if route:
+        data, _ = task_route.policy(config_path, repo)
+        task_route.validate(route, data, repo, issue)
+        config = task_route.routed_config(config, route)
     for name, color, description in (
         ("agent:steward", "8250DF", "Builder needs Steward routing"),
         (config.steward.retry_label, "FBCA04", "Steward should retry this issue"),
@@ -991,6 +999,8 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
                 "issue", "edit", issue, "--repo", repo,
                 "--remove-label", config.steward.dispatch_label,
             ])
+        if route:
+            task_route.record(route)
         _gh(["issue", "edit", issue, "--repo", repo, "--add-label", config.steward.dispatch_label])
         dispatched_after_builder_result_id = latest_builder_result_id
         for stale_label in ("agent:steward", config.steward.retry_label):
@@ -1069,6 +1079,8 @@ def run(repo: str, issue: str, config_path: Path, root: Path = Path(".")) -> str
                     "--force",
                 ]
             )
+            if route:
+                task_route.record(route)
             _gh(["issue", "edit", issue, "--repo", repo, "--add-label", config.steward.dispatch_label])
             dispatched_after_builder_result_id = latest_builder_result_id
             for stale_label in ("agent:steward", config.steward.retry_label):
