@@ -42,6 +42,14 @@ class TaskRouteTests(unittest.TestCase):
         self.comparison = 'ahead'
 
     def api(self, path, **kwargs):
+        if path == 'graphql':
+            node_id = kwargs['payload']['variables']['id']
+            comment = next(c for c in self.comments if c.get('node_id') == node_id)
+            return {'data':{'node':{
+                '__typename':'IssueComment', 'id':node_id, 'fullDatabaseId':str(comment['id']),
+                'body':comment['body'], 'lastEditedAt':comment.get('lastEditedAt'),
+                'author':{'__typename':'Bot','login':comment['user']['login'].removesuffix('[bot]')},
+                'repository':{'nameWithOwner':REPO},'issue':{'number':7}}}}
         if '/comments?' in path: return self.comments
         if '/permission' in path: return {'permission':self.permission}
         if '/git/ref/heads/' in path: return {'object':{'sha':SOURCE}}
@@ -50,8 +58,10 @@ class TaskRouteTests(unittest.TestCase):
         raise AssertionError(path)
 
     def save(self):
-        self.comments = [{'id':1, 'user':{'login':self.data['steward']['app_login']},
-                          'body':route.encode(self.receipt)}]
+        self.comments = [{'id':1, 'node_id':'one', 'user':{'login':self.data['steward']['app_login']},
+                          'body':route.encode(self.receipt)},
+                         {'id':2,'node_id':'two','user':{'login':self.data['builder']['app_login']},
+                          'body':route.HEAD_MARKER+'\n'+json.dumps({'route':self.receipt,'pr':8,'head':HEAD})}]
 
     def test_explicit_non_main_and_repository_default(self):
         with patch.object(route, 'api', side_effect=self.api):
@@ -63,7 +73,7 @@ class TaskRouteTests(unittest.TestCase):
     def test_steward_receipt_is_reused_by_builder_without_floating_sha(self):
         self.save()
         with patch.object(route, 'api', side_effect=self.api):
-            self.assertEqual(route.resolve(self.path, REPO, '7', '', 'bot', CONTROLLER), self.receipt)
+            self.assertEqual(route.resolve(self.path, REPO, '7', '', self.data['steward']['app_login'], CONTROLLER, event_name='issues', event_actor=self.data['steward']['app_login']), self.receipt)
             with self.assertRaisesRegex(ValueError, 'another controller'):
                 route.resolve(self.path, REPO, '7', '', 'operator', HEAD)
 
@@ -175,7 +185,7 @@ class TaskRouteTests(unittest.TestCase):
         self.assertEqual(events,[self.receipt,'dispatch'])
 
     def test_untrusted_pr_head_cannot_be_executed_with_builder_credentials(self):
-        self.comments=[{'id':2,'user':{'login':self.data['builder']['app_login']},
+        self.comments=[{'id':2,'node_id':'two','user':{'login':self.data['builder']['app_login']},
                        'body':route.HEAD_MARKER+'\n'+json.dumps({'route':self.receipt,'pr':8,'head':HEAD})}]
         with patch.object(route,'api',side_effect=self.api):
             route.authenticate_candidate(self.receipt,8,HEAD,self.data)
@@ -189,3 +199,42 @@ class TaskRouteTests(unittest.TestCase):
         with patch.dict(os.environ, {'GH_TOKEN':'test'},clear=True), \
              self.assertRaisesRegex(ValueError,'preflight task route'):
             builder.run(REPO,'7',self.root,self.path)
+
+    def test_edited_app_receipts_and_unauthorized_reuse_fail_closed(self):
+        self.save()
+        with patch.object(route,'api',side_effect=self.api):
+            with self.assertRaisesRegex(ValueError,'configured operator'):
+                route.resolve(self.path,REPO,'7','','unconfigured-writer',CONTROLLER)
+            self.comments[0]['lastEditedAt']='2026-10-09T18:00:00Z'
+            with self.assertRaisesRegex(ValueError,'edited'):
+                route.saved_route(REPO,'7',self.data)
+            self.comments[0].pop('lastEditedAt')
+            self.comments[1]['lastEditedAt']='2026-10-09T18:00:00Z'
+            with self.assertRaisesRegex(ValueError,'edited'):
+                route.validate_pr(REPO,'8',self.path,expected_head=HEAD)
+
+    def test_routed_prefix_never_falls_back_when_all_receipts_are_deleted(self):
+        self.meta['body']='receipt removed'
+        with patch.object(route,'api',side_effect=self.api), self.assertRaisesRegex(ValueError,'no task route'):
+            route.check_pr_route(REPO,'8',self.path,expected_head=HEAD)
+
+    def test_missing_candidate_receipt_blocks_reviewer_and_publisher(self):
+        self.save(); self.comments=self.comments[:1]
+        with patch.object(route,'api',side_effect=self.api), self.assertRaisesRegex(ValueError,'authenticated candidate'):
+            route.validate_pr(REPO,'8',self.path,expected_head=HEAD)
+
+    def test_echoed_route_marker_in_status_prose_is_not_an_authority_record(self):
+        self.save(); self.comments[0]['body']='Quoted input: '+self.comments[0]['body']
+        with patch.object(route,'api',side_effect=self.api), self.assertRaisesRegex(ValueError,'exact envelope'):
+            route.saved_route(REPO,'7',self.data)
+
+    def test_legacy_publication_exception_is_exact_head_and_never_execution_authority(self):
+        self.data['routing']['legacy_publication_heads']={'8':HEAD}
+        self.path.write_text(json.dumps(self.data)); self.meta['body']='legacy'
+        with patch.object(route,'api',side_effect=self.api):
+            self.assertIsNone(route.check_pr_route(REPO,'8',self.path,expected_head=HEAD))
+            self.meta['head']['sha']=SOURCE
+            with self.assertRaises(ValueError):
+                route.check_pr_route(REPO,'8',self.path,expected_head=SOURCE)
+            with self.assertRaises(ValueError):
+                route.authenticate_candidate(self.receipt,8,HEAD,self.data)

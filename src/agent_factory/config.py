@@ -173,6 +173,11 @@ def parse_config(raw: dict[str, Any]) -> Config:
             raise ConfigError(str(exc)) from exc
         if builder.get('base_branch', 'main') not in allowed_branches:
             raise ConfigError('builder.base_branch must be allowed by routing policy')
+        legacy = routing.get('legacy_publication_heads', {})
+        if not isinstance(legacy, dict) or any(
+                not re.fullmatch(r'[1-9][0-9]*', str(pr)) or not isinstance(head, str)
+                or not re.fullmatch(r'[0-9a-f]{40}', head) for pr, head in legacy.items()):
+            raise ConfigError('routing.legacy_publication_heads must map PR numbers to full SHAs')
         if not steward.get('trusted_operator_logins'):
             raise ConfigError('routing requires steward.trusted_operator_logins')
     max_diff = review.get("max_diff_bytes", 200_000)

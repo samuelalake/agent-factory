@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import unittest
+import json
+from pathlib import Path
+from unittest.mock import patch
+from agent_factory.cli import default_config
+from agent_factory.config import parse_config
+from agent_factory.protocol import encode_data
+from agent_factory.github_gate import evaluate_and_publish
 
 from agent_factory.github_gate import (
     _flatten_pages,
@@ -30,3 +37,19 @@ Reviewer follow-up: #91
         self.assertFalse(_issue_is_valid_followup({"state": "CLOSED", "stateReason": "NOT_PLANNED"}))
         self.assertTrue(_issue_is_valid_followup({"state": "CLOSED", "stateReason": "COMPLETED"}))
         self.assertTrue(_issue_is_valid_followup({"state": "OPEN", "stateReason": None}))
+
+    def test_only_configured_reviewer_on_exact_github_commit_can_clear_gate(self):
+        config=parse_config(default_config('demo')); head='a'*40
+        meta={'headRefOid':head,'mergeable':'MERGEABLE','statusCheckRollup':[],'body':''}
+        for author,commit,declared,expected in [
+            (config.review.app_login,head,head,'success'),
+            ('unconfigured-reader',head,head,'pending'),
+            (config.review.app_login,'b'*40,head,'pending'),
+            (config.review.app_login,head,'b'*40,'pending'),
+        ]:
+            review={'user':{'login':author},'state':'APPROVED','commit_id':commit,
+                    'body':config.review.marker+'\n'+encode_data({'head_sha':declared,'findings':[]})}
+            with self.subTest(author=author,commit=commit,declared=declared), \
+                 patch('agent_factory.github_gate.load_config',return_value=config), \
+                 patch('agent_factory.github_gate._gh',side_effect=[json.dumps(meta),json.dumps([review]),'{}']):
+                self.assertEqual(evaluate_and_publish('owner/repo','7',Path('unused')).state,expected)

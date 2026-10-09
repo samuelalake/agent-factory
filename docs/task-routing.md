@@ -21,7 +21,8 @@ Pass `base_ref` on a manual Steward or Builder dispatch to select a branch. With
 an empty input, an authenticated existing task route takes precedence, followed by
 `builder.base_branch` for a new task. A new selection requires both a configured
 operator login and current GitHub write/maintain/admin permission. The named branch
-must exist. Preflight uses the read-only workflow token and runs before model/App
+must exist. Reuse also requires a configured operator with current write authority,
+or a matching original/triggering configured App actor on an issue event. Preflight uses the read-only workflow token and runs before model/App
 credentials reach the execution job.
 
 The controller is the consumer's default-branch checkout; its SHA is distinct from
@@ -31,7 +32,10 @@ not target code. Keep the caller on the trusted default branch; never dispatch a
 secret-bearing caller from arbitrary target code. Reviewer/gate callers on an
 admitted base must also use the same reviewed Factory pin and validated routing.
 
-Steward writes a route receipt through its App before adding the Builder label.
+Steward writes an append-only route receipt through its App before adding the Builder label.
+Receipt validation rereads its GraphQL node, verifies Bot identity, repository/issue,
+exact body and database ID, and requires `lastEditedAt` to be null. The original
+REST author alone is insufficient because repository writers can edit others' comments.
 Builder retains the same repository, issue, base, source SHA and controller SHA in
 its PR and issue receipt. Checkout, merge, diff and candidate validation all use the
 source SHA. A routed PR opens as a draft. Builder also records its candidate SHA;
@@ -41,7 +45,7 @@ without that Builder receipt is refused, rather than run with model credentials.
 An authorized base branch is executable input: only admit branches whose code and
 runner configuration the repository operators trust.
 
-Reviewer reads target changes as data from a trusted controller checkout. It
+Reviewer and gate require the same authenticated candidate receipt. The gate accepts a formal review only from the configured Reviewer App, with its actual GitHub commit ID, protocol head SHA and current candidate SHA all equal. Reviewer reads target changes as data from a trusted controller checkout. It
 validates receipt identity and source ancestry before review and again before its
 normal review publication. Publisher can pass `--route-config` to revalidate the
 route before upload, before writing the PR body, and after publication. Candidate
@@ -53,8 +57,10 @@ or controller revision mismatch fails closed. Controller updates during a task
 require operator reconciliation; do not erase receipts to bypass the check or
 silently float the task to a newer source. Existing routed PRs cannot be retargeted
 by changing only their issue receipt: complete/retire the task and create a new
-issue for a different route. Legacy PRs without task receipts remain compatible
-with their existing repository evidence policy.
+issue for a different route. Routed branch prefixes without receipts fail closed. A reviewed optional
+`routing.legacy_publication_heads` map can admit specific legacy PR numbers at
+specific full SHAs for review/publication only. Builder never uses this exception.
+Ordinary non-routed branches retain legacy behavior.
 
 Example consumer caller input:
 

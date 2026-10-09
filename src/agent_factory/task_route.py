@@ -58,6 +58,8 @@ def policy(config_path, repo):
 def decode(body):
     if MARKER not in body:
         return None
+    if body.count(MARKER) != 1:
+        raise ValueError('ambiguous task route')
     try:
         return json.loads(body.split(MARKER, 1)[1].split('\n```json\n', 1)[1].split('\n```', 1)[0])
     except (ValueError, IndexError) as exc:
@@ -70,7 +72,9 @@ def encode(route):
 
 def validate(route, data, repo, issue):
     allowed = data['routing']['allowed_base_branches']
-    if (not isinstance(route, dict) or route.get('version') != 1
+    if (not isinstance(route, dict) or set(route) != {'version', 'repository', 'issue', 'base_ref', 'source_sha', 'controller_sha'}
+            or type(route.get('issue')) is not int or route.get('issue', 0) <= 0
+            or route.get('version') != 1
             or route.get('repository') != repo or route.get('issue') != int(issue)
             or branch(route.get('base_ref')) not in allowed):
         raise ValueError('task route repository, issue, or allowed base mismatch')
@@ -92,6 +96,31 @@ def issue_comments(repo, issue):
     return comments
 
 
+def unedited_bot_comment(comment, repo, issue):
+    """REST author is not edit provenance: writers can edit other users' comments."""
+    node_id = comment.get('node_id')
+    if not isinstance(node_id, str) or not node_id:
+        raise ValueError('receipt has no immutable comment identity')
+    query = """query($id:ID!){node(id:$id){__typename ... on IssueComment {
+      id fullDatabaseId body lastEditedAt author {__typename login}
+      repository {nameWithOwner} issue {number}
+    }}}"""
+    result = api('graphql', payload={'query':query, 'variables':{'id':node_id}})
+    node = (result.get('data') or {}).get('node') or {}
+    author = node.get('author') or {}
+    rest_login = (comment.get('user') or {}).get('login', '')
+    if (result.get('errors') or node.get('__typename') != 'IssueComment'
+            or node.get('id') != node_id or str(node.get('fullDatabaseId')) != str(comment.get('id'))
+            or node.get('body') != comment.get('body')
+            or 'lastEditedAt' not in node or node['lastEditedAt'] is not None
+            or author.get('__typename') != 'Bot'
+            or str(author.get('login') or '') + '[bot]' != rest_login
+            or node.get('repository', {}).get('nameWithOwner') != repo
+            or node.get('issue', {}).get('number') != int(issue)):
+        raise ValueError('receipt was edited, changed during verification, or has untrusted provenance')
+    return node['body']
+
+
 def saved_route(repo, issue, data):
     comments = issue_comments(repo, issue)
     authors = {data['steward']['app_login'], data['builder']['app_login']}
@@ -99,7 +128,11 @@ def saved_route(repo, issue, data):
                and MARKER in (c.get('body') or '')]
     if not records:
         return None
-    return validate(decode(max(records, key=lambda c: c['id'])['body']), data, repo, issue)
+    body = unedited_bot_comment(max(records, key=lambda c: c['id']), repo, issue)
+    route = validate(decode(body), data, repo, issue)
+    if body != encode(route):
+        raise ValueError('route receipt is not an exact envelope')
+    return route
 
 
 def authorize(repo, actor, data):
@@ -110,7 +143,7 @@ def authorize(repo, actor, data):
         raise ValueError('route selector must retain repository write authority')
 
 
-def resolve(config_path, repo, issue, selected, actor, controller_sha):
+def resolve(config_path, repo, issue, selected, actor, controller_sha, *, event_name='', event_actor=''):
     if not re.fullmatch(r'[1-9][0-9]*', str(issue)):
         raise ValueError('positive issue number required')
     data, allowed = policy(config_path, repo)
@@ -124,6 +157,10 @@ def resolve(config_path, repo, issue, selected, actor, controller_sha):
         route = dict(version=1, repository=repo, issue=int(issue), base_ref=ref,
                      source_sha=sha(source), controller_sha=sha(controller_sha))
     else:
+        trusted_app_event = (event_name == 'issues' and event_actor == actor
+                             and actor in {data['steward']['app_login'], data['builder']['app_login']})
+        if not trusted_app_event:
+            authorize(repo, actor, data)
         route = saved
         # A new controller must explicitly reauthorize outstanding task routes.
         if route['controller_sha'] != controller_sha:
@@ -153,7 +190,8 @@ def authenticate_candidate(route, pr, head, data):
                and (c.get('body') or '').startswith(HEAD_MARKER + '\n')]
     if not records:
         raise ValueError('Builder will not execute a PR without its authenticated candidate receipt')
-    receipt = json.loads(max(records, key=lambda c: c['id'])['body'].split('\n', 1)[1])
+    body = unedited_bot_comment(max(records, key=lambda c: c['id']), route['repository'], route['issue'])
+    receipt = json.loads(body.split('\n', 1)[1])
     if receipt != {'route': route, 'pr': int(pr), 'head': head}:
         raise ValueError('Builder will not execute an untrusted or changed candidate head')
 
@@ -188,6 +226,7 @@ def validate_pr(repo, pr, config_path, *, expected_head=None, expected_route=Non
     comparison = api(f'repos/{repo}/compare/{route["source_sha"]}...{head}')
     if comparison.get('status') not in {'ahead', 'identical'}:
         raise ValueError('PR does not retain selected source SHA')
+    authenticate_candidate(route, pr, head, data)
     return route
 
 
@@ -202,7 +241,13 @@ def check_pr_route(repo, pr, config_path, *, expected_head):
     prefix = data['builder']['branch_prefix']
     head_ref = meta['head']['ref']
     issue = head_ref[len(prefix):] if head_ref.startswith(prefix) else ''
-    if MARKER in body or (issue.isdigit() and saved_route(repo, issue, data) is not None):
+    legacy_head = data['routing'].get('legacy_publication_heads', {}).get(str(pr))
+    if (MARKER not in body and legacy_head == expected_head == meta['head']['sha']
+            and meta['head']['repo']['full_name'] == repo and meta['base']['repo']['full_name'] == repo
+            and meta['base']['ref'] in data['routing']['allowed_base_branches']):
+        # Exact, reviewed compatibility exception only; Builder never takes this path.
+        return None
+    if MARKER in body or issue.isdigit():
         return validate_pr(repo, pr, config_path, expected_head=expected_head)
     return None
 
@@ -217,7 +262,8 @@ def main():
     args = parser.parse_args()
     controller = subprocess.check_output(['git', '-C', str(args.config.parent.parent), 'rev-parse', 'HEAD'], text=True).strip()
     route = resolve(args.config, args.repo, args.issue, args.base_ref,
-                    os.environ.get('GITHUB_TRIGGERING_ACTOR', ''), controller)
+                    os.environ.get('GITHUB_TRIGGERING_ACTOR', ''), controller,
+                    event_name=os.environ.get('GITHUB_EVENT_NAME', ''), event_actor=os.environ.get('GITHUB_ACTOR', ''))
     args.output.write_text(json.dumps(route))
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write('route=' + json.dumps(route, separators=(',', ':')) + '\n')
