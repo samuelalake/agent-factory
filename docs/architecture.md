@@ -157,3 +157,19 @@ Steward promotes a ledger concern into an execution item only when it has a
 distinct outcome, current evidence, enough context to act, and a useful next
 decision or verification step. This keeps the Factory compatible with GitHub
 Issues without making issue creation the default response to every message.
+
+## Reviewer diff coverage
+
+Reviewer collects PR patches through the paginated files API, avoiding the
+whole-diff endpoint's 300-file limit. Collection checks the unique file count
+against PR metadata and rejects a head or base change during pagination. Patch
+hunk lengths and addition/deletion totals must match the API metadata before a
+patch is included in the model input or used for inline comment locations.
+
+The files API is capped at 3,000 files and can omit patches. Missing patches,
+including binary or metadata-only entries that the API cannot distinguish,
+remain explicit coverage gaps; they are never treated as empty reviewed files.
+Incomplete coverage preserves the partial-diff rule: the review cannot approve.
+The configured `review.max_diff_bytes` limit still applies separately. Raising
+that limit cannot recover API-omitted patches. A review with full local diff
+access is needed for those changes; this adapter does not fetch missing blobs.

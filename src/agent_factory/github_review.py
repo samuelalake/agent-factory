@@ -69,6 +69,120 @@ def changed_file_paths(repo: str, pr: str) -> tuple[str, ...]:
     return tuple(paths)
 
 
+_PATCH_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?$")
+
+
+def _complete_patch(patch: str, additions: int, deletions: int) -> bool:
+    """Check hunk lengths and API totals; a present patch can still be truncated."""
+    old_left = new_left = added = deleted = 0
+    saw_hunk = False
+    for line in patch.removesuffix("\n").split("\n"):
+        match = _PATCH_HUNK.match(line)
+        if match:
+            if old_left or new_left:
+                return False
+            old_left = int(match.group(1) or 1)
+            new_left = int(match.group(2) or 1)
+            saw_hunk = True
+        elif line == "\\ No newline at end of file":
+            continue
+        elif saw_hunk and line.startswith((" ", "+", "-")):
+            if line[0] != "+":
+                old_left -= 1
+            if line[0] != "-":
+                new_left -= 1
+            added += line[0] == "+"
+            deleted += line[0] == "-"
+            if old_left < 0 or new_left < 0:
+                return False
+        else:
+            return False
+    return saw_hunk and not (old_left or new_left) and (added, deleted) == (additions, deletions)
+
+
+def _diff_path(path: str) -> str:
+    # Quote special paths so a filename cannot inject a diff header or hunk.
+    return json.dumps(path, ensure_ascii=False) if any(c.isspace() or c in '\\"' for c in path) else path
+
+
+def pull_request_diff(repo: str, pr: str, meta: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Build review input from all REST file pages, with explicit coverage gaps.
+
+    GitHub's whole-diff endpoint rejects PRs over 300 files. The files endpoint
+    supports 3,000; compare its unique entries with changedFiles to detect that
+    cap (or an incomplete response). Never treat an absent patch as empty text.
+    """
+    pages = json.loads(_gh([
+        "api", f"repos/{repo}/pulls/{pr}/files?per_page=100", "--paginate", "--slurp",
+    ]))
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise RuntimeError("GitHub returned an invalid paginated pull-file response")
+    expected = meta.get("changedFiles")
+    if type(expected) is not int or expected < 0:
+        raise RuntimeError("GitHub did not report the pull request's changed-file count")
+    chunks: list[str] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for page in pages:
+        for item in page:
+            if not isinstance(item, dict) or not isinstance(item.get("filename"), str) or not item["filename"]:
+                raise RuntimeError("GitHub returned an invalid pull-file entry")
+            path = item["filename"]
+            if path in seen:
+                raise RuntimeError("GitHub returned duplicate pull-file entries")
+            seen.add(path)
+            status = item.get("status")
+            if status not in {"added", "removed", "modified", "renamed", "copied", "changed", "unchanged"}:
+                raise RuntimeError("GitHub returned an invalid pull-file status")
+            if status == "renamed" and not item.get("previous_filename"):
+                raise RuntimeError("GitHub omitted a renamed file's previous filename")
+            previous = item.get("previous_filename", path)
+            if not isinstance(previous, str) or not previous:
+                raise RuntimeError("GitHub returned an invalid previous filename")
+            before, after = _diff_path("a/" + previous), _diff_path("b/" + path)
+            headers = [f"diff --git {before} {after}", f"File status: {status}"]
+            if status == "renamed":
+                headers += [f"rename from {_diff_path(previous)}", f"rename to {_diff_path(path)}"]
+            headers += [
+                "--- " + ("/dev/null" if status == "added" else before),
+                "+++ " + ("/dev/null" if status == "removed" else after),
+            ]
+            patch = item.get("patch")
+            totals_valid = all(type(item.get(key)) is int and item[key] >= 0 for key in ("additions", "deletions"))
+            if not isinstance(patch, str) or not patch:
+                reason = "patch unavailable (binary, metadata-only, or omitted by GitHub)"
+            elif not totals_valid or not _complete_patch(patch, item["additions"], item["deletions"]):
+                reason = "patch is incomplete or does not match GitHub's line counts"
+            else:
+                reason = ""
+            if reason:
+                missing.append(f"{json.dumps(path, ensure_ascii=False)}: {reason}")
+                # Do not let malformed/truncated hunks invent valid inline locations.
+                headers.append("[Patch not supplied to reviewer: " + reason + "]")
+            else:
+                headers.append(patch)
+            chunks.append("\n".join(headers) + "\n")
+    if len(seen) != expected:
+        missing.insert(0, f"GitHub returned {len(seen)} of {expected} changed files; the files API is capped at 3,000.")
+    # The endpoint is PR-scoped, not SHA-scoped. Discard mixed pages if either
+    # side moved during collection instead of binding them to the old head.
+    current = json.loads(_gh([
+        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,baseRefOid,changedFiles",
+    ]))
+    if any(current.get(key) != meta.get(key) for key in ("headRefOid", "baseRefOid", "changedFiles")):
+        raise RuntimeError("Pull request changed while collecting review patches; rerun the review")
+    return "".join(chunks), tuple(missing)
+
+
+def _coverage_summary(missing: tuple[str, ...]) -> str:
+    # Keep thousands of missing patches from overflowing the model prompt or
+    # GitHub review body. The count is exhaustive; the examples are bounded.
+    examples = "\n".join(missing)[:2500]
+    if len(examples) < sum(map(len, missing)) + max(0, len(missing) - 1):
+        examples += "\n[Further coverage details omitted from this summary.]"
+    return f"{len(missing)} coverage gap(s):\n{examples}"
+
+
 def authenticated_figma_delivery(
     repo: str,
     issue: int,
@@ -410,8 +524,14 @@ def diff_right_lines(diff: str) -> dict[str, set[int]]:
             path = None
             right_line = None
             continue
-        if raw_line.startswith("+++ "):
+        if raw_line.startswith("+++ ") and right_line is None:
             candidate = raw_line[4:].strip()
+            if candidate.startswith('"'):
+                try:
+                    candidate = json.loads(candidate)
+                except (ValueError, TypeError):
+                    path = None
+                    continue
             path = None if candidate == "/dev/null" else candidate.removeprefix("b/")
             if path is not None:
                 lines.setdefault(path, set())
@@ -695,7 +815,7 @@ def run(
     os.environ["GH_TOKEN"] = get_installation_token(repo)
     config = load_config(config_path)
     meta = json.loads(_gh([
-        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,title,body",
+        "pr", "view", pr, "--repo", repo, "--json", "headRefOid,baseRefOid,changedFiles,title,body",
     ]))
     if config.validated_routing:
         task_route.check_pr_route(repo, pr, config_path, expected_head=meta['headRefOid'])
@@ -737,7 +857,7 @@ def run(
                 raw,
                 "deterministic",
                 "figma-writer-delivery-gate",
-                _gh(["pr", "diff", pr, "--repo", repo]),
+                "",  # These deterministic findings are review-wide; no diff is needed.
             ))
             _gh([
                 "api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-",
@@ -777,7 +897,7 @@ def run(
                 raw,
                 "deterministic",
                 "builder-delivery-gate",
-                _gh(["pr", "diff", pr, "--repo", repo]),
+                "",  # These deterministic findings are review-wide; no diff is needed.
             ))
             _gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"], stdin=payload)
             return
@@ -927,10 +1047,15 @@ def run(
                     delivery_gate["findings"].extend(evidence_failure["findings"])
     elif visual_paths:
         delivery_gate = missing_visual_delivery_review(visual_paths)
-    diff = _gh(["pr", "diff", pr, "--repo", repo])
+    diff, missing_patches = pull_request_diff(repo, pr, meta)
     encoded = diff.encode()
     omitted = max(0, len(encoded) - config.review.max_diff_bytes)
     diff = encoded[: config.review.max_diff_bytes].decode(errors="ignore")
+    coverage = "Complete paginated text patches."
+    if missing_patches:
+        coverage = "Incomplete patch coverage:\n" + _coverage_summary(missing_patches)
+    if omitted:
+        coverage += f"\nConfigured input limit omitted {omitted} bytes."
     task = f"{meta.get('title', '')}\n{meta.get('body', '')}\n{diff}"
     discovered = discover_context(root, config.project, task, role="review")
     context = [
@@ -1017,6 +1142,7 @@ def run(
             if arbitration_context else []
         ),
         f"## Pull request\n\n{meta.get('title','')}\n\n{meta.get('body','')}",
+        f"## Diff coverage\n\n{coverage}",
         f"## Diff\n\n```diff\n{diff}\n```",
     ])
     provider = provider_override or config.review.provider
@@ -1053,6 +1179,15 @@ def run(
             value for value in (delivery_gate["summary"], raw.get("summary", "")) if value
         )
         raw["findings"] = delivery_gate["findings"] + raw["findings"]
+    if missing_patches:
+        raw["approve"] = False
+        raw["findings"].insert(0, {
+            "severity": "P1", "key": "agent-factory://incomplete-diff",
+            "title": "Reviewer input has incomplete patch coverage",
+            "reasoning": "The full diff was not reviewed. " + _coverage_summary(missing_patches),
+            "suggestion": "Use a review workflow with complete local diff access or split the pull request; "
+            "raising the input limit cannot restore API-omitted patches.",
+        })
     if omitted:
         raw["approve"] = False
         raw["findings"].insert(0, {
