@@ -78,8 +78,6 @@ class ReviewTests(unittest.TestCase):
                 })
             if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
                 return json.dumps([[{"filename": ".github/workflows/agent-builder.yml"}]])
-            if args[:2] == ["pr", "diff"]:
-                return "diff --git a/.github/workflows/agent-builder.yml"
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -95,6 +93,13 @@ class ReviewTests(unittest.TestCase):
                     normalize_review({"summary": "Safe pin update.", "approve": True}),
                     "openrouter",
                     "review-model",
+                ),
+            ),
+            mock.patch(
+                "agent_factory.github_review.pull_request_diff",
+                return_value=(
+                    'diff --git a/.github/workflows/agent-builder.yml',
+                    (),
                 ),
             ),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
@@ -128,8 +133,6 @@ class ReviewTests(unittest.TestCase):
                 return json.dumps([[{"filename": "app/Screen.swift"}]])
             if args[:2] == ["api", "repos/acme/repo/issues/12/comments?per_page=100"]:
                 return json.dumps([[]])
-            if args[:2] == ["pr", "diff"]:
-                return "diff --git a/app/Screen.swift b/app/Screen.swift"
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -139,6 +142,13 @@ class ReviewTests(unittest.TestCase):
             mock.patch("agent_factory.github_review.get_installation_token", return_value="token"),
             mock.patch("agent_factory.github_review.load_config", return_value=config),
             mock.patch("agent_factory.github_review.request_review") as request,
+            mock.patch(
+                "agent_factory.github_review.pull_request_diff",
+                return_value=(
+                    'diff --git a/app/Screen.swift b/app/Screen.swift',
+                    (),
+                ),
+            ),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -393,8 +403,6 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[0] == "api":
                 posted.append(json.loads(stdin))
                 return ""
@@ -410,6 +418,7 @@ class ReviewTests(unittest.TestCase):
                 "agent_factory.github_review.request_review",
                 return_value=(normalize_review({"summary": "approve", "approve": True}), "openrouter", "visual"),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -441,7 +450,7 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"] or args[0] == "api":
+            if args[0] == "api":
                 return ""
             raise AssertionError(args)
 
@@ -458,6 +467,7 @@ class ReviewTests(unittest.TestCase):
                 "agent_factory.github_review.request_review",
                 return_value=(normalize_review({"summary": "match", "approve": True}), "openrouter", "visual"),
             ) as request,
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -494,8 +504,6 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"]:
-                return "diff --git a/app/Demo.swift b/app/Demo.swift"
             if args[:2] == ["api", "repos/acme/repo/issues/7/comments?per_page=100"]:
                 return json.dumps([[]])
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
@@ -516,6 +524,13 @@ class ReviewTests(unittest.TestCase):
             mock.patch("agent_factory.github_review._current_delivery_media", return_value=(("Swami", "url"), ("video",))),
             mock.patch("agent_factory.github_review.discover_context", return_value=[]),
             mock.patch("agent_factory.github_review.request_review") as request,
+            mock.patch(
+                "agent_factory.github_review.pull_request_diff",
+                return_value=(
+                    'diff --git a/app/Demo.swift b/app/Demo.swift',
+                    (),
+                ),
+            ),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -567,8 +582,6 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"]:
-                return "diff --git a/app/Demo.swift b/app/Demo.swift"
             if args[:2] == ["api", "repos/acme/repo/issues/7/comments?per_page=100"]:
                 return json.dumps([[]])
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
@@ -603,6 +616,13 @@ class ReviewTests(unittest.TestCase):
             mock.patch("agent_factory.github_review._fetch_delivery_images", return_value=("data:image/png;base64,AA==",)),
             mock.patch("agent_factory.github_review.discover_context", return_value=[]),
             mock.patch("agent_factory.github_review.request_review", side_effect=review),
+            mock.patch(
+                "agent_factory.github_review.pull_request_diff",
+                return_value=(
+                    'diff --git a/app/Demo.swift b/app/Demo.swift',
+                    (),
+                ),
+            ),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -636,8 +656,6 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[0] == "api":
                 posted.append(json.loads(stdin))
                 return ""
@@ -656,6 +674,7 @@ class ReviewTests(unittest.TestCase):
                 "agent_factory.github_review.request_review",
                 return_value=(normalize_review({"summary": "approve", "approve": True}), "openrouter", "visual"),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -686,8 +705,6 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -710,6 +727,7 @@ class ReviewTests(unittest.TestCase):
                     "visual",
                 ),
             ) as request,
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -729,7 +747,7 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": "a" * 40, "title": "Drag", "body": body})
-            if args[:2] == ["pr", "diff"] or args[0] == "api":
+            if args[0] == "api":
                 return ""
             raise AssertionError(args)
 
@@ -738,6 +756,7 @@ class ReviewTests(unittest.TestCase):
             mock.patch("agent_factory.github_review.load_config", return_value=config),
             mock.patch("agent_factory.github_review.wait_for_delivery", return_value=("pending", body)),
             mock.patch("agent_factory.github_review.request_review") as request,
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -763,14 +782,6 @@ class ReviewTests(unittest.TestCase):
                 })
             if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
                 return json.dumps([[{"filename": ".github/workflows/review.yml"}]])
-            if args[:2] == ["pr", "diff"]:
-                return """diff --git a/.github/workflows/review.yml b/.github/workflows/review.yml
---- a/.github/workflows/review.yml
-+++ b/.github/workflows/review.yml
-@@ -1 +1 @@
--uses: owner/factory@old
-+uses: owner/factory@new
-"""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -789,6 +800,18 @@ class ReviewTests(unittest.TestCase):
                     "visual",
                 ),
             ) as request,
+            mock.patch(
+                "agent_factory.github_review.pull_request_diff",
+                return_value=(
+                    'diff --git a/.github/workflows/review.yml b/.github/workflows/review.yml\n'
+                    '--- a/.github/workflows/review.yml\n'
+                    '+++ b/.github/workflows/review.yml\n'
+                    '@@ -1 +1 @@\n'
+                    '-uses: owner/factory@old\n'
+                    '+uses: owner/factory@new\n',
+                    (),
+                ),
+            ),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -838,8 +861,6 @@ class ReviewTests(unittest.TestCase):
                 })
             if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
                 return json.dumps([[{"filename": ".agent-factory/config.json"}]])
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -862,6 +883,7 @@ class ReviewTests(unittest.TestCase):
                     "visual",
                 ),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -903,8 +925,6 @@ class ReviewTests(unittest.TestCase):
                 })
             if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
                 return json.dumps([[{"filename": ".agent-factory/config.json"}]])
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -927,6 +947,7 @@ class ReviewTests(unittest.TestCase):
                     "visual",
                 ),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -964,8 +985,6 @@ class ReviewTests(unittest.TestCase):
                         "previous_filename": "app/Screen.swift",
                     }
                 ]])
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -987,6 +1006,7 @@ class ReviewTests(unittest.TestCase):
                     "visual",
                 ),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -1016,8 +1036,6 @@ class ReviewTests(unittest.TestCase):
         def gh(args, *, stdin=None):
             if args[:2] == ["pr", "view"]:
                 return json.dumps({"headRefOid": head, "title": "Unscoped change", "body": body})
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -1039,6 +1057,7 @@ class ReviewTests(unittest.TestCase):
                     "visual",
                 ),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
@@ -1066,14 +1085,6 @@ class ReviewTests(unittest.TestCase):
                 })
             if args[:2] == ["api", "repos/acme/repo/pulls/7/files?per_page=100"]:
                 return json.dumps([[{"filename": "app/Screen.swift"}]])
-            if args[:2] == ["pr", "diff"]:
-                return """diff --git a/app/Screen.swift b/app/Screen.swift
---- a/app/Screen.swift
-+++ b/app/Screen.swift
-@@ -1 +1 @@
--let color = old
-+let color = new
-"""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -1090,6 +1101,18 @@ class ReviewTests(unittest.TestCase):
                     normalize_review({"summary": "Model approves.", "approve": True}),
                     "openrouter",
                     "visual",
+                ),
+            ),
+            mock.patch(
+                "agent_factory.github_review.pull_request_diff",
+                return_value=(
+                    'diff --git a/app/Screen.swift b/app/Screen.swift\n'
+                    '--- a/app/Screen.swift\n'
+                    '+++ b/app/Screen.swift\n'
+                    '@@ -1 +1 @@\n'
+                    '-let color = old\n'
+                    '+let color = new\n',
+                    (),
                 ),
             ),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
@@ -1129,8 +1152,6 @@ class ReviewTests(unittest.TestCase):
                 self.assertIn("--paginate", args)
                 self.assertIn("--slurp", args)
                 return json.dumps([first_page, second_page])
-            if args[:2] == ["pr", "diff"]:
-                return ""
             if args[:2] == ["api", "repos/acme/repo/pulls/7/reviews"]:
                 posted.append(json.loads(stdin))
                 return ""
@@ -1145,6 +1166,7 @@ class ReviewTests(unittest.TestCase):
                 "agent_factory.github_review.request_review",
                 return_value=(normalize_review({"summary": "Model approves.", "approve": True}), "openrouter", "visual"),
             ),
+            mock.patch("agent_factory.github_review.pull_request_diff", return_value=("", ())),
             mock.patch("agent_factory.github_review._gh", side_effect=gh),
         ):
             run("acme/repo", "7", mock.MagicMock(), mock.MagicMock())
