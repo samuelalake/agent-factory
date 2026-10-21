@@ -150,6 +150,29 @@ jobs:
     secrets: inherit
 """
 
+LABEL_SETUP_CALLER = """name: agent-setup
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/agent-setup.yml]
+permissions:
+  issues: write
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Provision Agent Factory labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh label create "ready" --repo "$REPOSITORY" --color 0E8A16 --description "Ready for Agent Factory stewardship" --force
+          gh label create "agent:builder" --repo "$REPOSITORY" --color 1D76DB --description "Dispatched to Builder" --force
+          gh label create "agent:steward" --repo "$REPOSITORY" --color 8250DF --description "Steward should triage or unblock" --force
+          gh label create "agent:retry" --repo "$REPOSITORY" --color FBCA04 --description "Steward should retry this issue" --force
+"""
+
 
 def default_config(project_name: str) -> dict:
     return {
@@ -274,6 +297,11 @@ def install(root: Path, *, factory_ref: str, force: bool) -> dict[str, str]:
         ".github/workflows/agent-gate.yml": _write(
             root / ".github/workflows/agent-gate.yml",
             GATE_CALLER.format(factory_ref=factory_ref),
+            force=force,
+        ),
+        ".github/workflows/agent-setup.yml": _write(
+            root / ".github/workflows/agent-setup.yml",
+            LABEL_SETUP_CALLER,
             force=force,
         ),
     }
