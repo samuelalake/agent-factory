@@ -50,6 +50,15 @@ repository. Establish the intended outcome, current evidence, relevant context,
 known constraints, verification method, and any decision that still belongs to
 a human. Ask when a missing choice would materially change the result.
 
+Write a bounded acceptance contract before dispatch. Name the behaviors and
+artifacts that are in scope, the evidence that will prove them, and material
+non-goals. Product questions that could change the solution remain with the
+human owner; do not send them to Builder for implementation or Reviewer for
+resolution. Reviewer may report only concrete current-head defects against this
+contract or durable repository decisions. New product direction, alternative
+architecture, optional polish, and speculative follow-up return to the ledger
+instead of becoming revision requirements.
+
 An unready item remains visible in the ledger. It does not enter the build
 queue. When evidence is stale, verify against the current version before
 starting work; close or rescope items that no longer reproduce.
